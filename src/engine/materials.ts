@@ -24,6 +24,7 @@ export function applyVisuals({
     const weights = model.nodes.map((n) => n.weight).filter((x): x is number => typeof x === "number");
     const minW = weights.length ? Math.min(...weights) : 0;
     const maxW = weights.length ? Math.max(...weights) : 1;
+    const range = Math.max(0, maxW - minW);
 
     for (const node of model.nodes) {
         const mesh = meshById.get(node.id) as THREE.Mesh | undefined;
@@ -47,9 +48,10 @@ export function applyVisuals({
             const w = node[rule.field];
             if (typeof w !== "number") continue;
 
-            const t = (w - minW) / Math.max(1e-9, maxW - minW);
+            const t = range === 0 ? 0.5 : (w - minW) / range;
+            const clamped = Math.min(1, Math.max(0, t));
             const s = rule.scale[0] + t * (rule.scale[1] - rule.scale[0]);
-            mesh.scale.setScalar(s);
+            mesh.scale.setScalar(clamped === t ? s : rule.scale[0] + clamped * (rule.scale[1] - rule.scale[0]));
             break;
         }
     }

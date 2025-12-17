@@ -49,5 +49,5 @@ export function StarMap({ config, className, onSelect, onHover }: StarMapProps) 
         engineRef.current?.setHandlers?.({ onSelect, onHover });
     }, [onSelect, onHover]);
 
-    return <div ref={containerRef} className={className} />;
+    return <div ref={containerRef} className={className} style={{ width: "100%", height: "100%" }} />;
 }

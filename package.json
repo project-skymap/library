@@ -1,22 +1,12 @@
 {
-  "name": "project-skymap",
-  "version": "0.0.0-SNAPSHOT",
-  "description": "The Skymap Library",
+  "name": "@project-skymap/library",
+  "version": "0.0.0",
+  "description": "ThreeJS-based React StarMap component",
   "scripts": {
     "build": "tsup",
     "dev": "tsup --watch",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
-  "homepage": "https://github.com/project-skymap/library#readme",
-  "bugs": {
-    "url": "https://github.com/project-skymap/library/issues"
-  },
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/project-skymap/library.git"
-  },
-  "license": "ISC",
-  "author": "jrsmth",
   "type": "module",
   "main": "./dist/index.cjs",
   "module": "./dist/index.js",
