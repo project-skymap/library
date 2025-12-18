@@ -31,6 +31,8 @@ export type StarMapConfig = {
 
     // Either provide nodes/links directly, or a raw dataset + adapter
     model?: SceneModel;
+    data?: any;
+    adapter?: (data: any) => SceneModel;
 
     visuals?: {
         colorBy?: Array<{ when: Record<string, unknown>; value: string }>;
