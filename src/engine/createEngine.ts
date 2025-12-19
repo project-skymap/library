@@ -24,11 +24,16 @@ export function createEngine({
 
     const scene = new THREE.Scene();
     const camera = new THREE.PerspectiveCamera(60, 1, 0.1, 10000);
-    camera.position.set(0, 0, 400);
+    // Camera inside the sphere, looking out
+    camera.position.set(0, 0, 0.1);
 
     const controls = new OrbitControls(camera, renderer.domElement);
     controls.enableDamping = true;
     controls.dampingFactor = 0.05;
+    controls.enablePan = false;
+    controls.enableZoom = false;
+    controls.rotateSpeed = -0.5; // Invert to feel like looking around
+    controls.target.set(0, 0, 0);
 
     const raycaster = new THREE.Raycaster();
     const pointer = new THREE.Vector2();
