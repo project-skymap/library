@@ -9,85 +9,213 @@ type Handlers = {
     onHover?: (node?: SceneNode) => void;
 };
 
+type EngineConfig = {
+    // Stellarium-ish “stand in the middle and look out”
+    skyRadius?: number; // radius for procedural backdrop stars
+    groundRadius?: number; // radius of the ground hemisphere used to occlude “below horizon”
+    horizonGlow?: boolean;
+
+    // Zoom behaviour (FOV-based)
+    defaultFov?: number;
+    minFov?: number;
+    maxFov?: number;
+    fovWheelSensitivity?: number; // deg per wheel deltaY unit (scaled for ctrlKey pinch)
+    resetFovOnDblClick?: boolean;
+
+    // Click-to-focus behaviour
+    focusOnSelect?: boolean;
+    focusZoomFov?: number; // fov to animate to on focus
+    focusDurationMs?: number;
+};
+
 export function createEngine({
                                  container,
                                  onSelect,
-                                 onHover
+                                 onHover,
                              }: {
     container: HTMLDivElement;
     onSelect?: Handlers["onSelect"];
     onHover?: Handlers["onHover"];
 }) {
+    // ---------------------------
+    // Renderer / Scene / Camera
+    // ---------------------------
     const renderer = new THREE.WebGLRenderer({ antialias: true });
-    renderer.setPixelRatio(window.devicePixelRatio);
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+    renderer.setClearColor(0x000000, 1);
     container.appendChild(renderer.domElement);
+    // Prevent browser gestures from fighting pointer controls
+    (renderer.domElement.style as any).touchAction = "none";
 
     const scene = new THREE.Scene();
-    const camera = new THREE.PerspectiveCamera(90, window.innerWidth / window.innerHeight, 0.1, 5000);
+
+    const camera = new THREE.PerspectiveCamera(90, 1, 0.1, 5000);
+    // Tiny offset so OrbitControls has a radius to work with (like your Angular app)
     camera.position.set(0, 0, 0.01);
-    // Camera inside the sphere, looking out, slightly above the 'ground'
+    camera.up.set(0, 1, 0);
 
+    // ---------------------------
+    // Controls: “look around”
+    // ---------------------------
     const controls = new OrbitControls(camera, renderer.domElement);
-    controls.enableDamping = true;
-    controls.dampingFactor = 0.05;
+    controls.target.set(0, 0, 0);
+    controls.enableRotate = true;
     controls.enablePan = false;
-    controls.enableZoom = false; // We will handle zoom via FOV
-    controls.rotateSpeed = -0.5; // Invert to feel like looking around
-    controls.target.set(0, 1, 0); // Look from eye level
+    controls.enableZoom = false; // wheel controls FOV (not dolly)
+    controls.enableDamping = true;
+    controls.dampingFactor = 0.07;
+    controls.screenSpacePanning = false;
 
-    // Limit vertical rotation so we don't look 'through' the floor
-    // In our inverted setup (rotateSpeed = -0.5):
-    const EPS = THREE.MathUtils.degToRad(0.5);
-    controls.minPolarAngle = EPS; // Prevent looking too far down
-    controls.maxPolarAngle = Math.PI/2 - EPS;       // Allow looking straight up
-
+    // Free yaw; clamp pitch so we don’t go “under” the horizon.
+    const EPS = THREE.MathUtils.degToRad(0.05);
     controls.minAzimuthAngle = -Infinity;
-    controls.maxAzimuthAngle =  Infinity;
+    controls.maxAzimuthAngle = Infinity;
+    controls.minPolarAngle = EPS; // near zenith
+    controls.maxPolarAngle = Math.PI / 2 - EPS; // down to horizon
+    controls.update();
 
-    // --- CUSTOM ZOOM (FOV) ---
-    function onWheel(ev: WheelEvent) {
-        ev.preventDefault();
-        const delta = ev.deltaY > 0 ? 1 : -1;
-        const newFov = THREE.MathUtils.clamp(camera.fov + delta * 2, 10, 100);
-        camera.fov = newFov;
-        camera.updateProjectionMatrix();
-    }
+    // ---------------------------
+    // Stellarium-ish environment
+    // ---------------------------
+    const env = {
+        skyRadius: 2800,
+        groundRadius: 995,
+        horizonGlow: true,
 
-    // --- ADD GROUND ---
+        defaultFov: 90,
+        minFov: 1,
+        maxFov: 175,
+        fovWheelSensitivity: 0.04,
+        resetFovOnDblClick: true,
+
+        focusOnSelect: true,
+        focusZoomFov: 18,
+        focusDurationMs: 650,
+    } satisfies EngineConfig;
+
+    // Ground group: an inside-facing lower hemisphere that WRITES depth
+    // => hides below-horizon stars (very Stellarium)
     const groundGroup = new THREE.Group();
-    
-    // Circular dark ground
-    const groundGeo = new THREE.CircleGeometry(1000, 64);
-    const groundMat = new THREE.MeshBasicMaterial({ color: 0x020202 });
-    const ground = new THREE.Mesh(groundGeo, groundMat);
-    ground.rotation.x = -Math.PI / 2;
-    ground.position.y = 0;
-    groundGroup.add(ground);
-
-    // Subtle Grid
-    const grid = new THREE.GridHelper(2000, 100, 0x222222, 0x111111);
-    grid.position.y = 0.01;
-    groundGroup.add(grid);
-    
     scene.add(groundGroup);
 
-    // --- ADD SPACE BACKDROP (Procedural Stars) ---
-    const starCount = 5000;
-    const starGeo = new THREE.BufferGeometry();
-    const starPos = new Float32Array(starCount * 3);
-    for (let i = 0; i < starCount; i++) {
-        const r = 2000 + Math.random() * 1000; // Far beyond the constellations
-        const theta = Math.random() * Math.PI * 2;
-        const phi = Math.acos(2 * Math.random() - 1);
-        starPos[i * 3] = r * Math.sin(phi) * Math.cos(theta);
-        starPos[i * 3 + 1] = r * Math.sin(phi) * Math.sin(theta);
-        starPos[i * 3 + 2] = r * Math.cos(phi);
-    }
-    starGeo.setAttribute("position", new THREE.BufferAttribute(starPos, 3));
-    const starMat = new THREE.PointsMaterial({ color: 0x888888, size: 0.5, transparent: true, opacity: 0.5 });
-    const backdropStars = new THREE.Points(starGeo, starMat);
-    scene.add(backdropStars);
+    function buildGroundHemisphere(radius: number) {
+        groundGroup.clear();
 
+        // inside-facing lower hemisphere
+        const hemi = new THREE.SphereGeometry(radius, 64, 32, 0, Math.PI * 2, Math.PI / 2, Math.PI);
+        hemi.scale(-1, 1, 1);
+
+        // vertex color gradient: darker down, brighter near horizon
+        const count = (hemi.attributes.position as THREE.BufferAttribute).count;
+        const colors = new Float32Array(count * 3);
+        const pos = hemi.attributes.position as THREE.BufferAttribute;
+        const c = new THREE.Color();
+
+        for (let i = 0; i < count; i++) {
+            const y = pos.getY(i); // [-radius, 0]
+            const t = THREE.MathUtils.clamp(1 - Math.abs(y) / radius, 0, 1);
+            // A simple deep-blue to near-horizon glow-ish ramp
+            c.setRGB(
+                THREE.MathUtils.lerp(0x06 / 255, 0x15 / 255, t),
+                THREE.MathUtils.lerp(0x10 / 255, 0x23 / 255, t),
+                THREE.MathUtils.lerp(0x17 / 255, 0x35 / 255, t)
+            );
+            colors.set([c.r, c.g, c.b], i * 3);
+        }
+        hemi.setAttribute("color", new THREE.BufferAttribute(colors, 3));
+
+        const groundMat = new THREE.MeshBasicMaterial({
+            vertexColors: true,
+            side: THREE.FrontSide,
+            depthWrite: true, // important: occlude stars under horizon
+            depthTest: true,
+        });
+
+        const hemiMesh = new THREE.Mesh(hemi, groundMat);
+        groundGroup.add(hemiMesh);
+
+        if (env.horizonGlow) {
+            const inner = radius * 0.985;
+            const outer = radius * 1.005;
+            const ringGeo = new THREE.RingGeometry(inner, outer, 128);
+            ringGeo.rotateX(-Math.PI / 2);
+
+            const ringMat = new THREE.ShaderMaterial({
+                transparent: true,
+                depthWrite: false,
+                uniforms: {
+                    uInner: { value: inner },
+                    uOuter: { value: outer },
+                    uColor: { value: new THREE.Color(0x7aa2ff) },
+                },
+                vertexShader: `
+          varying vec2 vXY;
+          void main() {
+            vXY = position.xz;
+            gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+          }
+        `,
+                fragmentShader: `
+          uniform float uInner;
+          uniform float uOuter;
+          uniform vec3 uColor;
+          varying vec2 vXY;
+
+          void main() {
+            float r = length(vXY);
+            float t = clamp((r - uInner) / (uOuter - uInner), 0.0, 1.0);
+            // peak glow near inner edge, fade outwards
+            float a = pow(1.0 - t, 2.2) * 0.35;
+            gl_FragColor = vec4(uColor, a);
+          }
+        `,
+            });
+
+            const ring = new THREE.Mesh(ringGeo, ringMat);
+            ring.position.y = 0.0;
+            groundGroup.add(ring);
+        }
+    }
+
+    buildGroundHemisphere(env.groundRadius);
+
+    // Backdrop stars (procedural points) far beyond your “model stars”
+    const backdropGroup = new THREE.Group();
+    scene.add(backdropGroup);
+
+    function buildBackdropStars(radius: number, count: number) {
+        backdropGroup.clear();
+
+        const starGeo = new THREE.BufferGeometry();
+        const starPos = new Float32Array(count * 3);
+
+        for (let i = 0; i < count; i++) {
+            const r = radius + Math.random() * (radius * 0.5);
+            const theta = Math.random() * Math.PI * 2;
+            const phi = Math.acos(2 * Math.random() - 1);
+            starPos[i * 3] = r * Math.sin(phi) * Math.cos(theta);
+            starPos[i * 3 + 1] = r * Math.sin(phi) * Math.sin(theta);
+            starPos[i * 3 + 2] = r * Math.cos(phi);
+        }
+
+        starGeo.setAttribute("position", new THREE.BufferAttribute(starPos, 3));
+        const starMat = new THREE.PointsMaterial({
+            color: 0x9aa6b2,
+            size: 0.5,
+            transparent: true,
+            opacity: 0.55,
+            depthWrite: false,
+        });
+
+        const stars = new THREE.Points(starGeo, starMat);
+        backdropGroup.add(stars);
+    }
+
+    buildBackdropStars(env.skyRadius, 6500);
+
+    // ---------------------------
+    // Picking / Model content
+    // ---------------------------
     const raycaster = new THREE.Raycaster();
     const pointer = new THREE.Vector2();
 
@@ -103,6 +231,9 @@ export function createEngine({
     const nodeById = new Map<string, SceneNode>();
     const meshById = new Map<string, THREE.Object3D>();
 
+    // ---------------------------
+    // Resize
+    // ---------------------------
     function resize() {
         const w = container.clientWidth || 1;
         const h = container.clientHeight || 1;
@@ -111,7 +242,9 @@ export function createEngine({
         camera.updateProjectionMatrix();
     }
 
-
+    // ---------------------------
+    // Dispose helpers
+    // ---------------------------
     function disposeObject(obj: THREE.Object3D) {
         obj.traverse((o: any) => {
             if (o.geometry) o.geometry.dispose?.();
@@ -130,14 +263,14 @@ export function createEngine({
         const ctx = canvas.getContext("2d");
         if (!ctx) return null;
 
-        const fontSize = 48; 
+        const fontSize = 48;
         const font = `bold ${fontSize}px sans-serif`;
         ctx.font = font;
-        
+
         const metrics = ctx.measureText(text);
         const w = Math.ceil(metrics.width);
         const h = Math.ceil(fontSize * 1.2);
-        
+
         canvas.width = w;
         canvas.height = h;
 
@@ -150,13 +283,20 @@ export function createEngine({
         const tex = new THREE.CanvasTexture(canvas);
         tex.minFilter = THREE.LinearFilter;
 
-        const mat = new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false });
+        const mat = new THREE.SpriteMaterial({
+            map: tex,
+            transparent: true,
+            depthWrite: false,
+            depthTest: true,
+        });
+
         const sprite = new THREE.Sprite(mat);
-        
+
+        // World-size label (you can later do Stellarium-style pixel fitting if you want)
         const targetHeight = 2;
         const aspect = w / h;
         sprite.scale.set(targetHeight * aspect, targetHeight, 1);
-        
+
         return sprite;
     }
 
@@ -174,8 +314,9 @@ export function createEngine({
 
         // background + camera
         if (cfg.background) scene.background = new THREE.Color(cfg.background);
-        if (cfg.camera?.fov) camera.fov = cfg.camera.fov;
-        if (typeof cfg.camera?.z === "number") camera.position.z = cfg.camera.z;
+
+        // Respect config FOV if provided, otherwise use Stellarium-ish default
+        camera.fov = cfg.camera?.fov ?? env.defaultFov;
         camera.updateProjectionMatrix();
 
         const laidOut = computeLayoutPositions(model, cfg.layout);
@@ -186,16 +327,20 @@ export function createEngine({
 
             const geom = new THREE.SphereGeometry(1, 16, 16);
             const mat = new THREE.MeshBasicMaterial({ color: 0xffffff });
-
             const mesh = new THREE.Mesh(geom, mat);
-            mesh.position.set((n.meta?.x as number) ?? 0, (n.meta?.y as number) ?? 0, (n.meta?.z as number) ?? 0);
 
-            // Add Label
+            mesh.position.set(
+                (n.meta?.x as number) ?? 0,
+                (n.meta?.y as number) ?? 0,
+                (n.meta?.z as number) ?? 0
+            );
+
+            // Label
             if (n.label) {
                 const labelSprite = createTextSprite(n.label);
                 if (labelSprite) {
-                    labelSprite.position.set(0, 2.5, 0); 
-                    labelSprite.visible = n.level < 3; // only show higher levels by default
+                    labelSprite.position.set(0, 2.5, 0);
+                    labelSprite.visible = n.level < 3; // show higher levels by default
                     mesh.add(labelSprite);
                 }
             }
@@ -205,7 +350,6 @@ export function createEngine({
             meshById.set(n.id, mesh);
         }
 
-        // Apply visuals (color/size rules)
         applyVisuals({ model: laidOut, cfg, meshById });
 
         resize();
@@ -213,14 +357,13 @@ export function createEngine({
 
     function setConfig(cfg: StarMapConfig) {
         let model = cfg.model;
-        if (!model && cfg.data && cfg.adapter) {
-            model = cfg.adapter(cfg.data);
-        }
+        if (!model && cfg.data && cfg.adapter) model = cfg.adapter(cfg.data);
 
         if (!model) {
             clearRoot();
             return;
         }
+
         buildFromModel(model, cfg);
     }
 
@@ -235,35 +378,38 @@ export function createEngine({
 
         raycaster.setFromCamera(pointer, camera);
         const hits = raycaster.intersectObjects(root.children, true);
-        // Only pick the spheres (not their labels)
-        const hit = hits.find(h => h.object.type === "Mesh");
+        // only pick the spheres (not their labels)
+        const hit = hits.find((h) => h.object.type === "Mesh");
         const id = hit?.object?.userData?.id as string | undefined;
         return id ? nodeById.get(id) : undefined;
     }
 
+    // ---------------------------
+    // Hover logic (labels on L3)
+    // ---------------------------
     function onPointerMove(ev: PointerEvent) {
         const node = pick(ev);
         const nextId = node?.id ?? null;
-        
+
         if (nextId !== hoveredId) {
-            // Restore previous hovered visibility if it was level 3
+            // hide previous hovered L3 label
             if (hoveredId) {
                 const prevMesh = meshById.get(hoveredId);
                 const prevNode = nodeById.get(hoveredId);
                 if (prevMesh && prevNode && prevNode.level === 3) {
-                    const label = prevMesh.children.find(c => c instanceof THREE.Sprite);
+                    const label = prevMesh.children.find((c) => c instanceof THREE.Sprite);
                     if (label) label.visible = false;
                 }
             }
 
             hoveredId = nextId;
 
-            // Show current hovered visibility if it is level 3
+            // show current hovered L3 label
             if (nextId) {
                 const mesh = meshById.get(nextId);
                 const n = nodeById.get(nextId);
                 if (mesh && n && n.level === 3) {
-                    const label = mesh.children.find(c => c instanceof THREE.Sprite);
+                    const label = mesh.children.find((c) => c instanceof THREE.Sprite);
                     if (label) label.visible = true;
                 }
             }
@@ -272,29 +418,175 @@ export function createEngine({
         }
     }
 
-    function onPointerDown(ev: PointerEvent) {
+    function onPointerDown() {
         isDragging = false;
+    }
+
+    function onChange() {
+        // OrbitControls fires change while dragging
+        isDragging = true;
+    }
+
+    // ---------------------------
+    // Stellarium-ish zoom (FOV)
+    // ---------------------------
+    const onWheelFov = (ev: WheelEvent) => {
+        ev.preventDefault();
+
+        // Trackpad pinch on macOS tends to come through as wheel w/ ctrlKey=true
+        const speed = (ev.ctrlKey ? 0.15 : 1) * env.fovWheelSensitivity!;
+        const next = THREE.MathUtils.clamp(
+            camera.fov + ev.deltaY * speed,
+            env.minFov!,
+            env.maxFov!
+        );
+
+        if (next !== camera.fov) {
+            camera.fov = next;
+            camera.updateProjectionMatrix();
+        }
+    };
+
+    const onDblClickResetFov = () => {
+        if (!env.resetFovOnDblClick) return;
+        camera.fov = env.defaultFov!;
+        camera.updateProjectionMatrix();
+    };
+
+    // ---------------------------
+    // Click-to-focus (aim + zoom)
+    // ---------------------------
+    let focusAnimRaf = 0;
+
+    function cancelFocusAnim() {
+        if (focusAnimRaf) cancelAnimationFrame(focusAnimRaf);
+        focusAnimRaf = 0;
+    }
+
+    function getControlsAnglesSafe() {
+        // OrbitControls exposes getAzimuthalAngle/getPolarAngle
+        const getAz = (controls as any).getAzimuthalAngle?.bind(controls);
+        const getPol = (controls as any).getPolarAngle?.bind(controls);
+        return {
+            azimuth: typeof getAz === "function" ? getAz() : 0,
+            polar: typeof getPol === "function" ? getPol() : Math.PI / 4,
+        };
+    }
+
+    function setControlsAnglesSafe(azimuth: number, polar: number) {
+        // Newer three exposes setAzimuthalAngle / setPolarAngle.
+        const setAz = (controls as any).setAzimuthalAngle?.bind(controls);
+        const setPol = (controls as any).setPolarAngle?.bind(controls);
+
+        if (typeof setAz === "function" && typeof setPol === "function") {
+            setAz(azimuth);
+            setPol(polar);
+            controls.update();
+            return;
+        }
+
+        // Fallback: rotate camera directly to look at a direction
+        // (keeps the “standing in the middle” feel even if controls lacks setters)
+        const dir = new THREE.Vector3();
+        dir.setFromSphericalCoords(1, polar, azimuth);
+        const lookAt = dir.clone().multiplyScalar(10);
+        camera.lookAt(lookAt);
+    }
+
+    function aimAtWorldPoint(worldPoint: THREE.Vector3) {
+        // We’re “at the origin”, so direction is point normalized.
+        const dir = worldPoint.clone().normalize();
+        // Convert direction -> spherical angles compatible with OrbitControls
+        // In three: Spherical(phi=polar from +Y, theta=azimuth around Y from +Z toward +X)
+        const spherical = new THREE.Spherical().setFromVector3(dir);
+        let targetPolar = spherical.phi;
+        let targetAz = spherical.theta;
+
+        // Clamp to our allowed range (zenith..horizon)
+        targetPolar = THREE.MathUtils.clamp(targetPolar, controls.minPolarAngle, controls.maxPolarAngle);
+
+        return { targetAz, targetPolar };
+    }
+
+    function easeInOutCubic(t: number) {
+        return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+    }
+
+    function animateFocusTo(mesh: THREE.Object3D) {
+        cancelFocusAnim();
+
+        const { azimuth: startAz, polar: startPolar } = getControlsAnglesSafe();
+        const startFov = camera.fov;
+
+        const { targetAz, targetPolar } = aimAtWorldPoint(mesh.getWorldPosition(new THREE.Vector3()));
+        const endFov = THREE.MathUtils.clamp(env.focusZoomFov!, env.minFov!, env.maxFov!);
+
+        const start = performance.now();
+        const dur = Math.max(120, env.focusDurationMs || 650);
+
+        const tick = (now: number) => {
+            const t = THREE.MathUtils.clamp((now - start) / dur, 0, 1);
+            const k = easeInOutCubic(t);
+
+            // Interpolate angles (shortest path for azimuth)
+            let dAz = targetAz - startAz;
+            // wrap to [-PI, PI]
+            dAz = ((dAz + Math.PI) % (Math.PI * 2)) - Math.PI;
+
+            const curAz = startAz + dAz * k;
+            const curPolar = THREE.MathUtils.lerp(startPolar, targetPolar, k);
+            setControlsAnglesSafe(curAz, curPolar);
+
+            camera.fov = THREE.MathUtils.lerp(startFov, endFov, k);
+            camera.updateProjectionMatrix();
+
+            if (t < 1) {
+                focusAnimRaf = requestAnimationFrame(tick);
+            } else {
+                focusAnimRaf = 0;
+            }
+        };
+
+        focusAnimRaf = requestAnimationFrame(tick);
     }
 
     function onPointerUp(ev: PointerEvent) {
         if (isDragging) return;
+
         const node = pick(ev);
-        if (node) handlers.onSelect?.(node);
+        if (!node) return;
+
+        // fire your existing handler
+        handlers.onSelect?.(node);
+
+        // optional: also do Stellarium-like “aim + zoom” on select
+        if (env.focusOnSelect) {
+            const mesh = meshById.get(node.id);
+            if (mesh) animateFocusTo(mesh);
+        }
     }
 
-    function onChange() {
-        isDragging = true;
-    }
-
+    // ---------------------------
+    // Lifecycle
+    // ---------------------------
     function start() {
         if (running) return;
         running = true;
 
+        resize();
         window.addEventListener("resize", resize);
+
         renderer.domElement.addEventListener("pointermove", onPointerMove);
         renderer.domElement.addEventListener("pointerdown", onPointerDown);
         renderer.domElement.addEventListener("pointerup", onPointerUp);
-        renderer.domElement.addEventListener("wheel", onWheel, { passive: false });
+
+        // wheel FOV zoom (passive:false so preventDefault works)
+        renderer.domElement.addEventListener("wheel", onWheelFov, { passive: false });
+
+        if (env.resetFovOnDblClick) {
+            renderer.domElement.addEventListener("dblclick", onDblClickResetFov);
+        }
+
         controls.addEventListener("change", onChange);
 
         const tick = () => {
@@ -308,17 +600,33 @@ export function createEngine({
     function stop() {
         running = false;
         cancelAnimationFrame(raf);
+        cancelFocusAnim();
+
         window.removeEventListener("resize", resize);
+
         renderer.domElement.removeEventListener("pointermove", onPointerMove);
         renderer.domElement.removeEventListener("pointerdown", onPointerDown);
         renderer.domElement.removeEventListener("pointerup", onPointerUp);
-        renderer.domElement.removeEventListener("wheel", onWheel);
+        renderer.domElement.removeEventListener("wheel", onWheelFov as any);
+        renderer.domElement.removeEventListener("dblclick", onDblClickResetFov as any);
+
         controls.removeEventListener("change", onChange);
     }
 
     function dispose() {
         stop();
         clearRoot();
+
+        // env groups
+        for (const child of [...groundGroup.children]) {
+            groundGroup.remove(child);
+            disposeObject(child);
+        }
+        for (const child of [...backdropGroup.children]) {
+            backdropGroup.remove(child);
+            disposeObject(child);
+        }
+
         controls.dispose();
         renderer.dispose();
         renderer.domElement.remove();
