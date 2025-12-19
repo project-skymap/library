@@ -23,17 +23,70 @@ export function createEngine({
     container.appendChild(renderer.domElement);
 
     const scene = new THREE.Scene();
-    const camera = new THREE.PerspectiveCamera(60, 1, 0.1, 10000);
-    // Camera inside the sphere, looking out
-    camera.position.set(0, 0, 0.1);
+    const camera = new THREE.PerspectiveCamera(90, window.innerWidth / window.innerHeight, 0.1, 5000);
+    camera.position.set(0, 0, 0.01);
+    // Camera inside the sphere, looking out, slightly above the 'ground'
 
     const controls = new OrbitControls(camera, renderer.domElement);
     controls.enableDamping = true;
     controls.dampingFactor = 0.05;
     controls.enablePan = false;
-    controls.enableZoom = false;
+    controls.enableZoom = false; // We will handle zoom via FOV
     controls.rotateSpeed = -0.5; // Invert to feel like looking around
-    controls.target.set(0, 0, 0);
+    controls.target.set(0, 1, 0); // Look from eye level
+
+    // Limit vertical rotation so we don't look 'through' the floor
+    // In our inverted setup (rotateSpeed = -0.5):
+    const EPS = THREE.MathUtils.degToRad(0.5);
+    controls.minPolarAngle = EPS; // Prevent looking too far down
+    controls.maxPolarAngle = Math.PI/2 - EPS;       // Allow looking straight up
+
+    controls.minAzimuthAngle = -Infinity;
+    controls.maxAzimuthAngle =  Infinity;
+
+    // --- CUSTOM ZOOM (FOV) ---
+    function onWheel(ev: WheelEvent) {
+        ev.preventDefault();
+        const delta = ev.deltaY > 0 ? 1 : -1;
+        const newFov = THREE.MathUtils.clamp(camera.fov + delta * 2, 10, 100);
+        camera.fov = newFov;
+        camera.updateProjectionMatrix();
+    }
+
+    // --- ADD GROUND ---
+    const groundGroup = new THREE.Group();
+    
+    // Circular dark ground
+    const groundGeo = new THREE.CircleGeometry(1000, 64);
+    const groundMat = new THREE.MeshBasicMaterial({ color: 0x020202 });
+    const ground = new THREE.Mesh(groundGeo, groundMat);
+    ground.rotation.x = -Math.PI / 2;
+    ground.position.y = 0;
+    groundGroup.add(ground);
+
+    // Subtle Grid
+    const grid = new THREE.GridHelper(2000, 100, 0x222222, 0x111111);
+    grid.position.y = 0.01;
+    groundGroup.add(grid);
+    
+    scene.add(groundGroup);
+
+    // --- ADD SPACE BACKDROP (Procedural Stars) ---
+    const starCount = 5000;
+    const starGeo = new THREE.BufferGeometry();
+    const starPos = new Float32Array(starCount * 3);
+    for (let i = 0; i < starCount; i++) {
+        const r = 2000 + Math.random() * 1000; // Far beyond the constellations
+        const theta = Math.random() * Math.PI * 2;
+        const phi = Math.acos(2 * Math.random() - 1);
+        starPos[i * 3] = r * Math.sin(phi) * Math.cos(theta);
+        starPos[i * 3 + 1] = r * Math.sin(phi) * Math.sin(theta);
+        starPos[i * 3 + 2] = r * Math.cos(phi);
+    }
+    starGeo.setAttribute("position", new THREE.BufferAttribute(starPos, 3));
+    const starMat = new THREE.PointsMaterial({ color: 0x888888, size: 0.5, transparent: true, opacity: 0.5 });
+    const backdropStars = new THREE.Points(starGeo, starMat);
+    scene.add(backdropStars);
 
     const raycaster = new THREE.Raycaster();
     const pointer = new THREE.Vector2();
@@ -241,6 +294,7 @@ export function createEngine({
         renderer.domElement.addEventListener("pointermove", onPointerMove);
         renderer.domElement.addEventListener("pointerdown", onPointerDown);
         renderer.domElement.addEventListener("pointerup", onPointerUp);
+        renderer.domElement.addEventListener("wheel", onWheel, { passive: false });
         controls.addEventListener("change", onChange);
 
         const tick = () => {
@@ -258,6 +312,7 @@ export function createEngine({
         renderer.domElement.removeEventListener("pointermove", onPointerMove);
         renderer.domElement.removeEventListener("pointerdown", onPointerDown);
         renderer.domElement.removeEventListener("pointerup", onPointerUp);
+        renderer.domElement.removeEventListener("wheel", onWheel);
         controls.removeEventListener("change", onChange);
     }
 
