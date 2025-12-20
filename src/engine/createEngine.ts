@@ -319,7 +319,12 @@ export function createEngine({
         camera.fov = cfg.camera?.fov ?? env.defaultFov;
         camera.updateProjectionMatrix();
 
-        const laidOut = computeLayoutPositions(model, cfg.layout);
+        // Default to placing content at a "sky-like" radius if not specified
+        const layoutCfg = {
+            ...cfg.layout,
+            radius: cfg.layout?.radius ?? 2000,
+        };
+        const laidOut = computeLayoutPositions(model, layoutCfg);
 
         // Create meshes
         for (const n of laidOut.nodes) {

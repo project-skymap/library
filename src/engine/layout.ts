@@ -4,8 +4,8 @@ export function computeLayoutPositions(
     model: SceneModel,
     layout?: { mode?: "radial" | "grid" | "force" | "spherical"; radius?: number; chapterRingSpacing?: number }
 ): SceneModel {
-    const mode = layout?.mode ?? "radial";
-    const radius = layout?.radius ?? 100;
+    const mode = layout?.mode ?? "spherical";
+    const radius = layout?.radius ?? 2000;
     const ringSpacing = layout?.chapterRingSpacing ?? 15;
 
     const childrenMap = new Map<string, SceneNode[]>();

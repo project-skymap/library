@@ -40,7 +40,7 @@ export type StarMapConfig = {
     };
 
     layout?: {
-        mode?: "radial" | "grid" | "force";
+        mode?: "radial" | "grid" | "force" | "spherical";
         radius?: number; // radial
         chapterRingSpacing?: number;
     };
