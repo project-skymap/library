@@ -680,26 +680,11 @@ export function createEngine({
             // Factor to control how much they grow. 
             // We want stars to stay point-like but be visible.
             const scaleFactor = Math.max(1, 1 + (fov - minZoomFov) * 0.05);
-            const time = performance.now() * 0.001;
 
             for (let i = 0; i < dynamicObjects.length; i++) {
                 const item = dynamicObjects[i];
-                let s = item.baseScale * scaleFactor;
-                
-                // If it's a star, we can also dim it slightly when zoomed in for realism
-                if (item.type === "star") {
-                    const sprite = item.obj as THREE.Sprite;
-                    
-                    // Subtle twinkling
-                    // We use the object's position to seed the phase so they don't all twinkle in sync
-                    const phase = (item.obj.position.x + item.obj.position.y + item.obj.position.z) * 10;
-                    const twinkle = 1.0 + Math.sin(time * 3 + phase) * 0.15;
-                    
-                    item.obj.scale.setScalar(s * twinkle);
-                } 
-                else {
-                    item.obj.scale.setScalar(s);
-                }
+                const s = item.baseScale * scaleFactor;
+                item.obj.scale.setScalar(s);
             }
 
             controls.update();
