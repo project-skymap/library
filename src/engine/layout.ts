@@ -101,6 +101,56 @@ export function computeLayoutPositions(
             currentAzimuth += angleSpan;
         }
 
+        // Bubble up positions to Divisions (L1) and Testaments (L0)
+        // Helper to centroid children
+        const setCentroid = (node: SceneNode) => {
+            const children = childrenMap.get(node.id) ?? [];
+            if (children.length === 0) return;
+
+            let x = 0, y = 0, z = 0;
+            let count = 0;
+            for (const child of children) {
+                // Ensure child has position (recurse if needed, but we built bottom-up sort of)
+                // Actually books are done. Divisions need books. Testaments need divisions.
+                // So we can just process L1 then L0.
+                const uChild = updatedNodeMap.get(child.id)!;
+                const cx = (uChild.meta as any).x;
+                if (typeof cx === 'number') {
+                    x += cx;
+                    y += (uChild.meta as any).y;
+                    z += (uChild.meta as any).z;
+                    count++;
+                }
+            }
+            
+            if (count > 0) {
+                const uNode = updatedNodeMap.get(node.id)!;
+                // Normalize to radius? Or just keep centroid?
+                // Centroid might be deep inside sphere if children span a wide arc.
+                // Let's project back to radius to keep them "on the sky".
+                const len = Math.sqrt(x*x + y*y + z*z);
+                if (len > 0.001) {
+                    const scale = radius / len;
+                    (uNode.meta as any).x = x * scale;
+                    (uNode.meta as any).y = y * scale;
+                    (uNode.meta as any).z = z * scale;
+                } else {
+                    // fallback if children cancel out (unlikely on a hemisphere/sphere section)
+                    (uNode.meta as any).x = 0;
+                    (uNode.meta as any).y = radius; // zenith?
+                    (uNode.meta as any).z = 0;
+                }
+            }
+        };
+
+        // 1. Divisions (L1) - depend on Books (L2) which are already set
+        const divisions = model.nodes.filter(n => n.level === 1);
+        divisions.forEach(setCentroid);
+
+        // 2. Testaments (L0) - depend on Divisions (L1)
+        const testaments = model.nodes.filter(n => n.level === 0);
+        testaments.forEach(setCentroid);
+
         return { ...model, nodes: updatedNodes };
     }
 

@@ -332,29 +332,46 @@ export function createEngine({
         for (const n of laidOut.nodes) {
             nodeById.set(n.id, n);
 
-            const geom = new THREE.SphereGeometry(1, 16, 16);
-            const mat = new THREE.MeshBasicMaterial({ color: 0xffffff });
-            const mesh = new THREE.Mesh(geom, mat);
+            const x = (n.meta?.x as number) ?? 0;
+            const y = (n.meta?.y as number) ?? 0;
+            const z = (n.meta?.z as number) ?? 0;
 
-            mesh.position.set(
-                (n.meta?.x as number) ?? 0,
-                (n.meta?.y as number) ?? 0,
-                (n.meta?.z as number) ?? 0
-            );
+            // Level 3: Chapters -> Stars (Spheres)
+            if (n.level === 3) {
+                const geom = new THREE.SphereGeometry(1, 16, 16);
+                const mat = new THREE.MeshBasicMaterial({ color: 0xffffff });
+                const mesh = new THREE.Mesh(geom, mat);
 
-            // Label
-            if (n.label) {
-                const labelSprite = createTextSprite(n.label);
-                if (labelSprite) {
-                    labelSprite.position.set(0, 2.5, 0);
-                    labelSprite.visible = n.level < 3; // show higher levels by default
-                    mesh.add(labelSprite);
+                mesh.position.set(x, y, z);
+                mesh.userData = { id: n.id, level: n.level };
+                
+                // Hidden label for hover
+                if (n.label) {
+                    const labelSprite = createTextSprite(n.label);
+                    if (labelSprite) {
+                        labelSprite.position.set(0, 2.5, 0);
+                        labelSprite.visible = false;
+                        mesh.add(labelSprite);
+                    }
+                }
+
+                root.add(mesh);
+                meshById.set(n.id, mesh);
+            }
+            // Level 1 (Division) or 2 (Book) -> Text Labels on the Sky
+            else if (n.level === 1 || n.level === 2) {
+                if (n.label) {
+                    // Use a slightly larger/different color font for structural labels?
+                    // For now, keep default white but maybe scale up?
+                    const labelSprite = createTextSprite(n.label, "#aaddee"); 
+                    if (labelSprite) {
+                        labelSprite.position.set(x, y, z);
+                        // Scale up structural labels slightly
+                        labelSprite.scale.multiplyScalar(2.5);
+                        root.add(labelSprite);
+                    }
                 }
             }
-
-            mesh.userData = { id: n.id, level: n.level };
-            root.add(mesh);
-            meshById.set(n.id, mesh);
         }
 
         applyVisuals({ model: laidOut, cfg, meshById });
@@ -606,6 +623,10 @@ export function createEngine({
 
         const tick = () => {
             raf = requestAnimationFrame(tick);
+            
+            // Damping rotation sensitivity based on zoom level
+            controls.rotateSpeed = camera.fov / (env.defaultFov || 90);
+            
             controls.update();
             renderer.render(scene, camera);
         };
