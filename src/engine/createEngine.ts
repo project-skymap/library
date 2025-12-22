@@ -70,8 +70,10 @@ export function createEngine({
     const EPS = THREE.MathUtils.degToRad(0.05);
     controls.minAzimuthAngle = -Infinity;
     controls.maxAzimuthAngle = Infinity;
-    controls.minPolarAngle = EPS; // near zenith
-    controls.maxPolarAngle = Math.PI / 2 - EPS; // down to horizon
+    // OrbitControls: 0=top(looking down), PI=bottom(looking up).
+    // We want to look UP at the sky, so we need range [PI/2, PI].
+    controls.minPolarAngle = Math.PI / 2 + EPS; 
+    controls.maxPolarAngle = Math.PI - EPS; 
     controls.update();
 
     // ---------------------------
@@ -84,11 +86,11 @@ export function createEngine({
 
         defaultFov: 90,
         minFov: 1,
-        maxFov: 175,
+        maxFov: 110,
         fovWheelSensitivity: 0.04,
         resetFovOnDblClick: true,
 
-        focusOnSelect: true,
+        focusOnSelect: false,
         focusZoomFov: 18,
         focusDurationMs: 650,
     } satisfies EngineConfig;
@@ -376,7 +378,7 @@ export function createEngine({
         handlers = next;
     }
 
-    function pick(ev: PointerEvent) {
+    function pick(ev: MouseEvent) {
         const rect = renderer.domElement.getBoundingClientRect();
         pointer.x = ((ev.clientX - rect.left) / rect.width) * 2 - 1;
         pointer.y = -(((ev.clientY - rect.top) / rect.height) * 2 - 1);
@@ -452,7 +454,16 @@ export function createEngine({
         }
     };
 
-    const onDblClickResetFov = () => {
+    const onDblClick = (ev: MouseEvent) => {
+        const node = pick(ev);
+        if (node) {
+            const mesh = meshById.get(node.id);
+            if (mesh) {
+                animateFocusTo(mesh);
+                return;
+            }
+        }
+
         if (!env.resetFovOnDblClick) return;
         camera.fov = env.defaultFov!;
         camera.updateProjectionMatrix();
@@ -500,7 +511,8 @@ export function createEngine({
 
     function aimAtWorldPoint(worldPoint: THREE.Vector3) {
         // We’re “at the origin”, so direction is point normalized.
-        const dir = worldPoint.clone().normalize();
+        // OrbitControls places camera relative to target. To look AT 'dir', camera must be at '-dir'.
+        const dir = worldPoint.clone().normalize().negate();
         // Convert direction -> spherical angles compatible with OrbitControls
         // In three: Spherical(phi=polar from +Y, theta=azimuth around Y from +Z toward +X)
         const spherical = new THREE.Spherical().setFromVector3(dir);
@@ -588,9 +600,7 @@ export function createEngine({
         // wheel FOV zoom (passive:false so preventDefault works)
         renderer.domElement.addEventListener("wheel", onWheelFov, { passive: false });
 
-        if (env.resetFovOnDblClick) {
-            renderer.domElement.addEventListener("dblclick", onDblClickResetFov);
-        }
+        renderer.domElement.addEventListener("dblclick", onDblClick);
 
         controls.addEventListener("change", onChange);
 
@@ -613,7 +623,7 @@ export function createEngine({
         renderer.domElement.removeEventListener("pointerdown", onPointerDown);
         renderer.domElement.removeEventListener("pointerup", onPointerUp);
         renderer.domElement.removeEventListener("wheel", onWheelFov as any);
-        renderer.domElement.removeEventListener("dblclick", onDblClickResetFov as any);
+        renderer.domElement.removeEventListener("dblclick", onDblClick);
 
         controls.removeEventListener("change", onChange);
     }
