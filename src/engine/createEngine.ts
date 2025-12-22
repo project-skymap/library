@@ -232,7 +232,7 @@ export function createEngine({
 
     const nodeById = new Map<string, SceneNode>();
     const meshById = new Map<string, THREE.Object3D>();
-    const dynamicObjects: { obj: THREE.Object3D; baseScale: number; type: "star" | "label" }[] = [];
+    const dynamicObjects: { obj: THREE.Object3D; initialScale: THREE.Vector3; type: "star" | "label" }[] = [];
 
     // ---------------------------
     // Resize
@@ -378,7 +378,7 @@ export function createEngine({
                 sprite.scale.setScalar(baseScale);
 
                 // Add to dynamic scaling list
-                dynamicObjects.push({ obj: sprite, baseScale, type: "star" });
+                dynamicObjects.push({ obj: sprite, initialScale: sprite.scale.clone(), type: "star" });
 
                 // Hidden label for hover
                 if (n.label) {
@@ -407,7 +407,7 @@ export function createEngine({
                         labelSprite.scale.multiplyScalar(baseScale);
                         root.add(labelSprite);
 
-                        dynamicObjects.push({ obj: labelSprite, baseScale, type: "label" });
+                        dynamicObjects.push({ obj: labelSprite, initialScale: labelSprite.scale.clone(), type: "label" });
                     }
                 }
             }
@@ -691,8 +691,8 @@ export function createEngine({
 
             for (let i = 0; i < dynamicObjects.length; i++) {
                 const item = dynamicObjects[i];
-                const s = item.baseScale * scaleFactor;
-                item.obj.scale.setScalar(s);
+                // Scale from INITIAL vector to preserve aspect ratio
+                item.obj.scale.copy(item.initialScale).multiplyScalar(scaleFactor);
 
                 // Gaze check for labels
                 if (item.type === "label") {
