@@ -399,7 +399,10 @@ export function createEngine({
                     // Level 1 (e.g. "Gospels") vs Level 2 (e.g. "John")
                     const isBook = n.level === 2;
                     const color = isBook ? "#ffffff" : "#38bdf8";
-                    const baseScale = isBook ? 6.0 : 10.0; // Books are 6x, Divisions are 10x
+                    
+                    // Division labels: smaller, static
+                    // Book labels: larger, dynamic
+                    const baseScale = isBook ? 3.0 : 7.0; 
 
                     const labelSprite = createTextSprite(n.label, color); 
                     if (labelSprite) {
@@ -407,7 +410,11 @@ export function createEngine({
                         labelSprite.scale.multiplyScalar(baseScale);
                         root.add(labelSprite);
 
-                        dynamicObjects.push({ obj: labelSprite, initialScale: labelSprite.scale.clone(), type: "label" });
+                        // Only add Books to dynamicObjects so they scale/fade.
+                        // Divisions stay static.
+                        if (isBook) {
+                            dynamicObjects.push({ obj: labelSprite, initialScale: labelSprite.scale.clone(), type: "label" });
+                        }
                     }
                 }
             }
