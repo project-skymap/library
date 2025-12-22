@@ -681,10 +681,51 @@ export function createEngine({
             // We want stars to stay point-like but be visible.
             const scaleFactor = Math.max(1, 1 + (fov - minZoomFov) * 0.05);
 
+            // Gaze-based fading for labels
+            const cameraDir = new THREE.Vector3();
+            camera.getWorldDirection(cameraDir);
+            
+            // Re-use vector to avoid GC
+            const objPos = new THREE.Vector3();
+            const objDir = new THREE.Vector3();
+
             for (let i = 0; i < dynamicObjects.length; i++) {
                 const item = dynamicObjects[i];
                 const s = item.baseScale * scaleFactor;
                 item.obj.scale.setScalar(s);
+
+                // Gaze check for labels
+                if (item.type === "label") {
+                    const sprite = item.obj as THREE.Sprite;
+                    
+                    // Get direction to object
+                    // Since camera is at 0,0,0 (mostly), direction is just position normalized.
+                    // But our camera might be slightly offset (0,0,0.01).
+                    // Let's be precise:
+                    sprite.getWorldPosition(objPos);
+                    objDir.subVectors(objPos, camera.position).normalize();
+                    
+                    // Dot product: 1.0 = direct center, 0.0 = 90 deg off
+                    const dot = cameraDir.dot(objDir);
+                    
+                    // Define "focus cone"
+                    // 1.0 -> 0.95 (approx 18 deg): Full opacity
+                    // 0.95 -> 0.85 (approx 30 deg): Fade out
+                    // < 0.85: Invisible
+                    const fullVisibleDot = 0.96;
+                    const invisibleDot = 0.88;
+                    
+                    let opacity = 0;
+                    if (dot >= fullVisibleDot) {
+                        opacity = 1;
+                    } else if (dot > invisibleDot) {
+                        opacity = (dot - invisibleDot) / (fullVisibleDot - invisibleDot);
+                    }
+                    
+                    // Smooth transition or direct? Direct is fine for now, standard lerp.
+                    sprite.material.opacity = opacity;
+                    sprite.visible = opacity > 0.01;
+                }
             }
 
             controls.update();
