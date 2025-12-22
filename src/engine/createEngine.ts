@@ -232,6 +232,7 @@ export function createEngine({
 
     const nodeById = new Map<string, SceneNode>();
     const meshById = new Map<string, THREE.Object3D>();
+    const dynamicObjects: { obj: THREE.Object3D; baseScale: number; type: "star" | "label" }[] = [];
 
     // ---------------------------
     // Resize
@@ -302,6 +303,27 @@ export function createEngine({
         return sprite;
     }
 
+    function createStarTexture() {
+        const canvas = document.createElement("canvas");
+        canvas.width = 64;
+        canvas.height = 64;
+        const ctx = canvas.getContext("2d")!;
+
+        const gradient = ctx.createRadialGradient(32, 32, 0, 32, 32, 32);
+        gradient.addColorStop(0, "rgba(255, 255, 255, 1)");
+        gradient.addColorStop(0.2, "rgba(255, 255, 255, 0.8)");
+        gradient.addColorStop(0.5, "rgba(255, 255, 255, 0.2)");
+        gradient.addColorStop(1, "rgba(255, 255, 255, 0)");
+
+        ctx.fillStyle = gradient;
+        ctx.fillRect(0, 0, 64, 64);
+
+        const tex = new THREE.CanvasTexture(canvas);
+        return tex;
+    }
+
+    const starTexture = createStarTexture();
+
     function clearRoot() {
         for (const child of [...root.children]) {
             root.remove(child);
@@ -309,6 +331,7 @@ export function createEngine({
         }
         nodeById.clear();
         meshById.clear();
+        dynamicObjects.length = 0;
     }
 
     function buildFromModel(model: SceneModel, cfg: StarMapConfig) {
@@ -336,39 +359,55 @@ export function createEngine({
             const y = (n.meta?.y as number) ?? 0;
             const z = (n.meta?.z as number) ?? 0;
 
-            // Level 3: Chapters -> Stars (Spheres)
+            // Level 3: Chapters -> Stars (Sprites)
             if (n.level === 3) {
-                const geom = new THREE.SphereGeometry(1, 16, 16);
-                const mat = new THREE.MeshBasicMaterial({ color: 0xffffff });
-                const mesh = new THREE.Mesh(geom, mat);
+                const mat = new THREE.SpriteMaterial({ 
+                    map: starTexture, 
+                    color: 0xffffff,
+                    transparent: true,
+                    blending: THREE.AdditiveBlending,
+                    depthWrite: false
+                });
+                const sprite = new THREE.Sprite(mat);
 
-                mesh.position.set(x, y, z);
-                mesh.userData = { id: n.id, level: n.level };
+                sprite.position.set(x, y, z);
+                sprite.userData = { id: n.id, level: n.level };
                 
+                // Base size for stars
+                const baseScale = 2.0;
+                sprite.scale.setScalar(baseScale);
+
+                // Add to dynamic scaling list
+                dynamicObjects.push({ obj: sprite, baseScale, type: "star" });
+
                 // Hidden label for hover
                 if (n.label) {
                     const labelSprite = createTextSprite(n.label);
                     if (labelSprite) {
-                        labelSprite.position.set(0, 2.5, 0);
+                        labelSprite.position.set(0, 1.2, 0);
                         labelSprite.visible = false;
-                        mesh.add(labelSprite);
+                        sprite.add(labelSprite);
                     }
                 }
 
-                root.add(mesh);
-                meshById.set(n.id, mesh);
+                root.add(sprite);
+                meshById.set(n.id, sprite);
             }
             // Level 1 (Division) or 2 (Book) -> Text Labels on the Sky
             else if (n.level === 1 || n.level === 2) {
                 if (n.label) {
-                    // Use a slightly larger/different color font for structural labels?
-                    // For now, keep default white but maybe scale up?
-                    const labelSprite = createTextSprite(n.label, "#aaddee"); 
+                    // Level 1 (e.g. "Gospels") vs Level 2 (e.g. "John")
+                    const isBook = n.level === 2;
+                    const color = isBook ? "#ffffff" : "#38bdf8";
+                    const baseScale = isBook ? 6.0 : 10.0; // Books are 6x, Divisions are 10x
+
+                    const labelSprite = createTextSprite(n.label, color); 
                     if (labelSprite) {
                         labelSprite.position.set(x, y, z);
-                        // Scale up structural labels slightly
-                        labelSprite.scale.multiplyScalar(2.5);
+                        labelSprite.scale.multiplyScalar(baseScale);
                         root.add(labelSprite);
+
+                        dynamicObjects.push({ obj: labelSprite, baseScale, type: "label" });
                     }
                 }
             }
@@ -402,8 +441,8 @@ export function createEngine({
 
         raycaster.setFromCamera(pointer, camera);
         const hits = raycaster.intersectObjects(root.children, true);
-        // only pick the spheres (not their labels)
-        const hit = hits.find((h) => h.object.type === "Mesh");
+        // pick meshes or sprites
+        const hit = hits.find((h) => h.object.type === "Mesh" || h.object.type === "Sprite");
         const id = hit?.object?.userData?.id as string | undefined;
         return id ? nodeById.get(id) : undefined;
     }
@@ -434,7 +473,12 @@ export function createEngine({
                 const n = nodeById.get(nextId);
                 if (mesh && n && n.level === 3) {
                     const label = mesh.children.find((c) => c instanceof THREE.Sprite);
-                    if (label) label.visible = true;
+                    if (label) {
+                        label.visible = true;
+                        // Since we are using sprites now, they look at camera.
+                        // We might want to offset the label so it doesn't overlap the star.
+                        label.position.set(0, 0.8, 0); 
+                    }
                 }
             }
 
@@ -627,6 +671,37 @@ export function createEngine({
             // Damping rotation sensitivity based on zoom level
             controls.rotateSpeed = camera.fov / (env.defaultFov || 90);
             
+            // Dynamic scaling based on FOV (Zoomed out = larger stars/labels)
+            // Reference: FOV 15 is "close up" (scale 1x). FOV 90 is "wide" (scale larger).
+            // Formula: scale = 1 + (fov - 15) * factor
+            const fov = camera.fov;
+            const minZoomFov = 15; // The FOV where items should be "normal size"
+            
+            // Factor to control how much they grow. 
+            // We want stars to stay point-like but be visible.
+            const scaleFactor = Math.max(1, 1 + (fov - minZoomFov) * 0.05);
+            const time = performance.now() * 0.001;
+
+            for (let i = 0; i < dynamicObjects.length; i++) {
+                const item = dynamicObjects[i];
+                let s = item.baseScale * scaleFactor;
+                
+                // If it's a star, we can also dim it slightly when zoomed in for realism
+                if (item.type === "star") {
+                    const sprite = item.obj as THREE.Sprite;
+                    
+                    // Subtle twinkling
+                    // We use the object's position to seed the phase so they don't all twinkle in sync
+                    const phase = (item.obj.position.x + item.obj.position.y + item.obj.position.z) * 10;
+                    const twinkle = 1.0 + Math.sin(time * 3 + phase) * 0.15;
+                    
+                    item.obj.scale.setScalar(s * twinkle);
+                } 
+                else {
+                    item.obj.scale.setScalar(s);
+                }
+            }
+
             controls.update();
             renderer.render(scene, camera);
         };

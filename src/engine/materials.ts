@@ -3,7 +3,9 @@ import type { SceneModel, StarMapConfig } from "../types";
 
 function matches(node: any, when: Record<string, unknown>) {
     for (const [k, v] of Object.entries(when)) {
-        if (node[k] !== v) return false;
+        // check top level first, then meta
+        const val = node[k] !== undefined ? node[k] : node.meta?.[k];
+        if (val !== v) return false;
     }
     return true;
 }
