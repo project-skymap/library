@@ -145,7 +145,28 @@ export function computeLayoutPositions(
 
         // 1. Divisions (L1) - depend on Books (L2) which are already set
         const divisions = model.nodes.filter(n => n.level === 1);
-        divisions.forEach(setCentroid);
+        divisions.forEach(d => {
+            setCentroid(d);
+            const uNode = updatedNodeMap.get(d.id)!;
+            const meta = uNode.meta as any;
+            
+            // Override elevation for Division labels to be "just above horizon"
+            // Horizon is y=0 in local coordinates (roughly), let's set a small positive y
+            // or better, project to a fixed elevation like 5 degrees.
+            const lenXZ = Math.sqrt(meta.x * meta.x + meta.z * meta.z);
+            if (lenXZ > 0.1) {
+                const el = 5 * (Math.PI / 180); // 5 degrees
+                // r = radius
+                // x = r * cos(el) * cos(az)
+                // z = r * cos(el) * sin(az)
+                // y = r * sin(el)
+                // We keep the X/Z direction (azimuth) from the centroid
+                const scaleXZ = (radius * Math.cos(el)) / lenXZ;
+                meta.x *= scaleXZ;
+                meta.z *= scaleXZ;
+                meta.y = radius * Math.sin(el);
+            }
+        });
 
         // 2. Testaments (L0) - depend on Divisions (L1)
         const testaments = model.nodes.filter(n => n.level === 0);
