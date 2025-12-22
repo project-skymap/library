@@ -232,6 +232,7 @@ export function createEngine({
 
     const nodeById = new Map<string, SceneNode>();
     const meshById = new Map<string, THREE.Object3D>();
+    const lineByBookId = new Map<string, THREE.Line>();
     const dynamicObjects: { obj: THREE.Object3D; initialScale: THREE.Vector3; type: "star" | "label" }[] = [];
 
     // ---------------------------
@@ -331,6 +332,7 @@ export function createEngine({
         }
         nodeById.clear();
         meshById.clear();
+        lineByBookId.clear();
         dynamicObjects.length = 0;
     }
 
@@ -422,6 +424,52 @@ export function createEngine({
 
         applyVisuals({ model: laidOut, cfg, meshById });
 
+
+        // ---------------------------
+        // Draw Constellation Lines (Sequential)
+        // ---------------------------
+        const lineMat = new THREE.LineBasicMaterial({
+            color: 0x445566,
+            transparent: true,
+            opacity: 0.3,
+            depthWrite: false,
+            blending: THREE.AdditiveBlending
+        });
+
+        // Group by book
+        const bookMap = new Map<string, SceneNode[]>();
+        for (const n of laidOut.nodes) {
+            if (n.level === 3 && n.parent) {
+                const list = bookMap.get(n.parent) ?? [];
+                list.push(n);
+                bookMap.set(n.parent, list);
+            }
+        }
+
+        for (const [bookId, chapters] of bookMap.entries()) {
+            // Sort by chapter number
+            chapters.sort((a, b) => {
+                const cA = (a.meta?.chapter as number) || 0;
+                const cB = (b.meta?.chapter as number) || 0;
+                return cA - cB;
+            });
+
+            if (chapters.length < 2) continue;
+
+            const points: THREE.Vector3[] = [];
+            for (const c of chapters) {
+                const x = (c.meta?.x as number) ?? 0;
+                const y = (c.meta?.y as number) ?? 0;
+                const z = (c.meta?.z as number) ?? 0;
+                points.push(new THREE.Vector3(x, y, z));
+            }
+
+            const geo = new THREE.BufferGeometry().setFromPoints(points);
+            const line = new THREE.Line(geo, lineMat);
+            root.add(line);
+            lineByBookId.set(bookId, line);
+        }
+
         resize();
     }
 
@@ -485,6 +533,12 @@ export function createEngine({
                         // Since we are using sprites now, they look at camera.
                         // We might want to offset the label so it doesn't overlap the star.
                         label.position.set(0, 0.8, 0); 
+                    }
+
+                    // Brighten lines on hover
+                    if (n.parent) {
+                        const line = lineByBookId.get(n.parent);
+                        if (line) (line.material as THREE.LineBasicMaterial).opacity = 0.8;
                     }
                 }
             }
@@ -732,6 +786,15 @@ export function createEngine({
                     // Smooth transition or direct? Direct is fine for now, standard lerp.
                     sprite.material.opacity = opacity;
                     sprite.visible = opacity > 0.01;
+
+                    // Also fade the corresponding constellation lines
+                    const bookId = nodeById.get(item.obj.userData.id)?.id;
+                    if (bookId) {
+                        const line = lineByBookId.get(bookId);
+                        if (line) {
+                            (line.material as THREE.LineBasicMaterial).opacity = 0.05 + opacity * 0.45;
+                        }
+                    }
                 }
             }
 
