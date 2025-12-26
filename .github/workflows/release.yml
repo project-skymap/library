@@ -30,9 +30,7 @@ jobs:
         run: npm install
 
       - name: Build Library
-        run: |
-          cd library
-          npm run build
+        run: npm run build
 
       - name: Configure Git
         run: |
