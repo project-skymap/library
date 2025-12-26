@@ -1,0 +1,90 @@
+name: Release
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+      id-token: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Build
+        run: npm run build
+
+      - name: Configure Git
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Remove -SNAPSHOT and update version
+        id: prepare_release
+        run: |
+          # Get current version
+          CURRENT_VERSION=$(node -p "require('./package.json').version")
+          
+          # Remove -SNAPSHOT if present
+          RELEASE_VERSION=${CURRENT_VERSION%-SNAPSHOT}
+          
+          echo "Releasing version: $RELEASE_VERSION"
+          
+          # Update package.json without creating a git tag yet
+          npm version $RELEASE_VERSION --no-git-tag-version --allow-same-version
+          
+          # Output for next steps
+          echo "version=$RELEASE_VERSION" >> $GITHUB_OUTPUT
+
+      - name: Publish to npm
+        run: npm publish --provenance
+
+      - name: Create Git Tag
+        run: |
+          git tag v${{ steps.prepare_release.outputs.version }}
+          git push origin v${{ steps.prepare_release.outputs.version }}
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: v${{ steps.prepare_release.outputs.version }}
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Bump version and add -SNAPSHOT
+        run: |
+          # Bump patch version
+          npm version patch --no-git-tag-version
+          
+          # Get the new patch version
+          NEW_VERSION=$(node -p "require('./package.json').version")
+          
+          # Append -SNAPSHOT
+          NEXT_VERSION="$NEW_VERSION-SNAPSHOT"
+          echo "Next version: $NEXT_VERSION"
+          
+          # Update package.json
+          npm version $NEXT_VERSION --no-git-tag-version
+          
+          # Commit and push changes
+          git add package.json
+          git commit -m "chore: bump version to $NEXT_VERSION [skip ci]"
+          git push origin main
