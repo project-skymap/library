@@ -340,7 +340,11 @@ export function createEngine({
         clearRoot();
 
         // background + camera
-        if (cfg.background) scene.background = new THREE.Color(cfg.background);
+        if (cfg.background && cfg.background !== "transparent") {
+            scene.background = new THREE.Color(cfg.background);
+        } else {
+            scene.background = null;
+        }
 
         // Respect config FOV if provided, otherwise use Stellarium-ish default
         camera.fov = cfg.camera?.fov ?? env.defaultFov;
@@ -473,16 +477,138 @@ export function createEngine({
         resize();
     }
 
-    function setConfig(cfg: StarMapConfig) {
-        let model = cfg.model;
-        if (!model && cfg.data && cfg.adapter) model = cfg.adapter(cfg.data);
-
-        if (!model) {
-            clearRoot();
+    function applyFocus(targetId: string | undefined, animate: boolean = true) {
+        if (!targetId) {
+            // Reset: show all full opacity
+            for (const [id, mesh] of meshById.entries()) {
+                mesh.traverse((obj: any) => {
+                    if (obj.material) obj.material.opacity = 1.0;
+                });
+                mesh.userData.interactive = true;
+            }
+            for (const line of lineByBookId.values()) {
+                line.visible = true;
+                (line.material as THREE.LineBasicMaterial).opacity = 0.3;
+            }
             return;
         }
 
-        buildFromModel(model, cfg);
+        // 1. Build downward graph
+        const childrenMap = new Map<string, string[]>();
+        for (const n of nodeById.values()) {
+            if (n.parent) {
+                const list = childrenMap.get(n.parent) ?? [];
+                list.push(n.id);
+                childrenMap.set(n.parent, list);
+            }
+        }
+
+        // 2. Find all descendants of targetId
+        const activeIds = new Set<string>();
+        const queue = [targetId];
+        activeIds.add(targetId);
+
+        while (queue.length > 0) {
+            const curr = queue.pop()!;
+            const kids = childrenMap.get(curr);
+            if (kids) {
+                for (const k of kids) {
+                    activeIds.add(k);
+                    queue.push(k);
+                }
+            }
+        }
+
+        // 3. Update visuals and interaction
+        for (const [id, mesh] of meshById.entries()) {
+            const isActive = activeIds.has(id);
+            const opacity = isActive ? 1.0 : 0.1;
+            
+            mesh.traverse((obj: any) => {
+                if (obj.material) obj.material.opacity = opacity;
+            });
+            
+            mesh.userData.interactive = isActive;
+        }
+
+        // 4. Update lines
+        for (const [bookId, line] of lineByBookId.entries()) {
+            const isActive = activeIds.has(bookId);
+            (line.material as THREE.LineBasicMaterial).opacity = isActive ? 0.3 : 0.05;
+        }
+
+        // 5. Animate (Focus)
+        if (animate) {
+            const targetMesh = meshById.get(targetId);
+            if (targetMesh) {
+                animateFocusTo(targetMesh);
+            } else {
+                // If no direct mesh, find centroid of all visible children
+                const sum = new THREE.Vector3();
+                let count = 0;
+                
+                // Iterate over all active IDs (descendants)
+                for (const id of activeIds) {
+                    const mesh = meshById.get(id);
+                    if (mesh) {
+                        sum.add(mesh.getWorldPosition(new THREE.Vector3()));
+                        count++;
+                    }
+                }
+
+                if (count > 0) {
+                    const centroid = sum.divideScalar(count);
+                    animateFocusTo(centroid);
+                }
+            }
+        }
+    }
+
+    let lastData: any = undefined;
+    let lastAdapter: any = undefined;
+    let lastModel: SceneModel | undefined = undefined;
+
+    function setConfig(cfg: StarMapConfig) {
+        let shouldRebuild = false;
+        let model = cfg.model;
+
+        // 1. Resolve Model and check for changes
+        if (!model && cfg.data && cfg.adapter) {
+            if (cfg.data !== lastData || cfg.adapter !== lastAdapter) {
+                model = cfg.adapter(cfg.data);
+                shouldRebuild = true;
+                lastData = cfg.data;
+                lastAdapter = cfg.adapter;
+                lastModel = model;
+            } else {
+                model = lastModel; // reuse
+            }
+        } else if (model) {
+            // direct model provided: assume it might have changed if strictly equal? 
+            // Or just always rebuild if 'model' prop is used directly (simpler).
+            shouldRebuild = true;
+            lastData = undefined;
+            lastAdapter = undefined;
+            lastModel = model;
+        }
+
+        if (shouldRebuild && model) {
+            buildFromModel(model, cfg);
+        }
+
+        // 2. Apply Visuals (if not rebuilding, we might still need to update visuals?)
+        // For now, let's assume visuals are static unless rebuild happens.
+        // Actually, 'applyVisuals' depends on the mesh map which is stable. 
+        // If we want to support dynamic visuals without rebuild, we'd call applyVisuals here.
+        // But the prompt specifically asked to fix the Zoom Reset issue, which is caused by buildFromModel.
+        
+        // 3. Apply Focus
+        if (cfg.focus?.nodeId) {
+            applyFocus(cfg.focus.nodeId, cfg.focus.animate);
+        } else {
+             // Reset if no focus provided
+             applyFocus(undefined, false);
+        }
     }
 
     function setHandlers(next: Handlers) {
@@ -495,9 +621,13 @@ export function createEngine({
         pointer.y = -(((ev.clientY - rect.top) / rect.height) * 2 - 1);
 
         raycaster.setFromCamera(pointer, camera);
+        
         const hits = raycaster.intersectObjects(root.children, true);
-        // pick meshes or sprites
-        const hit = hits.find((h) => h.object.type === "Mesh" || h.object.type === "Sprite");
+        // pick meshes or sprites, but only if they are interactive
+        const hit = hits.find((h) => 
+            (h.object.type === "Mesh" || h.object.type === "Sprite") && 
+            (h.object.userData.interactive !== false)
+        );
         const id = hit?.object?.userData?.id as string | undefined;
         return id ? nodeById.get(id) : undefined;
     }
@@ -651,13 +781,17 @@ export function createEngine({
         return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
     }
 
-    function animateFocusTo(mesh: THREE.Object3D) {
+    function animateFocusTo(target: THREE.Object3D | THREE.Vector3) {
         cancelFocusAnim();
 
         const { azimuth: startAz, polar: startPolar } = getControlsAnglesSafe();
         const startFov = camera.fov;
 
-        const { targetAz, targetPolar } = aimAtWorldPoint(mesh.getWorldPosition(new THREE.Vector3()));
+        const targetPos = target instanceof THREE.Object3D 
+            ? target.getWorldPosition(new THREE.Vector3()) 
+            : target;
+
+        const { targetAz, targetPolar } = aimAtWorldPoint(targetPos);
         const endFov = THREE.MathUtils.clamp(env.focusZoomFov!, env.minFov!, env.maxFov!);
 
         const start = performance.now();

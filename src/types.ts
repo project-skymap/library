@@ -39,6 +39,11 @@ export type StarMapConfig = {
         sizeBy?: Array<{ when: Record<string, unknown>; field: "weight"; scale: [number, number] }>;
     };
 
+    focus?: {
+        nodeId?: string;
+        animate?: boolean;
+    };
+
     layout?: {
         mode?: "radial" | "grid" | "force" | "spherical";
         radius?: number; // radial
