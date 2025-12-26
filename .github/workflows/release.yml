@@ -23,53 +23,58 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '20'
-          registry-url: 'https://registry.npmjs.org'
+          # We do NOT set registry-url here to avoid setup-node creating a .npmrc 
+          # that expects NODE_AUTH_TOKEN, which conflicts with OIDC.
 
       - name: Install dependencies
         run: npm install
 
-      - name: Build
-        run: npm run build
+      - name: Build Library
+        run: npm run build -w library
 
       - name: Configure Git
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
 
-      - name: Remove -SNAPSHOT and update version
-        id: prepare_release
+      - name: Prepare and Publish
+        id: publish
+        working-directory: library
         run: |
+          # Create .npmrc to map scope to public registry
+          echo "@project-skymap:registry=https://registry.npmjs.org/" > .npmrc
+          
           # Get current version
           CURRENT_VERSION=$(node -p "require('./package.json').version")
           
           # Remove -SNAPSHOT if present
           RELEASE_VERSION=${CURRENT_VERSION%-SNAPSHOT}
-          
           echo "Releasing version: $RELEASE_VERSION"
           
-          # Update package.json without creating a git tag yet
+          # Update package.json without creating a git tag
           npm version $RELEASE_VERSION --no-git-tag-version --allow-same-version
           
           # Output for next steps
           echo "version=$RELEASE_VERSION" >> $GITHUB_OUTPUT
-
-      - name: Publish to npm
-        run: npm publish --provenance
+          
+          # Publish to npm with provenance (uses OIDC)
+          npm publish --provenance --access public
 
       - name: Create Git Tag
         run: |
-          git tag v${{ steps.prepare_release.outputs.version }}
-          git push origin v${{ steps.prepare_release.outputs.version }}
+          git tag v${{ steps.publish.outputs.version }}
+          git push origin v${{ steps.publish.outputs.version }}
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v1
         with:
-          tag_name: v${{ steps.prepare_release.outputs.version }}
+          tag_name: v${{ steps.publish.outputs.version }}
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Bump version and add -SNAPSHOT
+        working-directory: library
         run: |
           # Bump patch version
           npm version patch --no-git-tag-version
