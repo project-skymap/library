@@ -23,8 +23,6 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '20'
-          # We do NOT set registry-url here to avoid setup-node creating a .npmrc 
-          # that expects NODE_AUTH_TOKEN, which conflicts with OIDC.
 
       - name: Install dependencies
         run: npm install
@@ -39,11 +37,7 @@ jobs:
 
       - name: Prepare and Publish
         id: publish
-        working-directory: .
         run: |
-          # Create .npmrc to map scope to public registry
-          echo "@project-skymap:registry=https://registry.npmjs.org/" > .npmrc
-          
           # Get current version
           CURRENT_VERSION=$(node -p "require('./package.json').version")
           
@@ -74,7 +68,6 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Bump version and add -SNAPSHOT
-        working-directory: library
         run: |
           # Bump patch version
           npm version patch --no-git-tag-version
