@@ -44,6 +44,9 @@ export function createEngine({
     renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
     renderer.setClearColor(0x000000, 1);
     container.appendChild(renderer.domElement);
+    // Ensure canvas fills the container (fixes HiDPI center alignment)
+    renderer.domElement.style.width = "100%";
+    renderer.domElement.style.height = "100%";
     // Prevent browser gestures from fighting pointer controls
     (renderer.domElement.style as any).touchAction = "none";
 

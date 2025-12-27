@@ -39,7 +39,7 @@ jobs:
 
       - name: Prepare and Publish
         id: publish
-        working-directory: library
+        working-directory: .
         run: |
           # Create .npmrc to map scope to public registry
           echo "@project-skymap:registry=https://registry.npmjs.org/" > .npmrc
