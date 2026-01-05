@@ -54,6 +54,8 @@ jobs:
           
           # Publish to npm with provenance (uses OIDC)
           npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Create Git Tag
         run: |
