@@ -245,6 +245,16 @@ export function createEngine({
     const lineByBookId = new Map<string, THREE.Line>();
     const dynamicObjects: { obj: THREE.Object3D; initialScale: THREE.Vector3; type: "star" | "label" }[] = [];
 
+    function getFullArrangement(): StarArrangement {
+        const arr: StarArrangement = {};
+        for (const [id, mesh] of meshById.entries()) {
+            arr[id] = {
+                position: [mesh.position.x, mesh.position.y, mesh.position.z]
+            };
+        }
+        return arr;
+    }
+
     function updateDragControls(editable: boolean) {
         if (!editable) {
             if (dragControls) {
@@ -271,27 +281,20 @@ export function createEngine({
 
         dragControls.addEventListener("dragstart", () => {
             controls.enabled = false;
-            // We set isDragging to true here to prevent click events (selection)
             isDragging = true;
         });
 
         dragControls.addEventListener("dragend", (event) => {
             controls.enabled = true;
-            // Keep isDragging true briefly to block the click event that follows mouseup
             setTimeout(() => { isDragging = false; }, 0);
 
             const obj = event.object;
             const id = obj.userData.id;
             
             if (id && currentConfig) {
-                const currentArr = currentConfig.arrangement || {};
-                const newArr = { ...currentArr };
-                newArr[id] = { position: [obj.position.x, obj.position.y, obj.position.z] };
-                
-                // Update local config reference
-                currentConfig.arrangement = newArr; 
-                
-                handlers.onArrangementChange?.(newArr);
+                // We update the local mesh position already (done by DragControls)
+                // Now we notify the handler with the FULL arrangement
+                handlers.onArrangementChange?.(getFullArrangement());
             }
         });
     }
@@ -1052,5 +1055,5 @@ export function createEngine({
         renderer.domElement.remove();
     }
 
-    return { setConfig, start, stop, dispose, setHandlers };
+    return { setConfig, start, stop, dispose, setHandlers, getFullArrangement };
 }

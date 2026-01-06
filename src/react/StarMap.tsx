@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useRef } from "react";
+import React, { useEffect, useRef, useImperativeHandle, forwardRef } from "react";
 import type { StarMapConfig, SceneNode, StarArrangement } from "../types";
 
 export type StarMapProps = {
@@ -11,11 +11,20 @@ export type StarMapProps = {
     onArrangementChange?: (arrangement: StarArrangement) => void;
 };
 
-export function StarMap({ config, className, onSelect, onHover, onArrangementChange }: StarMapProps) {
-    const containerRef = useRef<HTMLDivElement | null>(null);
-    const engineRef = useRef<any>(null);
+export type StarMapHandle = {
+    getFullArrangement: () => StarArrangement | undefined;
+};
 
-    useEffect(() => {
+export const StarMap = forwardRef<StarMapHandle, StarMapProps>(
+    ({ config, className, onSelect, onHover, onArrangementChange }, ref) => {
+        const containerRef = useRef<HTMLDivElement | null>(null);
+        const engineRef = useRef<any>(null);
+
+        useImperativeHandle(ref, () => ({
+            getFullArrangement: () => engineRef.current?.getFullArrangement?.()
+        }));
+
+        useEffect(() => {
         let disposed = false;
 
         async function init() {
@@ -52,4 +61,5 @@ export function StarMap({ config, className, onSelect, onHover, onArrangementCha
     }, [onSelect, onHover, onArrangementChange]);
 
     return <div ref={containerRef} className={className} style={{ width: "100%", height: "100%" }} />;
-}
+    }
+);
