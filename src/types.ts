@@ -22,6 +22,9 @@ export type SceneModel = {
     links: SceneLink[];
 };
 
+export type Vector3Arr = [number, number, number];
+export type StarArrangement = Record<string, { position: Vector3Arr }>;
+
 export type VisualRule =
     | { when: Record<string, unknown>; value: string } // e.g. color rule
     | { when: Record<string, unknown>; field: keyof SceneNode; scale: [number, number] };
@@ -29,6 +32,10 @@ export type VisualRule =
 export type StarMapConfig = {
     background?: string;
     camera?: { fov?: number; z?: number };
+
+    // Arrangement overrides
+    arrangement?: StarArrangement;
+    editable?: boolean;
 
     // Either provide nodes/links directly, or a raw dataset + adapter
     model?: SceneModel;

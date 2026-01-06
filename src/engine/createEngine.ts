@@ -1,12 +1,14 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls";
-import type { StarMapConfig, SceneModel, SceneNode } from "../types";
+import { DragControls } from "three/examples/jsm/controls/DragControls";
+import type { StarMapConfig, SceneModel, SceneNode, StarArrangement } from "../types";
 import { computeLayoutPositions } from "./layout";
 import { applyVisuals } from "./materials";
 
 type Handlers = {
     onSelect?: (node: SceneNode) => void;
     onHover?: (node?: SceneNode) => void;
+    onArrangementChange?: (arrangement: StarArrangement) => void;
 };
 
 type EngineConfig = {
@@ -32,10 +34,12 @@ export function createEngine({
                                  container,
                                  onSelect,
                                  onHover,
+                                 onArrangementChange,
                              }: {
     container: HTMLDivElement;
     onSelect?: Handlers["onSelect"];
     onHover?: Handlers["onHover"];
+    onArrangementChange?: Handlers["onArrangementChange"];
 }) {
     // ---------------------------
     // Renderer / Scene / Camera
@@ -229,14 +233,68 @@ export function createEngine({
 
     let raf = 0;
     let running = false;
-    let handlers: Handlers = { onSelect, onHover };
+    let handlers: Handlers = { onSelect, onHover, onArrangementChange };
     let hoveredId: string | null = null;
     let isDragging = false;
+    
+    let dragControls: DragControls | null = null;
+    let currentConfig: StarMapConfig | undefined;
 
     const nodeById = new Map<string, SceneNode>();
     const meshById = new Map<string, THREE.Object3D>();
     const lineByBookId = new Map<string, THREE.Line>();
     const dynamicObjects: { obj: THREE.Object3D; initialScale: THREE.Vector3; type: "star" | "label" }[] = [];
+
+    function updateDragControls(editable: boolean) {
+        if (!editable) {
+            if (dragControls) {
+                dragControls.dispose();
+                dragControls = null;
+            }
+            return;
+        }
+
+        // Gather draggable objects (Level 3 stars)
+        const draggables: THREE.Object3D[] = [];
+        for (const [id, mesh] of meshById.entries()) {
+            const node = nodeById.get(id);
+            if (node?.level === 3) {
+                draggables.push(mesh);
+            }
+        }
+
+        if (dragControls) {
+            dragControls.dispose();
+        }
+
+        dragControls = new DragControls(draggables, camera, renderer.domElement);
+
+        dragControls.addEventListener("dragstart", () => {
+            controls.enabled = false;
+            // We set isDragging to true here to prevent click events (selection)
+            isDragging = true;
+        });
+
+        dragControls.addEventListener("dragend", (event) => {
+            controls.enabled = true;
+            // Keep isDragging true briefly to block the click event that follows mouseup
+            setTimeout(() => { isDragging = false; }, 0);
+
+            const obj = event.object;
+            const id = obj.userData.id;
+            
+            if (id && currentConfig) {
+                const currentArr = currentConfig.arrangement || {};
+                const newArr = { ...currentArr };
+                newArr[id] = { position: [obj.position.x, obj.position.y, obj.position.z] };
+                
+                // Update local config reference
+                currentConfig.arrangement = newArr; 
+                
+                handlers.onArrangementChange?.(newArr);
+            }
+        });
+    }
 
     // ---------------------------
     // Resize
@@ -364,9 +422,16 @@ export function createEngine({
         for (const n of laidOut.nodes) {
             nodeById.set(n.id, n);
 
-            const x = (n.meta?.x as number) ?? 0;
-            const y = (n.meta?.y as number) ?? 0;
-            const z = (n.meta?.z as number) ?? 0;
+            let x = (n.meta?.x as number) ?? 0;
+            let y = (n.meta?.y as number) ?? 0;
+            let z = (n.meta?.z as number) ?? 0;
+
+            if (cfg.arrangement && cfg.arrangement[n.id]) {
+                const pos = cfg.arrangement[n.id].position;
+                x = pos[0];
+                y = pos[1];
+                z = pos[2];
+            }
 
             // Level 3: Chapters -> Stars (Sprites)
             if (n.level === 3) {
@@ -572,6 +637,7 @@ export function createEngine({
     let lastModel: SceneModel | undefined = undefined;
 
     function setConfig(cfg: StarMapConfig) {
+        currentConfig = cfg;
         let shouldRebuild = false;
         let model = cfg.model;
 
@@ -597,6 +663,14 @@ export function createEngine({
 
         if (shouldRebuild && model) {
             buildFromModel(model, cfg);
+        } else if (cfg.arrangement) {
+             // If not rebuilding, apply arrangement positions to existing meshes
+             for (const [id, val] of Object.entries(cfg.arrangement)) {
+                 const mesh = meshById.get(id);
+                 if (mesh) {
+                     mesh.position.set(val.position[0], val.position[1], val.position[2]);
+                 }
+             }
         }
 
         // 2. Apply Visuals (if not rebuilding, we might still need to update visuals?)
@@ -612,6 +686,8 @@ export function createEngine({
              // Reset if no focus provided
              applyFocus(undefined, false);
         }
+        
+        updateDragControls(!!cfg.editable);
     }
 
     function setHandlers(next: Handlers) {
