@@ -17,6 +17,7 @@ export type SceneNode = {
 export type SceneLink = { source: string; target: string };
 
 export type SceneModel = {
+    meta?: Record<string, unknown>;
     nodes: SceneNode[];
     links: SceneLink[];
 };
@@ -45,7 +46,7 @@ export type StarMapConfig = {
     };
 
     layout?: {
-        mode?: "radial" | "grid" | "force" | "spherical";
+        mode?: "radial" | "grid" | "force" | "spherical" | "manual";
         radius?: number; // radial
         chapterRingSpacing?: number;
     };

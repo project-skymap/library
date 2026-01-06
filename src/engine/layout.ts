@@ -24,9 +24,25 @@ function lookAt(point: Point3D, target: THREE.Vector3, up: THREE.Vector3): Point
 
 export function computeLayoutPositions(
     model: SceneModel,
-    layout?: { mode?: "radial" | "grid" | "force" | "spherical"; radius?: number; chapterRingSpacing?: number }
+    layout?: { mode?: "radial" | "grid" | "force" | "spherical" | "manual"; radius?: number; chapterRingSpacing?: number }
 ): SceneModel {
-    const mode = layout?.mode ?? "spherical";
+    let mode = layout?.mode;
+    
+    // Auto-detect: If no mode specified, but nodes have positions, default to manual.
+    if (!mode && model.nodes.length > 0) {
+        const sample = model.nodes[0];
+        if (sample?.meta && typeof sample.meta.x === 'number' && typeof sample.meta.y === 'number' && typeof sample.meta.z === 'number') {
+            mode = "manual";
+        }
+    }
+    
+    mode = mode ?? "spherical";
+    
+    // If manual, assume positions are already in meta
+    if (mode === "manual") {
+        return model;
+    }
+
     const radius = layout?.radius ?? 2000;
     const ringSpacing = layout?.chapterRingSpacing ?? 15;
 
@@ -100,6 +116,8 @@ export function computeLayoutPositions(
                 chapters.forEach((chap, idx) => {
                     const uChap = updatedNodeMap.get(chap.id)!;
                     const lp = localPoints[idx];
+                    if (!lp) return;
+
                     const wp = lookAt(lp, bookPos, up);
 
                     (uChap.meta as any).x = wp.x;

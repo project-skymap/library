@@ -53,8 +53,8 @@ export function bibleToSceneModel(data: BibleJSON): SceneModel {
                 });
                 links.push({ source: bid, target: did });
 
-                const verses = b.verses ?? [];
-                for (let i = 0; i < verses.length; i++) {
+                const verseCounts = b.verses ?? Array(b.chapters).fill(1);
+                for (let i = 0; i < verseCounts.length; i++) {
                     const chapterNum = i + 1;
                     const cid = id.chapter(b.key, chapterNum);
                     nodes.push({
@@ -62,7 +62,7 @@ export function bibleToSceneModel(data: BibleJSON): SceneModel {
                         label: `${b.name} ${chapterNum}`,
                         level: 3,
                         parent: bid,
-                        weight: verses[i],
+                        weight: verseCounts[i],
                         icon: b.icons?.[i] ?? b.icons?.[0], 
                         meta: {
                             testament: t.name,
