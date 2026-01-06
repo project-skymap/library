@@ -255,6 +255,38 @@ export function createEngine({
         return arr;
     }
 
+    function updateBookLine(bookId: string) {
+        const line = lineByBookId.get(bookId);
+        if (!line) return;
+
+        // Find all stars for this book
+        const chapters: SceneNode[] = [];
+        for (const n of nodeById.values()) {
+            if (n.parent === bookId && n.level === 3) {
+                chapters.push(n);
+            }
+        }
+        
+        // Sort
+        chapters.sort((a, b) => {
+             const cA = (a.meta?.chapter as number) || 0;
+             const cB = (b.meta?.chapter as number) || 0;
+             return cA - cB;
+        });
+
+        const points: THREE.Vector3[] = [];
+        for (const c of chapters) {
+             const m = meshById.get(c.id);
+             if (m) {
+                 points.push(m.position.clone());
+             }
+        }
+
+        if (points.length > 1) {
+            line.geometry.setFromPoints(points);
+        }
+    }
+
     function updateDragControls(editable: boolean) {
         if (!editable) {
             if (dragControls) {
@@ -264,11 +296,13 @@ export function createEngine({
             return;
         }
 
-        // Gather draggable objects (Level 3 stars)
+        // Gather draggable objects (Level 3 stars AND Level 2 Book Labels)
         const draggables: THREE.Object3D[] = [];
         for (const [id, mesh] of meshById.entries()) {
             const node = nodeById.get(id);
             if (node?.level === 3) {
+                draggables.push(mesh);
+            } else if (node?.level === 2 && mesh instanceof THREE.Sprite) {
                 draggables.push(mesh);
             }
         }
@@ -278,13 +312,51 @@ export function createEngine({
         }
 
         dragControls = new DragControls(draggables, camera, renderer.domElement);
+        
+        const lastPos = new THREE.Vector3();
 
-        dragControls.addEventListener("dragstart", () => {
+        dragControls.addEventListener("dragstart", (event: any) => {
             controls.enabled = false;
             isDragging = true;
+            lastPos.copy(event.object.position);
         });
 
-        dragControls.addEventListener("dragend", (event) => {
+        dragControls.addEventListener("drag", (event: any) => {
+             const obj = event.object;
+             const id = obj.userData.id;
+             const node = nodeById.get(id);
+
+             if (node && node.level === 2) {
+                 // Book Label Drag -> Move constellation
+                 const currentPos = obj.position;
+                 const delta = new THREE.Vector3().subVectors(currentPos, lastPos);
+
+                 const bookId = id;
+                 const childStars: THREE.Object3D[] = [];
+                 
+                 for (const [nId, n] of nodeById.entries()) {
+                     if (n.parent === bookId && n.level === 3) {
+                         const starMesh = meshById.get(nId);
+                         if (starMesh) childStars.push(starMesh);
+                     }
+                 }
+
+                 for (const star of childStars) {
+                     star.position.add(delta);
+                 }
+
+                 updateBookLine(bookId);
+                 lastPos.copy(currentPos);
+
+             } else if (node && node.level === 3) {
+                 // Star Drag -> Update line
+                 if (node.parent) {
+                     updateBookLine(node.parent);
+                 }
+             }
+        });
+
+        dragControls.addEventListener("dragend", (event: any) => {
             controls.enabled = true;
             setTimeout(() => { isDragging = false; }, 0);
 
@@ -490,6 +562,8 @@ export function createEngine({
                         // Only add Books to dynamicObjects so they scale/fade.
                         // Divisions stay static.
                         if (isBook) {
+                            labelSprite.userData = { id: n.id, level: n.level, interactive: true };
+                            meshById.set(n.id, labelSprite);
                             dynamicObjects.push({ obj: labelSprite, initialScale: labelSprite.scale.clone(), type: "label" });
                         }
                     }
