@@ -1,12 +1,9 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls";
 import { DragControls } from "three/examples/jsm/controls/DragControls";
-import { EffectComposer } from "three/examples/jsm/postprocessing/EffectComposer";
-import { RenderPass } from "three/examples/jsm/postprocessing/RenderPass";
-import { UnrealBloomPass } from "three/examples/jsm/postprocessing/UnrealBloomPass";
 import type { StarMapConfig, SceneModel, SceneNode, StarArrangement } from "../types";
 import { computeLayoutPositions } from "./layout";
-import { applyVisuals, createVisualResolver } from "./materials";
+import { applyVisuals } from "./materials";
 
 type Handlers = {
     onSelect?: (node: SceneNode) => void;
@@ -14,16 +11,15 @@ type Handlers = {
     onArrangementChange?: (arrangement: StarArrangement) => void;
 };
 
-type RenderMode = "basic" | "cinematic";
-
 type EngineConfig = {
     // Stellarium-ish “stand in the middle and look out”
-    skyRadius?: number; // radius for procedural backdrop stars
+    skyRadius?: number; // radius for procedural backdrop stars + milky way sphere
     groundRadius?: number; // radius of the ground hemisphere used to occlude “below horizon”
     horizonGlow?: boolean;
 
-    // Rendering
-    renderModeDefault?: RenderMode;
+    // "Planetarium feel" (subtle motion + atmospheric cues)
+    enableSkyDrift?: boolean; // slowly rotates the backdrop to feel "alive"
+    timeScale?: number; // multiplier for sky drift (like planetarium8 timeScale)
 
     // Zoom behaviour (FOV-based)
     defaultFov?: number;
@@ -31,7 +27,7 @@ type EngineConfig = {
     maxFov?: number;
     /** If true, you cannot zoom out beyond the initial FOV ("no zooming backwards"). */
     lockZoomOutToInitialFov?: boolean;
-    /** Exponential zoom intensity. Larger = faster zoom. */
+    /** Wheel delta -> FOV delta (scaled for ctrlKey pinch). */
     fovWheelSensitivity?: number;
     /** Lerp factor applied each frame when easing camera.fov -> targetFov */
     zoomLerp?: number;
@@ -42,20 +38,11 @@ type EngineConfig = {
     focusZoomFov?: number; // fov to animate to on focus
     focusDurationMs?: number;
 
-    // Cinematic star points
-    starPxPerScale?: number; // converts style scale -> pixel size
-    starMinPx?: number;
-    starMaxPx?: number;
-    starTwinkleStrength?: number;
-    inactiveDim?: number;
-
-    // Bloom / tone mapping (cinematic)
-    bloomEnabled?: boolean;
-    bloomStrength?: number;
-    bloomRadius?: number;
-    bloomThreshold?: number;
-    toneMappingExposure?: number;
+    // Optional overlays
+    milkyWayEnabled?: boolean;
+    atmosphereEnabled?: boolean;
 };
+
 
 export function createEngine({
                                  container,
@@ -73,14 +60,18 @@ export function createEngine({
     // ---------------------------
     const renderer = new THREE.WebGLRenderer({ antialias: true });
     renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
-    renderer.setSize(container.clientWidth || 1, container.clientHeight || 1, false);
-    renderer.setClearColor(0x000000, 0);
+    renderer.setClearColor(0x000000, 1);
     container.appendChild(renderer.domElement);
+    // Ensure canvas fills the container (fixes HiDPI center alignment)
+    renderer.domElement.style.width = "100%";
+    renderer.domElement.style.height = "100%";
+    // Prevent browser gestures from fighting pointer controls
+    (renderer.domElement.style as any).touchAction = "none";
 
     const scene = new THREE.Scene();
 
     const camera = new THREE.PerspectiveCamera(90, 1, 0.1, 5000);
-    // Tiny offset so OrbitControls has a radius to work with
+    // Tiny offset so OrbitControls has a radius to work with (like your Angular app)
     camera.position.set(0, 0, 0.01);
     camera.up.set(0, 1, 0);
 
@@ -91,7 +82,7 @@ export function createEngine({
     controls.target.set(0, 0, 0);
     controls.enableRotate = true;
     controls.enablePan = false;
-    controls.enableZoom = false; // we control FOV (not dolly)
+    controls.enableZoom = false; // wheel controls FOV (not dolly)
     controls.enableDamping = true;
     controls.dampingFactor = 0.07;
     controls.screenSpacePanning = false;
@@ -100,7 +91,6 @@ export function createEngine({
     const EPS = THREE.MathUtils.degToRad(0.05);
     controls.minAzimuthAngle = -Infinity;
     controls.maxAzimuthAngle = Infinity;
-
     // OrbitControls: 0=top(looking down), PI=bottom(looking up).
     // We want to look UP at the sky, so we need range [PI/2, PI].
     controls.minPolarAngle = Math.PI / 2 + EPS;
@@ -108,21 +98,22 @@ export function createEngine({
     controls.update();
 
     // ---------------------------
-    // Stellarium-ish environment defaults
+    // Stellarium-ish environment
     // ---------------------------
     const env = {
         skyRadius: 2800,
         groundRadius: 995,
         horizonGlow: true,
 
-        renderModeDefault: "basic" as RenderMode,
+        enableSkyDrift: true,
+        timeScale: 60, // 1 = real-time; 60 = 60x faster drift
 
-        defaultFov: 80,
+        defaultFov: 90,
         minFov: 6,
         maxFov: 110,
         lockZoomOutToInitialFov: true,
-        // Exponential zoom intensity: smaller numbers are gentler, better for trackpads
-        fovWheelSensitivity: 0.0022,
+        // 0.02 works well for mouse wheels; trackpads are moderated via ctrlKey
+        fovWheelSensitivity: 0.02,
         zoomLerp: 0.12,
         resetFovOnDblClick: true,
 
@@ -130,76 +121,21 @@ export function createEngine({
         focusZoomFov: 18,
         focusDurationMs: 650,
 
-        starPxPerScale: 2.2,
-        starMinPx: 2.0,
-        starMaxPx: 16.0,
-        starTwinkleStrength: 0.22,
-        inactiveDim: 0.10,
-
-        bloomEnabled: true,
-        bloomStrength: 0.28,
-        bloomRadius: 0.2,
-        bloomThreshold: 0.92,
-        toneMappingExposure: 1.0,
+        milkyWayEnabled: false,
+        atmosphereEnabled: false,
     } satisfies EngineConfig;
 
+    // Backdrop drift (planetarium feel)
+    const SIDEREAL_RATE = THREE.MathUtils.degToRad(15) / 3600; // rad/sec @ 1x
+    let lastFrameMs = performance.now();
+
+    // Zoom state (we ease FOV for a smoother Stellarium-like feel)
     let targetFov = env.defaultFov!;
     let zoomOutLimitFov = env.defaultFov!;
-    let currentRenderMode: RenderMode = env.renderModeDefault!;
-    let focusActiveIds: Set<string> | null = null;
 
-    // ---------------------------
-    // Post-processing (cinematic)
-    // ---------------------------
-    let composer: EffectComposer | null = null;
-    let bloomPass: UnrealBloomPass | null = null;
 
-    function configurePostProcessing(mode: RenderMode, cfg: StarMapConfig) {
-        const anyCfg = cfg as any;
-        const renderCfg = anyCfg?.render ?? {};
-        const bloomCfg = renderCfg?.bloom ?? {};
-
-        const wantBloom =
-            mode === "cinematic" &&
-            (bloomCfg.enabled ?? renderCfg.bloomEnabled ?? env.bloomEnabled);
-
-        if (mode === "cinematic") {
-            renderer.toneMapping = THREE.ACESFilmicToneMapping;
-            renderer.toneMappingExposure = renderCfg.exposure ?? env.toneMappingExposure!;
-        } else {
-            renderer.toneMapping = THREE.NoToneMapping;
-            renderer.toneMappingExposure = 1.0;
-        }
-
-        if (!wantBloom) {
-            composer = null;
-            bloomPass = null;
-            return;
-        }
-
-        if (!composer) {
-            composer = new EffectComposer(renderer);
-            composer.addPass(new RenderPass(scene, camera));
-
-            bloomPass = new UnrealBloomPass(
-                new THREE.Vector2(container.clientWidth || 1, container.clientHeight || 1),
-                env.bloomStrength!,
-                env.bloomRadius!,
-                env.bloomThreshold!
-            );
-            composer.addPass(bloomPass);
-        }
-
-        if (bloomPass) {
-            bloomPass.strength = bloomCfg.strength ?? env.bloomStrength!;
-            bloomPass.radius = bloomCfg.radius ?? env.bloomRadius!;
-            bloomPass.threshold = bloomCfg.threshold ?? env.bloomThreshold!;
-        }
-    }
-
-    // ---------------------------
-    // Ground / Horizon occlusion
-    // ---------------------------
+    // Ground group: an inside-facing lower hemisphere that WRITES depth
+    // => hides below-horizon stars (very Stellarium)
     const groundGroup = new THREE.Group();
     scene.add(groundGroup);
 
@@ -219,6 +155,7 @@ export function createEngine({
         for (let i = 0; i < count; i++) {
             const y = pos.getY(i); // [-radius, 0]
             const t = THREE.MathUtils.clamp(1 - Math.abs(y) / radius, 0, 1);
+            // A simple deep-blue to near-horizon glow-ish ramp
             c.setRGB(
                 THREE.MathUtils.lerp(0x06 / 255, 0x15 / 255, t),
                 THREE.MathUtils.lerp(0x10 / 255, 0x23 / 255, t),
@@ -226,72 +163,64 @@ export function createEngine({
             );
             colors.set([c.r, c.g, c.b], i * 3);
         }
-
         hemi.setAttribute("color", new THREE.BufferAttribute(colors, 3));
 
-        const mat = new THREE.MeshBasicMaterial({
+        const groundMat = new THREE.MeshBasicMaterial({
             vertexColors: true,
-            side: THREE.BackSide,
-            depthWrite: true,
+            side: THREE.FrontSide,
+            depthWrite: true, // important: occlude stars under horizon
             depthTest: true,
         });
 
-        const mesh = new THREE.Mesh(hemi, mat);
-        groundGroup.add(mesh);
-    }
+        const hemiMesh = new THREE.Mesh(hemi, groundMat);
+        groundGroup.add(hemiMesh);
 
-    function buildHorizonGlow(radius: number) {
-        if (!env.horizonGlow) return;
+        if (env.horizonGlow) {
+            const inner = radius * 0.985;
+            const outer = radius * 1.005;
+            const ringGeo = new THREE.RingGeometry(inner, outer, 128);
+            ringGeo.rotateX(-Math.PI / 2);
 
-        const ring = new THREE.RingGeometry(radius * 0.95, radius * 1.03, 96);
-        ring.rotateX(Math.PI / 2);
-        ring.scale(1, 1, 1);
+            const ringMat = new THREE.ShaderMaterial({
+                transparent: true,
+                depthWrite: false,
+                uniforms: {
+                    uInner: { value: inner },
+                    uOuter: { value: outer },
+                    uColor: { value: new THREE.Color(0x7aa2ff) },
+                },
+                vertexShader: `
+          varying vec2 vXY;
+          void main() {
+            vXY = position.xz;
+            gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+          }
+        `,
+                fragmentShader: `
+          uniform float uInner;
+          uniform float uOuter;
+          uniform vec3 uColor;
+          varying vec2 vXY;
 
-        const inner = radius * 0.95;
-        const outer = radius * 1.03;
+          void main() {
+            float r = length(vXY);
+            float t = clamp((r - uInner) / (uOuter - uInner), 0.0, 1.0);
+            // peak glow near inner edge, fade outwards
+            float a = pow(1.0 - t, 2.2) * 0.35;
+            gl_FragColor = vec4(uColor, a);
+          }
+        `,
+            });
 
-        const mat = new THREE.ShaderMaterial({
-            transparent: true,
-            depthWrite: false,
-            depthTest: true,
-            side: THREE.DoubleSide,
-            blending: THREE.AdditiveBlending,
-            uniforms: {
-                uInner: { value: inner },
-                uOuter: { value: outer },
-                uColor: { value: new THREE.Color(0x7aa2ff) },
-            },
-            vertexShader: `
-              varying vec2 vXY;
-              void main() {
-                vXY = position.xz;
-                gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-              }
-            `,
-            fragmentShader: `
-              uniform float uInner;
-              uniform float uOuter;
-              uniform vec3 uColor;
-              varying vec2 vXY;
-              void main() {
-                float r = length(vXY);
-                float t = smoothstep(uOuter, uInner, r);
-                gl_FragColor = vec4(uColor, t * 0.25);
-              }
-            `,
-        });
-
-        const glow = new THREE.Mesh(ring, mat);
-        glow.renderOrder = 1;
-        groundGroup.add(glow);
+            const ring = new THREE.Mesh(ringGeo, ringMat);
+            ring.position.y = 0.0;
+            groundGroup.add(ring);
+        }
     }
 
     buildGroundHemisphere(env.groundRadius);
-    buildHorizonGlow(env.groundRadius);
 
-    // ---------------------------
-    // Backdrop stars (procedural)
-    // ---------------------------
+    // Backdrop stars (procedural points) far beyond your “model stars”
     const backdropGroup = new THREE.Group();
     scene.add(backdropGroup);
 
@@ -326,10 +255,118 @@ export function createEngine({
     buildBackdropStars(env.skyRadius, 6500);
 
     // ---------------------------
+    // Milky Way + Atmosphere (from planetarium8.html mechanics)
+    // ---------------------------
+    let milkyWayMesh: THREE.Mesh<THREE.SphereGeometry, THREE.MeshBasicMaterial> | null = null;
+    let atmosphereMesh: THREE.Mesh<THREE.SphereGeometry, THREE.ShaderMaterial> | null = null;
+
+    function createMilkyWayTexture() {
+        const c = document.createElement("canvas");
+        c.width = 2048;
+        c.height = 1024;
+        const ctx = c.getContext("2d");
+        if (!ctx) return null;
+
+        ctx.fillStyle = "black";
+        ctx.fillRect(0, 0, c.width, c.height);
+
+        const g = ctx.createLinearGradient(0, c.height / 2, 0, c.height);
+        g.addColorStop(0.0, "rgba(255,255,255,0)");
+        g.addColorStop(0.45, "rgba(180,200,255,0.20)");
+        g.addColorStop(0.5, "rgba(230,230,255,0.45)");
+        g.addColorStop(0.55, "rgba(180,200,255,0.20)");
+        g.addColorStop(1.0, "rgba(255,255,255,0)");
+
+        ctx.fillStyle = g;
+        ctx.fillRect(0, 0, c.width, c.height);
+
+        // soft "dust"
+        for (let i = 0; i < 70000; i++) {
+            const x = Math.random() * c.width;
+            const y = c.height / 2 + (Math.random() - 0.5) * c.height * 0.32;
+            ctx.fillStyle = `rgba(255,255,255,${Math.random() * 0.08})`;
+            ctx.fillRect(x, y, 1, 1);
+        }
+
+        const tex = new THREE.CanvasTexture(c);
+        return tex;
+    }
+
+    function buildMilkyWay(radius: number) {
+        if (!env.milkyWayEnabled) return;
+
+        const tex = createMilkyWayTexture();
+        if (!tex) return;
+
+        const geo = new THREE.SphereGeometry(radius, 64, 64);
+        geo.scale(-1, 1, 1);
+
+        const mat = new THREE.MeshBasicMaterial({
+            map: tex,
+            transparent: true,
+            blending: THREE.AdditiveBlending,
+            opacity: 0.55,
+            depthWrite: false,
+        });
+
+        milkyWayMesh = new THREE.Mesh(geo, mat);
+        milkyWayMesh.rotation.z = THREE.MathUtils.degToRad(60);
+        milkyWayMesh.renderOrder = -10; // behind everything
+        backdropGroup.add(milkyWayMesh);
+    }
+
+    function buildAtmosphere(radius: number) {
+        if (!env.atmosphereEnabled) return;
+
+        const geo = new THREE.SphereGeometry(radius * 1.002, 96, 64);
+        geo.scale(-1, 1, 1);
+
+        const mat = new THREE.ShaderMaterial({
+            side: THREE.BackSide,
+            transparent: true,
+            depthWrite: false,
+            blending: THREE.AdditiveBlending,
+            uniforms: {
+                uGlowColor: { value: new THREE.Color(0x2e6bff) },
+                uIntensity: { value: 0.28 },
+                uWidth: { value: 0.22 },
+            },
+            vertexShader: `
+                varying float vYNorm;
+                void main() {
+                    vYNorm = normalize(position).y;
+                    gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+                }
+            `,
+            fragmentShader: `
+                varying float vYNorm;
+                uniform vec3 uGlowColor;
+                uniform float uIntensity;
+                uniform float uWidth;
+
+                void main() {
+                    float d = abs(vYNorm);
+                    float glow = smoothstep(uWidth, 0.0, d);
+                    float above = smoothstep(0.08, -0.02, vYNorm);
+                    float a = glow * above * uIntensity;
+                    gl_FragColor = vec4(uGlowColor * a, a);
+                }
+            `,
+        });
+
+        atmosphereMesh = new THREE.Mesh(geo, mat);
+        atmosphereMesh.renderOrder = 5;
+        groundGroup.add(atmosphereMesh);
+    }
+
+    buildMilkyWay(env.skyRadius - 1);
+    buildAtmosphere(env.groundRadius);
+
+
+    // ---------------------------
     // Picking / Model content
     // ---------------------------
     const raycaster = new THREE.Raycaster();
-    raycaster.params.Points!.threshold = 10; // tuned later in tick
     const pointer = new THREE.Vector2();
 
     const root = new THREE.Group();
@@ -339,205 +376,151 @@ export function createEngine({
     let running = false;
     let handlers: Handlers = { onSelect, onHover, onArrangementChange };
     let hoveredId: string | null = null;
-    let hoveredLineBookId: string | null = null;
     let isDragging = false;
 
     let dragControls: DragControls | null = null;
     let currentConfig: StarMapConfig | undefined;
 
     const nodeById = new Map<string, SceneNode>();
-    const meshById = new Map<string, THREE.Object3D>(); // sprites/meshes only
+    const meshById = new Map<string, THREE.Object3D>();
     const lineByBookId = new Map<string, THREE.Line>();
     const dynamicObjects: { obj: THREE.Object3D; initialScale: THREE.Vector3; type: "star" | "label" }[] = [];
 
-    // Chapter points (cinematic mode)
-    let chapterPoints: THREE.Points | null = null;
-    let chapterPointIds: string[] = [];
-    const chapterPointIndexById = new Map<string, number>();
-    let chapterPosAttr: THREE.BufferAttribute | null = null;
-    let chapterActiveAttr: THREE.BufferAttribute | null = null;
-    let chapterMat: THREE.ShaderMaterial | null = null;
-
-    // Single hover label sprite
-    let hoverLabelSprite: THREE.Sprite | null = null;
-    let hoverLabelCanvas: HTMLCanvasElement | null = null;
-    let hoverLabelCtx: CanvasRenderingContext2D | null = null;
-    let hoverLabelTex: THREE.CanvasTexture | null = null;
-
-    function clampFov(v: number) {
-        const max = env.lockZoomOutToInitialFov ? Math.min(env.maxFov!, zoomOutLimitFov) : env.maxFov!;
-        return THREE.MathUtils.clamp(v, env.minFov!, max);
-    }
-
-    function resolveRenderMode(cfg: StarMapConfig): RenderMode {
-        const anyCfg = cfg as any;
-        const requested = (anyCfg?.renderMode ?? anyCfg?.render?.mode) as any;
-        const mode: RenderMode =
-            requested === "cinematic" || requested === "basic" ? requested : env.renderModeDefault!;
-        return mode;
-    }
-
-    function getRenderedNodePosition(id: string): THREE.Vector3 | null {
-        const mesh = meshById.get(id);
-        if (mesh) return mesh.position.clone();
-
-        const idx = chapterPointIndexById.get(id);
-        if (idx !== undefined && chapterPosAttr) {
-            return new THREE.Vector3(
-                chapterPosAttr.getX(idx),
-                chapterPosAttr.getY(idx),
-                chapterPosAttr.getZ(idx)
-            );
+    function getFullArrangement(): StarArrangement {
+        const arr: StarArrangement = {};
+        for (const [id, mesh] of meshById.entries()) {
+            arr[id] = {
+                position: [mesh.position.x, mesh.position.y, mesh.position.z]
+            };
         }
-        return null;
+        return arr;
     }
 
-    function setRenderedNodePosition(id: string, pos: THREE.Vector3) {
-        const mesh = meshById.get(id);
-        if (mesh) {
-            mesh.position.copy(pos);
+    function updateBookLine(bookId: string) {
+        const line = lineByBookId.get(bookId);
+        if (!line) return;
+
+        // Find all stars for this book
+        const chapters: SceneNode[] = [];
+        for (const n of nodeById.values()) {
+            if (n.parent === bookId && n.level === 3) {
+                chapters.push(n);
+            }
+        }
+
+        // Sort
+        chapters.sort((a, b) => {
+            const cA = (a.meta?.chapter as number) || 0;
+            const cB = (b.meta?.chapter as number) || 0;
+            return cA - cB;
+        });
+
+        const points: THREE.Vector3[] = [];
+        for (const c of chapters) {
+            const m = meshById.get(c.id);
+            if (m) {
+                points.push(m.position.clone());
+            }
+        }
+
+        if (points.length > 1) {
+            line.geometry.setFromPoints(points);
+        }
+    }
+
+    function updateDragControls(editable: boolean) {
+        if (!editable) {
+            if (dragControls) {
+                dragControls.dispose();
+                dragControls = null;
+            }
             return;
         }
 
-        const idx = chapterPointIndexById.get(id);
-        if (idx !== undefined && chapterPosAttr) {
-            chapterPosAttr.setXYZ(idx, pos.x, pos.y, pos.z);
-            chapterPosAttr.needsUpdate = true;
-        }
-    }
-
-    function translateRenderedNodeById(id: string, delta: THREE.Vector3) {
-        const p = getRenderedNodePosition(id);
-        if (!p) return;
-        p.add(delta);
-        setRenderedNodePosition(id, p);
-    }
-
-    function setHoverLabel(text: string, color: string = "#ffffff") {
-        if (!hoverLabelSprite || !hoverLabelCanvas || !hoverLabelCtx || !hoverLabelTex) {
-            hoverLabelCanvas = document.createElement("canvas");
-            hoverLabelCtx = hoverLabelCanvas.getContext("2d");
-            if (!hoverLabelCtx) return;
-
-            hoverLabelTex = new THREE.CanvasTexture(hoverLabelCanvas);
-            hoverLabelTex.minFilter = THREE.LinearFilter;
-            hoverLabelTex.magFilter = THREE.LinearFilter;
-
-            const mat = new THREE.SpriteMaterial({
-                map: hoverLabelTex,
-                transparent: true,
-                depthWrite: false,
-                depthTest: true,
-            });
-
-            hoverLabelSprite = new THREE.Sprite(mat);
-            hoverLabelSprite.visible = false;
-            hoverLabelSprite.renderOrder = 10;
-            root.add(hoverLabelSprite);
+        // Gather draggable objects (Level 3 stars AND Level 2 Book Labels)
+        const draggables: THREE.Object3D[] = [];
+        for (const [id, mesh] of meshById.entries()) {
+            const node = nodeById.get(id);
+            if (node?.level === 3) {
+                draggables.push(mesh);
+            } else if (node?.level === 2 && mesh instanceof THREE.Sprite) {
+                draggables.push(mesh);
+            }
         }
 
-        const ctx = hoverLabelCtx!;
-        const canvas = hoverLabelCanvas!;
-        const fontSize = 48;
-        const font = `bold ${fontSize}px sans-serif`;
+        if (dragControls) {
+            dragControls.dispose();
+        }
 
-        ctx.font = font;
-        const metrics = ctx.measureText(text);
-        const w = Math.ceil(metrics.width);
-        const h = Math.ceil(fontSize * 1.2);
+        dragControls = new DragControls(draggables, camera, renderer.domElement);
 
-        canvas.width = Math.max(2, w);
-        canvas.height = Math.max(2, h);
+        const lastPos = new THREE.Vector3();
 
-        ctx.clearRect(0, 0, canvas.width, canvas.height);
-        ctx.font = font;
-        ctx.textBaseline = "top";
-        ctx.fillStyle = color;
-        ctx.shadowColor = "rgba(0,0,0,0.7)";
-        ctx.shadowBlur = 6;
-        ctx.fillText(text, 0, 0);
-
-        hoverLabelTex!.needsUpdate = true;
-
-        // world-size label
-        const targetHeight = 2;
-        const aspect = canvas.width / canvas.height;
-        hoverLabelSprite!.scale.set(targetHeight * aspect, targetHeight, 1);
-    }
-
-    function hideHoverLabel() {
-        if (hoverLabelSprite) hoverLabelSprite.visible = false;
-    }
-
-    // ---------------------------
-    // Star texture (basic mode sprites)
-    // ---------------------------
-    function createStarTexture() {
-        const canvas = document.createElement("canvas");
-        canvas.width = 64;
-        canvas.height = 64;
-        const ctx = canvas.getContext("2d");
-        if (!ctx) return null;
-
-        const grd = ctx.createRadialGradient(32, 32, 0, 32, 32, 32);
-        grd.addColorStop(0, "rgba(255,255,255,1)");
-        grd.addColorStop(0.2, "rgba(255,255,255,0.9)");
-        grd.addColorStop(1, "rgba(255,255,255,0)");
-
-        ctx.fillStyle = grd;
-        ctx.beginPath();
-        ctx.arc(32, 32, 32, 0, Math.PI * 2);
-        ctx.fill();
-
-        const tex = new THREE.CanvasTexture(canvas);
-        tex.minFilter = THREE.LinearFilter;
-        tex.magFilter = THREE.LinearFilter;
-        return tex;
-    }
-
-    const starTexture = createStarTexture();
-
-    function createTextSprite(text: string, color: string = "#ffffff") {
-        const canvas = document.createElement("canvas");
-        const ctx = canvas.getContext("2d");
-        if (!ctx) return null;
-
-        const fontSize = 48;
-        const font = `bold ${fontSize}px sans-serif`;
-        ctx.font = font;
-
-        const metrics = ctx.measureText(text);
-        const w = Math.ceil(metrics.width);
-        const h = Math.ceil(fontSize * 1.2);
-
-        canvas.width = w;
-        canvas.height = h;
-
-        ctx.font = font;
-        ctx.textBaseline = "top";
-        ctx.fillStyle = color;
-        ctx.shadowColor = "rgba(0,0,0,0.7)";
-        ctx.shadowBlur = 6;
-        ctx.fillText(text, 0, 0);
-
-        const tex = new THREE.CanvasTexture(canvas);
-        tex.minFilter = THREE.LinearFilter;
-        tex.magFilter = THREE.LinearFilter;
-
-        const mat = new THREE.SpriteMaterial({
-            map: tex,
-            transparent: true,
-            depthWrite: false,
-            depthTest: true,
+        dragControls.addEventListener("dragstart", (event: any) => {
+            controls.enabled = false;
+            isDragging = true;
+            lastPos.copy(event.object.position);
         });
 
-        const sprite = new THREE.Sprite(mat);
+        dragControls.addEventListener("drag", (event: any) => {
+            const obj = event.object;
+            const id = obj.userData.id;
+            const node = nodeById.get(id);
 
-        const targetHeight = 2;
-        const aspect = w / h;
-        sprite.scale.set(targetHeight * aspect, targetHeight, 1);
+            if (node && node.level === 2) {
+                // Book Label Drag -> Move constellation
+                const currentPos = obj.position;
+                const delta = new THREE.Vector3().subVectors(currentPos, lastPos);
 
-        return sprite;
+                const bookId = id;
+                const childStars: THREE.Object3D[] = [];
+
+                for (const [nId, n] of nodeById.entries()) {
+                    if (n.parent === bookId && n.level === 3) {
+                        const starMesh = meshById.get(nId);
+                        if (starMesh) childStars.push(starMesh);
+                    }
+                }
+
+                for (const star of childStars) {
+                    star.position.add(delta);
+                }
+
+                updateBookLine(bookId);
+                lastPos.copy(currentPos);
+
+            } else if (node && node.level === 3) {
+                // Star Drag -> Update line
+                if (node.parent) {
+                    updateBookLine(node.parent);
+                }
+            }
+        });
+
+        dragControls.addEventListener("dragend", (event: any) => {
+            controls.enabled = true;
+            setTimeout(() => { isDragging = false; }, 0);
+
+            const obj = event.object;
+            const id = obj.userData.id;
+
+            if (id && currentConfig) {
+                // We update the local mesh position already (done by DragControls)
+                // Now we notify the handler with the FULL arrangement
+                handlers.onArrangementChange?.(getFullArrangement());
+            }
+        });
+    }
+
+    // ---------------------------
+    // Resize
+    // ---------------------------
+    function resize() {
+        const w = container.clientWidth || 1;
+        const h = container.clientHeight || 1;
+        renderer.setSize(w, h, false);
+        camera.aspect = w / h;
+        camera.updateProjectionMatrix();
     }
 
     // ---------------------------
@@ -556,6 +539,69 @@ export function createEngine({
         });
     }
 
+    function createTextSprite(text: string, color: string = "#ffffff") {
+        const canvas = document.createElement("canvas");
+        const ctx = canvas.getContext("2d");
+        if (!ctx) return null;
+
+        const fontSize = 48;
+        const font = `bold ${fontSize}px sans-serif`;
+        ctx.font = font;
+
+        const metrics = ctx.measureText(text);
+        const w = Math.ceil(metrics.width);
+        const h = Math.ceil(fontSize * 1.2);
+
+        canvas.width = w;
+        canvas.height = h;
+
+        ctx.font = font;
+        ctx.fillStyle = color;
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText(text, w / 2, h / 2);
+
+        const tex = new THREE.CanvasTexture(canvas);
+        tex.minFilter = THREE.LinearFilter;
+
+        const mat = new THREE.SpriteMaterial({
+            map: tex,
+            transparent: true,
+            depthWrite: false,
+            depthTest: true,
+        });
+
+        const sprite = new THREE.Sprite(mat);
+
+        // World-size label (you can later do Stellarium-style pixel fitting if you want)
+        const targetHeight = 2;
+        const aspect = w / h;
+        sprite.scale.set(targetHeight * aspect, targetHeight, 1);
+
+        return sprite;
+    }
+
+    function createStarTexture() {
+        const canvas = document.createElement("canvas");
+        canvas.width = 64;
+        canvas.height = 64;
+        const ctx = canvas.getContext("2d")!;
+
+        const gradient = ctx.createRadialGradient(32, 32, 0, 32, 32, 32);
+        gradient.addColorStop(0, "rgba(255, 255, 255, 1)");
+        gradient.addColorStop(0.2, "rgba(255, 255, 255, 0.8)");
+        gradient.addColorStop(0.5, "rgba(255, 255, 255, 0.2)");
+        gradient.addColorStop(1, "rgba(255, 255, 255, 0)");
+
+        ctx.fillStyle = gradient;
+        ctx.fillRect(0, 0, 64, 64);
+
+        const tex = new THREE.CanvasTexture(canvas);
+        return tex;
+    }
+
+    const starTexture = createStarTexture();
+
     function clearRoot() {
         for (const child of [...root.children]) {
             root.remove(child);
@@ -565,239 +611,33 @@ export function createEngine({
         meshById.clear();
         lineByBookId.clear();
         dynamicObjects.length = 0;
-
-        chapterPoints = null;
-        chapterPointIds = [];
-        chapterPointIndexById.clear();
-        chapterPosAttr = null;
-        chapterActiveAttr = null;
-        chapterMat = null;
-        hoveredLineBookId = null;
-        hoveredId = null;
-        focusActiveIds = null;
-        hideHoverLabel();
     }
 
-    // ---------------------------
-    // Constellation line helpers
-    // ---------------------------
-    function updateBookLine(bookId: string) {
-        const line = lineByBookId.get(bookId);
-        if (!line) return;
-
-        const chapters: SceneNode[] = [];
-        for (const n of nodeById.values()) {
-            if (n.parent === bookId && n.level === 3) chapters.push(n);
-        }
-
-        chapters.sort((a, b) => {
-            const cA = (a.meta?.chapter as number) || 0;
-            const cB = (b.meta?.chapter as number) || 0;
-            return cA - cB;
-        });
-
-        const points: THREE.Vector3[] = [];
-        for (const c of chapters) {
-            const p = getRenderedNodePosition(c.id);
-            if (p) points.push(p);
-        }
-
-        if (points.length > 1) {
-            line.geometry.setFromPoints(points);
-        }
-    }
-
-    function setLineBaseOpacity(bookId: string, base: number) {
-        const line = lineByBookId.get(bookId);
-        if (!line) return;
-        (line.userData as any).baseOpacity = base;
-        if (hoveredLineBookId !== bookId) {
-            (line.material as THREE.LineBasicMaterial).opacity = base;
-        }
-    }
-
-    // ---------------------------
-    // Chapter points (cinematic mode)
-    // ---------------------------
-    function buildChapterPoints(model: SceneModel, cfg: StarMapConfig) {
-        // remove existing, if any
-        if (chapterPoints) {
-            root.remove(chapterPoints);
-            disposeObject(chapterPoints);
-            chapterPoints = null;
-        }
-        chapterPointIds = [];
-        chapterPointIndexById.clear();
-
-        const resolver = createVisualResolver(model, cfg);
-
-        const chapters = (model.nodes as any[]).filter((n) => n.level === 3);
-        const n = chapters.length;
-
-        const positions = new Float32Array(n * 3);
-        const colors = new Float32Array(n * 3);
-        const alphas = new Float32Array(n);
-        const sizes = new Float32Array(n);
-        const actives = new Float32Array(n);
-
-        for (let i = 0; i < n; i++) {
-            const node = chapters[i] as any as SceneNode;
-            chapterPointIds.push(node.id);
-            chapterPointIndexById.set(node.id, i);
-
-            const x = (node.meta?.x as number) ?? 0;
-            const y = (node.meta?.y as number) ?? 0;
-            const z = (node.meta?.z as number) ?? 0;
-
-            positions[i * 3] = x;
-            positions[i * 3 + 1] = y;
-            positions[i * 3 + 2] = z;
-
-            const { color, opacity } = resolver.color(node);
-            colors[i * 3] = color.r;
-            colors[i * 3 + 1] = color.g;
-            colors[i * 3 + 2] = color.b;
-            alphas[i] = opacity;
-
-            // Size:
-            // Prefer absolute scale from style rules (same as sprites), then map to pixels.
-            const baseScale = 2.0;
-            const s = resolver.scale(node) ?? baseScale;
-            const px = THREE.MathUtils.clamp(
-                s * env.starPxPerScale!,
-                env.starMinPx!,
-                env.starMaxPx!
-            );
-            sizes[i] = px;
-            actives[i] = 1.0;
-        }
-
-        const geo = new THREE.BufferGeometry();
-        chapterPosAttr = new THREE.BufferAttribute(positions, 3);
-        chapterActiveAttr = new THREE.BufferAttribute(actives, 1);
-
-        geo.setAttribute("position", chapterPosAttr);
-        geo.setAttribute("aColor", new THREE.BufferAttribute(colors, 3));
-        geo.setAttribute("aAlpha", new THREE.BufferAttribute(alphas, 1));
-        geo.setAttribute("aSize", new THREE.BufferAttribute(sizes, 1));
-        geo.setAttribute("aActive", chapterActiveAttr);
-
-        const mat = new THREE.ShaderMaterial({
-            transparent: true,
-            depthWrite: false,
-            depthTest: true,
-            blending: THREE.AdditiveBlending,
-            uniforms: {
-                uTime: { value: 0 },
-                uPixelRatio: { value: Math.min(window.devicePixelRatio || 1, 2) },
-                uInactiveDim: { value: env.inactiveDim! },
-                uTwinkleStrength: { value: env.starTwinkleStrength! },
-            },
-            vertexShader: `
-                attribute vec3 aColor;
-                attribute float aAlpha;
-                attribute float aSize;
-                attribute float aActive;
-
-                uniform float uTime;
-                uniform float uPixelRatio;
-                uniform float uTwinkleStrength;
-
-                varying vec4 vColor;
-                varying float vActive;
-                varying float vTwinkle;
-
-                void main() {
-                    vColor = vec4(aColor, aAlpha);
-                    vActive = aActive;
-
-                    float tw = 1.0;
-                    if (uTwinkleStrength > 0.0) {
-                        tw = 1.0 + 0.5 * uTwinkleStrength * sin(
-                            uTime * 0.001 +
-                            position.x * 0.02 +
-                            position.y * 0.017 +
-                            position.z * 0.013
-                        );
-                    }
-                    vTwinkle = tw;
-
-                    vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
-                    gl_Position = projectionMatrix * mvPosition;
-
-                    // Constant pixel size (planetarium feel)
-                    gl_PointSize = aSize * uPixelRatio;
-                }
-            `,
-            fragmentShader: `
-                uniform float uInactiveDim;
-
-                varying vec4 vColor;
-                varying float vActive;
-                varying float vTwinkle;
-
-                void main() {
-                    vec2 uv = gl_PointCoord * 2.0 - 1.0;
-                    float r = length(uv);
-
-                    float core = smoothstep(0.85, 0.0, r);
-                    float halo = smoothstep(1.15, 0.0, r) * 0.35;
-                    float a = core + halo;
-
-                    if (a <= 0.001) discard;
-
-                    float dim = mix(uInactiveDim, 1.0, vActive);
-                    vec3 col = vColor.rgb * vTwinkle;
-
-                    gl_FragColor = vec4(col, vColor.a * a * dim);
-                }
-            `,
-        });
-
-        chapterMat = mat;
-
-        chapterPoints = new THREE.Points(geo, mat);
-        chapterPoints.userData = { kind: "chapterPoints", interactive: true };
-        root.add(chapterPoints);
-    }
-
-    function setChapterFocusMask(activeIds: Set<string> | null) {
-        focusActiveIds = activeIds;
-
-        if (!chapterActiveAttr) return;
-        for (let i = 0; i < chapterPointIds.length; i++) {
-            const id = chapterPointIds[i];
-            const active = !activeIds || activeIds.has(id) ? 1 : 0;
-            chapterActiveAttr.setX(i, active);
-        }
-        chapterActiveAttr.needsUpdate = true;
-    }
-
-    // ---------------------------
-    // Build scene from model
-    // ---------------------------
-    function buildFromModel(model: SceneModel, cfg: StarMapConfig, mode: RenderMode) {
+    function buildFromModel(model: SceneModel, cfg: StarMapConfig) {
         clearRoot();
 
-        // background
+        // background + camera
         if (cfg.background && cfg.background !== "transparent") {
             scene.background = new THREE.Color(cfg.background);
         } else {
             scene.background = null;
         }
 
-        // camera
-        camera.fov = cfg.camera?.fov ?? env.defaultFov!;
+        // Respect config FOV if provided, otherwise use Stellarium-ish default
+        camera.fov = cfg.camera?.fov ?? env.defaultFov;
         camera.updateProjectionMatrix();
+
+        // reset zoom state whenever we rebuild the scene
         targetFov = camera.fov;
         zoomOutLimitFov = camera.fov;
+// Default to placing content at a "sky-like" radius if not specified
+        const layoutCfg = {
+            ...cfg.layout,
+            radius: cfg.layout?.radius ?? 2000,
+        };
+        const laidOut = computeLayoutPositions(model, layoutCfg);
 
-        // layout
-        const laidOut = computeLayoutPositions(model, cfg.layout);
-
-        // nodes (sprites for labels, sprites or points for chapters)
-        const wantChapterSprites = mode === "basic";
-
+        // Create meshes
         for (const n of laidOut.nodes) {
             nodeById.set(n.id, n);
 
@@ -805,89 +645,91 @@ export function createEngine({
             let y = (n.meta?.y as number) ?? 0;
             let z = (n.meta?.z as number) ?? 0;
 
-            if (cfg.arrangement && (cfg.arrangement as any)[n.id]) {
-                const pos = (cfg.arrangement as any)[n.id].position;
+            if (cfg.arrangement && cfg.arrangement[n.id]) {
+                const pos = cfg.arrangement[n.id].position;
                 x = pos[0];
                 y = pos[1];
                 z = pos[2];
             }
 
-            // Keep meta in sync with rendered position (used by points + line building)
-            (n.meta as any).x = x;
-            (n.meta as any).y = y;
-            (n.meta as any).z = z;
-
-            // Level 3: Chapters -> Stars
-            if (n.level === 3 && wantChapterSprites) {
-                if (!starTexture) continue;
-
-                const sprite = new THREE.Sprite(
-                    new THREE.SpriteMaterial({
-                        map: starTexture,
-                        transparent: true,
-                        opacity: 1,
-                        depthWrite: false,
-                        depthTest: true,
-                        blending: THREE.AdditiveBlending,
-                    })
-                );
+            // Level 3: Chapters -> Stars (Sprites)
+            if (n.level === 3) {
+                const mat = new THREE.SpriteMaterial({
+                    map: starTexture,
+                    color: 0xffffff,
+                    transparent: true,
+                    blending: THREE.AdditiveBlending,
+                    depthWrite: false
+                });
+                const sprite = new THREE.Sprite(mat);
 
                 sprite.position.set(x, y, z);
-                sprite.userData = { id: n.id, level: n.level, interactive: true };
+                sprite.userData = { id: n.id, level: n.level };
 
-                // Base size for stars (styles may override)
-                sprite.scale.setScalar(2.0);
+                // Base size for stars
+                const baseScale = 2.0;
+                sprite.scale.setScalar(baseScale);
 
+                // Add to dynamic scaling list
                 dynamicObjects.push({ obj: sprite, initialScale: sprite.scale.clone(), type: "star" });
+
+                // Hidden label for hover
+                if (n.label) {
+                    const labelSprite = createTextSprite(n.label);
+                    if (labelSprite) {
+                        labelSprite.position.set(0, 1.2, 0);
+                        labelSprite.visible = false;
+                        sprite.add(labelSprite);
+                    }
+                }
 
                 root.add(sprite);
                 meshById.set(n.id, sprite);
             }
-
             // Level 1 (Division) or 2 (Book) -> Text Labels on the Sky
-            if (n.level === 1 || n.level === 2) {
-                if (!n.label) continue;
+            else if (n.level === 1 || n.level === 2) {
+                if (n.label) {
+                    // Level 1 (e.g. "Gospels") vs Level 2 (e.g. "John")
+                    const isBook = n.level === 2;
+                    const color = isBook ? "#ffffff" : "#38bdf8";
 
-                const isBook = n.level === 2;
-                const color = isBook ? "#ffffff" : "#38bdf8";
+                    // Division labels: smaller, static
+                    // Book labels: larger, dynamic
+                    const baseScale = isBook ? 3.0 : 7.0;
 
-                const labelSprite = createTextSprite(n.label, color);
-                if (!labelSprite) continue;
+                    const labelSprite = createTextSprite(n.label, color);
+                    if (labelSprite) {
+                        labelSprite.position.set(x, y, z);
+                        labelSprite.scale.multiplyScalar(baseScale);
+                        root.add(labelSprite);
 
-                labelSprite.position.set(x, y, z);
-                labelSprite.userData = { id: n.id, level: n.level, interactive: isBook };
-
-                // Division labels: bigger, static; Book labels: smaller, dynamic
-                const baseScale = isBook ? 3.0 : 7.0;
-                labelSprite.scale.multiplyScalar(baseScale);
-
-                root.add(labelSprite);
-                meshById.set(n.id, labelSprite);
-
-                if (isBook) {
-                    dynamicObjects.push({ obj: labelSprite, initialScale: labelSprite.scale.clone(), type: "label" });
+                        // Only add Books to dynamicObjects so they scale/fade.
+                        // Divisions stay static.
+                        if (isBook) {
+                            labelSprite.userData = { id: n.id, level: n.level, interactive: true };
+                            meshById.set(n.id, labelSprite);
+                            dynamicObjects.push({ obj: labelSprite, initialScale: labelSprite.scale.clone(), type: "label" });
+                        }
+                    }
                 }
             }
         }
 
-        // Apply visuals to any sprites we built (stars in basic mode, labels always)
         applyVisuals({ model: laidOut, cfg, meshById });
 
-        // Build chapter points if cinematic
-        if (mode === "cinematic") {
-            buildChapterPoints(laidOut, cfg);
-        }
 
-        // Constellation lines (sequential)
+        // ---------------------------
+        // Draw Constellation Lines (Sequential)
+        // ---------------------------
         const lineMat = new THREE.LineBasicMaterial({
             color: 0x445566,
             transparent: true,
             opacity: 0.3,
             depthWrite: false,
-            blending: THREE.AdditiveBlending,
+            blending: THREE.AdditiveBlending
         });
 
-        // group chapters by book
+        // Group by book
         const bookMap = new Map<string, SceneNode[]>();
         for (const n of laidOut.nodes) {
             if (n.level === 3 && n.parent) {
@@ -898,6 +740,7 @@ export function createEngine({
         }
 
         for (const [bookId, chapters] of bookMap.entries()) {
+            // Sort by chapter number
             chapters.sort((a, b) => {
                 const cA = (a.meta?.chapter as number) || 0;
                 const cB = (b.meta?.chapter as number) || 0;
@@ -908,120 +751,38 @@ export function createEngine({
 
             const points: THREE.Vector3[] = [];
             for (const c of chapters) {
-                const p = getRenderedNodePosition(c.id);
-                if (p) points.push(p);
+                const x = (c.meta?.x as number) ?? 0;
+                const y = (c.meta?.y as number) ?? 0;
+                const z = (c.meta?.z as number) ?? 0;
+                points.push(new THREE.Vector3(x, y, z));
             }
-            if (points.length < 2) continue;
 
             const geo = new THREE.BufferGeometry().setFromPoints(points);
-            const line = new THREE.Line(geo, lineMat.clone());
-            (line.userData as any).baseOpacity = 0.3;
-
+            const line = new THREE.Line(geo, lineMat);
             root.add(line);
             lineByBookId.set(bookId, line);
         }
 
-        // Ensure focus mask is reset after rebuild
-        setChapterFocusMask(null);
-        hoveredLineBookId = null;
-
-        // Postprocessing for this build
-        configurePostProcessing(mode, cfg);
-
         resize();
-    }
-
-    // ---------------------------
-    // Focus (dims unrelated nodes + lines, and updates chapter point mask)
-    // ---------------------------
-    let focusAnimRaf = 0;
-
-    function cancelFocusAnim() {
-        if (focusAnimRaf) {
-            cancelAnimationFrame(focusAnimRaf);
-            focusAnimRaf = 0;
-        }
-    }
-
-    function getControlsAnglesSafe() {
-        // OrbitControls stores spherical coords internally; these getters are stable
-        return {
-            azimuth: controls.getAzimuthalAngle(),
-            polar: controls.getPolarAngle(),
-        };
-    }
-
-    function setControlsAnglesSafe(azimuth: number, polar: number) {
-        // Clamp to our allowed range
-        const clampedPolar = THREE.MathUtils.clamp(polar, controls.minPolarAngle, controls.maxPolarAngle);
-        controls.setAzimuthalAngle(azimuth);
-        controls.setPolarAngle(clampedPolar);
-        controls.update();
-    }
-
-    function aimAtWorldPoint(targetPos: THREE.Vector3) {
-        const v = targetPos.clone().normalize();
-        // Convert direction to OrbitControls angles
-        // OrbitControls uses spherical coords: polar is angle from positive Y, azimuth around Y.
-        const polar = Math.acos(THREE.MathUtils.clamp(v.y, -1, 1));
-        const azimuth = Math.atan2(v.x, v.z);
-        return { targetAz: azimuth, targetPolar: polar };
-    }
-
-    function animateFocusTo(target: THREE.Object3D | THREE.Vector3) {
-        cancelFocusAnim();
-
-        const { azimuth: startAz, polar: startPolar } = getControlsAnglesSafe();
-        const startFov = camera.fov;
-
-        const targetPos =
-            target instanceof THREE.Object3D ? target.getWorldPosition(new THREE.Vector3()) : target;
-
-        const { targetAz, targetPolar } = aimAtWorldPoint(targetPos);
-        const endFov = clampFov(env.focusZoomFov!);
-
-        const start = performance.now();
-        const dur = Math.max(120, env.focusDurationMs || 650);
-
-        const tick = () => {
-            const t = (performance.now() - start) / dur;
-            const k = t >= 1 ? 1 : (1 - Math.pow(1 - t, 3)); // easeOutCubic
-
-            const curAz = THREE.MathUtils.lerp(startAz, targetAz, k);
-            const curPolar = THREE.MathUtils.lerp(startPolar, targetPolar, k);
-            setControlsAnglesSafe(curAz, curPolar);
-
-            camera.fov = THREE.MathUtils.lerp(startFov, endFov, k);
-            camera.updateProjectionMatrix();
-            targetFov = camera.fov;
-
-            if (t < 1) {
-                focusAnimRaf = requestAnimationFrame(tick);
-            } else {
-                focusAnimRaf = 0;
-            }
-        };
-
-        focusAnimRaf = requestAnimationFrame(tick);
     }
 
     function applyFocus(targetId: string | undefined, animate: boolean = true) {
         if (!targetId) {
             // Reset: show all full opacity
-            for (const mesh of meshById.values()) {
+            for (const [id, mesh] of meshById.entries()) {
                 mesh.traverse((obj: any) => {
                     if (obj.material) obj.material.opacity = 1.0;
                 });
-                (mesh.userData as any).interactive = true;
+                mesh.userData.interactive = true;
             }
-            for (const [bookId] of lineByBookId.entries()) {
-                setLineBaseOpacity(bookId, 0.3);
+            for (const line of lineByBookId.values()) {
+                line.visible = true;
+                (line.material as THREE.LineBasicMaterial).opacity = 0.3;
             }
-            setChapterFocusMask(null);
             return;
         }
 
-        // Build downward graph
+        // 1. Build downward graph
         const childrenMap = new Map<string, string[]>();
         for (const n of nodeById.values()) {
             if (n.parent) {
@@ -1031,7 +792,7 @@ export function createEngine({
             }
         }
 
-        // Find all descendants of targetId
+        // 2. Find all descendants of targetId
         const activeIds = new Set<string>();
         const queue = [targetId];
         activeIds.add(targetId);
@@ -1047,7 +808,7 @@ export function createEngine({
             }
         }
 
-        // Update sprites/meshes
+        // 3. Update visuals and interaction
         for (const [id, mesh] of meshById.entries()) {
             const isActive = activeIds.has(id);
             const opacity = isActive ? 1.0 : 0.1;
@@ -1056,124 +817,105 @@ export function createEngine({
                 if (obj.material) obj.material.opacity = opacity;
             });
 
-            (mesh.userData as any).interactive = isActive;
+            mesh.userData.interactive = isActive;
         }
 
-        // Update lines (by book id)
-        for (const [bookId] of lineByBookId.entries()) {
+        // 4. Update lines
+        for (const [bookId, line] of lineByBookId.entries()) {
             const isActive = activeIds.has(bookId);
-            setLineBaseOpacity(bookId, isActive ? 0.3 : 0.05);
+            (line.material as THREE.LineBasicMaterial).opacity = isActive ? 0.3 : 0.05;
         }
 
-        // Update chapter points mask
-        setChapterFocusMask(activeIds);
-
-        // Animate focus
+        // 5. Animate (Focus)
         if (animate) {
-            const p = getRenderedNodePosition(targetId);
-            if (p) animateFocusTo(p);
-        }
-    }
+            const targetMesh = meshById.get(targetId);
+            if (targetMesh) {
+                animateFocusTo(targetMesh);
+            } else {
+                // If no direct mesh, find centroid of all visible children
+                const sum = new THREE.Vector3();
+                let count = 0;
 
-    // ---------------------------
-    // Drag controls (editable mode)
-    // ---------------------------
-    function getFullArrangement(): StarArrangement {
-        const arr: StarArrangement = {};
-        for (const id of nodeById.keys()) {
-            const p = getRenderedNodePosition(id);
-            if (!p) continue;
-            arr[id] = { position: [p.x, p.y, p.z] };
-        }
-        return arr;
-    }
-
-    function updateDragControls(editable: boolean) {
-        if (!editable) {
-            if (dragControls) {
-                dragControls.dispose();
-                dragControls = null;
-            }
-            return;
-        }
-
-        // Gather draggable objects:
-        // - Book labels (level 2)
-        // - Chapter stars (level 3) only when in basic mode (sprites exist)
-        const draggables: THREE.Object3D[] = [];
-
-        for (const [id, mesh] of meshById.entries()) {
-            const node = nodeById.get(id);
-            if (!node) continue;
-
-            if (node.level === 2 && mesh instanceof THREE.Sprite) {
-                draggables.push(mesh);
-            } else if (node.level === 3 && currentRenderMode === "basic") {
-                draggables.push(mesh);
-            }
-        }
-
-        if (dragControls) {
-            dragControls.dispose();
-            dragControls = null;
-        }
-
-        if (draggables.length === 0) return;
-
-        dragControls = new DragControls(draggables, camera, renderer.domElement);
-
-        const lastPos = new THREE.Vector3();
-
-        dragControls.addEventListener("dragstart", (event: any) => {
-            controls.enabled = false;
-            isDragging = true;
-            lastPos.copy(event.object.position);
-        });
-
-        dragControls.addEventListener("drag", (event: any) => {
-            const obj = event.object;
-            const id = obj.userData.id as string | undefined;
-            if (!id) return;
-
-            const node = nodeById.get(id);
-            if (!node) return;
-
-            if (node.level === 2) {
-                // Book Label Drag -> Move constellation (all chapter nodes for that book)
-                const currentPos = obj.position;
-                const delta = new THREE.Vector3().subVectors(currentPos, lastPos);
-
-                const bookId = id;
-                for (const [nId, n] of nodeById.entries()) {
-                    if (n.parent === bookId && n.level === 3) {
-                        translateRenderedNodeById(nId, delta);
+                // Iterate over all active IDs (descendants)
+                for (const id of activeIds) {
+                    const mesh = meshById.get(id);
+                    if (mesh) {
+                        sum.add(mesh.getWorldPosition(new THREE.Vector3()));
+                        count++;
                     }
                 }
 
-                updateBookLine(bookId);
-                lastPos.copy(currentPos);
-            } else if (node.level === 3) {
-                // Chapter Star Drag -> Update its parent line
-                if (node.parent) updateBookLine(node.parent);
+                if (count > 0) {
+                    const centroid = sum.divideScalar(count);
+                    animateFocusTo(centroid);
+                }
             }
-        });
-
-        dragControls.addEventListener("dragend", () => {
-            controls.enabled = true;
-            setTimeout(() => {
-                isDragging = false;
-            }, 0);
-
-            if (currentConfig) {
-                handlers.onArrangementChange?.(getFullArrangement());
-            }
-        });
+        }
     }
 
-    // ---------------------------
-    // Picking / Hover / Click
-    // ---------------------------
-    function pick(ev: MouseEvent | PointerEvent) {
+    let lastData: any = undefined;
+    let lastAdapter: any = undefined;
+    let lastModel: SceneModel | undefined = undefined;
+
+    function setConfig(cfg: StarMapConfig) {
+        currentConfig = cfg;
+        let shouldRebuild = false;
+        let model = cfg.model;
+
+        // 1. Resolve Model and check for changes
+        if (!model && cfg.data && cfg.adapter) {
+            if (cfg.data !== lastData || cfg.adapter !== lastAdapter) {
+                model = cfg.adapter(cfg.data);
+                shouldRebuild = true;
+                lastData = cfg.data;
+                lastAdapter = cfg.adapter;
+                lastModel = model;
+            } else {
+                model = lastModel; // reuse
+            }
+        } else if (model) {
+            // direct model provided: assume it might have changed if strictly equal?
+            // Or just always rebuild if 'model' prop is used directly (simpler).
+            shouldRebuild = true;
+            lastData = undefined;
+            lastAdapter = undefined;
+            lastModel = model;
+        }
+
+        if (shouldRebuild && model) {
+            buildFromModel(model, cfg);
+        } else if (cfg.arrangement) {
+            // If not rebuilding, apply arrangement positions to existing meshes
+            for (const [id, val] of Object.entries(cfg.arrangement)) {
+                const mesh = meshById.get(id);
+                if (mesh) {
+                    mesh.position.set(val.position[0], val.position[1], val.position[2]);
+                }
+            }
+        }
+
+        // 2. Apply Visuals (if not rebuilding, we might still need to update visuals?)
+        // For now, let's assume visuals are static unless rebuild happens.
+        // Actually, 'applyVisuals' depends on the mesh map which is stable.
+        // If we want to support dynamic visuals without rebuild, we'd call applyVisuals here.
+        // But the prompt specifically asked to fix the Zoom Reset issue, which is caused by buildFromModel.
+
+        // 3. Apply Focus
+        if (cfg.focus?.nodeId) {
+            applyFocus(cfg.focus.nodeId, cfg.focus.animate);
+        } else {
+            // Reset if no focus provided
+            applyFocus(undefined, false);
+        }
+
+        updateDragControls(!!cfg.editable);
+    }
+
+    function setHandlers(next: Handlers) {
+        handlers = next;
+    }
+
+    function pick(ev: MouseEvent) {
         const rect = renderer.domElement.getBoundingClientRect();
         pointer.x = ((ev.clientX - rect.left) / rect.width) * 2 - 1;
         pointer.y = -(((ev.clientY - rect.top) / rect.height) * 2 - 1);
@@ -1181,72 +923,52 @@ export function createEngine({
         raycaster.setFromCamera(pointer, camera);
 
         const hits = raycaster.intersectObjects(root.children, true);
-
-        for (const h of hits) {
-            const obj = h.object as any;
-
-            if (obj.type === "Sprite" || obj.type === "Mesh") {
-                if (obj.userData?.interactive === false) continue;
-                const id = obj.userData?.id as string | undefined;
-                if (!id) continue;
-                return nodeById.get(id);
-            }
-
-            if (obj.type === "Points" && obj.userData?.kind === "chapterPoints") {
-                const idx = (h as any).index as number | undefined;
-                if (idx === undefined) continue;
-
-                const id = chapterPointIds[idx];
-                if (!id) continue;
-
-                // Respect focus mask: don't pick inactive points
-                if (focusActiveIds && !focusActiveIds.has(id)) continue;
-
-                return nodeById.get(id);
-            }
-        }
-
-        return undefined;
+        // pick meshes or sprites, but only if they are interactive
+        const hit = hits.find((h) =>
+            (h.object.type === "Mesh" || h.object.type === "Sprite") &&
+            (h.object.userData.interactive !== false)
+        );
+        const id = hit?.object?.userData?.id as string | undefined;
+        return id ? nodeById.get(id) : undefined;
     }
 
+    // ---------------------------
+    // Hover logic (labels on L3)
+    // ---------------------------
     function onPointerMove(ev: PointerEvent) {
         const node = pick(ev);
         const nextId = node?.id ?? null;
 
-        // Restore previous hovered line
-        if (hoveredLineBookId && hoveredLineBookId !== (node?.parent ?? null)) {
-            const line = lineByBookId.get(hoveredLineBookId);
-            if (line) {
-                const base = (line.userData as any).baseOpacity ?? 0.3;
-                (line.material as THREE.LineBasicMaterial).opacity = base;
-            }
-            hoveredLineBookId = null;
-        }
-
         if (nextId !== hoveredId) {
+            // hide previous hovered L3 label
+            if (hoveredId) {
+                const prevMesh = meshById.get(hoveredId);
+                const prevNode = nodeById.get(hoveredId);
+                if (prevMesh && prevNode && prevNode.level === 3) {
+                    const label = prevMesh.children.find((c) => c instanceof THREE.Sprite);
+                    if (label) label.visible = false;
+                }
+            }
+
             hoveredId = nextId;
 
-            // Hide hover label
-            hideHoverLabel();
+            // show current hovered L3 label
+            if (nextId) {
+                const mesh = meshById.get(nextId);
+                const n = nodeById.get(nextId);
+                if (mesh && n && n.level === 3) {
+                    const label = mesh.children.find((c) => c instanceof THREE.Sprite);
+                    if (label) {
+                        label.visible = true;
+                        // Since we are using sprites now, they look at camera.
+                        // We might want to offset the label so it doesn't overlap the star.
+                        label.position.set(0, 0.8, 0);
+                    }
 
-            // Show hover label for chapters
-            if (node && node.level === 3 && node.label) {
-                setHoverLabel(node.label, "#ffffff");
-
-                const p = getRenderedNodePosition(node.id);
-                if (p && hoverLabelSprite) {
-                    // Offset label slightly outward along the radial direction
-                    const dir = p.clone().normalize();
-                    hoverLabelSprite.position.copy(p).addScaledVector(dir, 6);
-                    hoverLabelSprite.visible = true;
-                }
-
-                // Brighten lines on hover
-                if (node.parent) {
-                    const line = lineByBookId.get(node.parent);
-                    if (line) {
-                        (line.material as THREE.LineBasicMaterial).opacity = 0.8;
-                        hoveredLineBookId = node.parent;
+                    // Brighten lines on hover
+                    if (n.parent) {
+                        const line = lineByBookId.get(n.parent);
+                        if (line) (line.material as THREE.LineBasicMaterial).opacity = 0.8;
                     }
                 }
             }
@@ -1259,41 +981,37 @@ export function createEngine({
         isDragging = false;
     }
 
-    function onPointerUp(ev: PointerEvent) {
-        if (isDragging) return;
-
-        const node = pick(ev);
-        if (!node) return;
-
-        handlers.onSelect?.(node);
-
-        if (env.focusOnSelect) {
-            const p = getRenderedNodePosition(node.id);
-            if (p) animateFocusTo(p);
-        }
+    function onChange() {
+        // OrbitControls fires change while dragging
+        isDragging = true;
     }
 
     // ---------------------------
-    // Zoom / double-click behaviour
+    // Stellarium-ish zoom (FOV)
     // ---------------------------
     const onWheelFov = (ev: WheelEvent) => {
         ev.preventDefault();
 
-        // Trackpad pinch on macOS tends to come through as wheel w/ ctrlKey=true
-        const pinch = ev.ctrlKey ? 0.55 : 1.0;
-        const intensity = env.fovWheelSensitivity! * pinch;
+        // Trackpad pinch on macOS often comes through as wheel with ctrlKey=true.
+        const speed = (ev.ctrlKey ? 0.15 : 1) * (env.fovWheelSensitivity ?? 0.02);
 
-        // Exponential zoom for telescope-like feel
-        const factor = Math.exp(ev.deltaY * intensity);
-        targetFov = clampFov(targetFov * factor);
+        const maxFov = env.lockZoomOutToInitialFov
+            ? Math.min(env.maxFov!, zoomOutLimitFov)
+            : env.maxFov!;
+
+        targetFov = THREE.MathUtils.clamp(
+            targetFov + ev.deltaY * speed,
+            env.minFov!,
+            maxFov
+        );
     };
 
     const onDblClick = (ev: MouseEvent) => {
         const node = pick(ev);
         if (node) {
-            const p = getRenderedNodePosition(node.id);
-            if (p) {
-                animateFocusTo(p);
+            const mesh = meshById.get(node.id);
+            if (mesh) {
+                animateFocusTo(mesh);
                 return;
             }
         }
@@ -1303,96 +1021,120 @@ export function createEngine({
     };
 
     // ---------------------------
-    // Model/config plumbing
+    // Click-to-focus (aim + zoom)
     // ---------------------------
-    let lastData: any = undefined;
-    let lastAdapter: any = undefined;
-    let lastModel: SceneModel | undefined = undefined;
+    let focusAnimRaf = 0;
 
-    function setConfig(cfg: StarMapConfig) {
-        currentConfig = cfg;
+    function cancelFocusAnim() {
+        if (focusAnimRaf) cancelAnimationFrame(focusAnimRaf);
+        focusAnimRaf = 0;
+    }
 
-        let shouldRebuild = false;
-        let model = cfg.model;
+    function getControlsAnglesSafe() {
+        // OrbitControls exposes getAzimuthalAngle/getPolarAngle
+        const getAz = (controls as any).getAzimuthalAngle?.bind(controls);
+        const getPol = (controls as any).getPolarAngle?.bind(controls);
+        return {
+            azimuth: typeof getAz === "function" ? getAz() : 0,
+            polar: typeof getPol === "function" ? getPol() : Math.PI / 4,
+        };
+    }
 
-        // Resolve model from adapter/data
-        if (!model && cfg.data && cfg.adapter) {
-            if (cfg.data !== lastData || cfg.adapter !== lastAdapter) {
-                model = cfg.adapter(cfg.data);
-                shouldRebuild = true;
-                lastData = cfg.data;
-                lastAdapter = cfg.adapter;
-                lastModel = model;
+    function setControlsAnglesSafe(azimuth: number, polar: number) {
+        // Newer three exposes setAzimuthalAngle / setPolarAngle.
+        const setAz = (controls as any).setAzimuthalAngle?.bind(controls);
+        const setPol = (controls as any).setPolarAngle?.bind(controls);
+
+        if (typeof setAz === "function" && typeof setPol === "function") {
+            setAz(azimuth);
+            setPol(polar);
+            controls.update();
+            return;
+        }
+
+        // Fallback: rotate camera directly to look at a direction
+        // (keeps the “standing in the middle” feel even if controls lacks setters)
+        const dir = new THREE.Vector3();
+        dir.setFromSphericalCoords(1, polar, azimuth);
+        const lookAt = dir.clone().multiplyScalar(10);
+        camera.lookAt(lookAt);
+    }
+
+    function aimAtWorldPoint(worldPoint: THREE.Vector3) {
+        // We’re “at the origin”, so direction is point normalized.
+        // OrbitControls places camera relative to target. To look AT 'dir', camera must be at '-dir'.
+        const dir = worldPoint.clone().normalize().negate();
+        // Convert direction -> spherical angles compatible with OrbitControls
+        // In three: Spherical(phi=polar from +Y, theta=azimuth around Y from +Z toward +X)
+        const spherical = new THREE.Spherical().setFromVector3(dir);
+        let targetPolar = spherical.phi;
+        let targetAz = spherical.theta;
+
+        // Clamp to our allowed range (zenith..horizon)
+        targetPolar = THREE.MathUtils.clamp(targetPolar, controls.minPolarAngle, controls.maxPolarAngle);
+
+        return { targetAz, targetPolar };
+    }
+
+    function easeInOutCubic(t: number) {
+        return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+    }
+
+    function animateFocusTo(target: THREE.Object3D | THREE.Vector3) {
+        cancelFocusAnim();
+
+        const { azimuth: startAz, polar: startPolar } = getControlsAnglesSafe();
+        const startFov = camera.fov;
+
+        const targetPos = target instanceof THREE.Object3D
+            ? target.getWorldPosition(new THREE.Vector3())
+            : target;
+
+        const { targetAz, targetPolar } = aimAtWorldPoint(targetPos);
+        const endFov = THREE.MathUtils.clamp(env.focusZoomFov!, env.minFov!, env.maxFov!);
+
+        const start = performance.now();
+        const dur = Math.max(120, env.focusDurationMs || 650);
+
+        const tick = (now: number) => {
+            const t = THREE.MathUtils.clamp((now - start) / dur, 0, 1);
+            const k = easeInOutCubic(t);
+
+            // Interpolate angles (shortest path for azimuth)
+            let dAz = targetAz - startAz;
+            // wrap to [-PI, PI]
+            dAz = ((dAz + Math.PI) % (Math.PI * 2)) - Math.PI;
+
+            const curAz = startAz + dAz * k;
+            const curPolar = THREE.MathUtils.lerp(startPolar, targetPolar, k);
+            setControlsAnglesSafe(curAz, curPolar);
+
+            camera.fov = THREE.MathUtils.lerp(startFov, endFov, k);
+            camera.updateProjectionMatrix();
+
+            if (t < 1) {
+                focusAnimRaf = requestAnimationFrame(tick);
             } else {
-                model = lastModel;
+                focusAnimRaf = 0;
             }
-        } else if (model) {
-            // direct model: safest behaviour is rebuild
-            shouldRebuild = true;
-            lastModel = model;
-            lastData = undefined;
-            lastAdapter = undefined;
-        }
+        };
 
-        const nextMode = resolveRenderMode(cfg);
-        if (nextMode !== currentRenderMode) {
-            shouldRebuild = true;
-        }
-
-        if (shouldRebuild && model) {
-            currentRenderMode = nextMode;
-            buildFromModel(model, cfg, nextMode);
-        } else {
-            // Apply arrangement deltas without rebuild
-            if (cfg.arrangement) {
-                const touchedBooks = new Set<string>();
-
-                for (const [id, val] of Object.entries(cfg.arrangement as any)) {
-                    const pos = val.position as [number, number, number];
-                    setRenderedNodePosition(id, new THREE.Vector3(pos[0], pos[1], pos[2]));
-
-                    const n = nodeById.get(id);
-                    if (n) {
-                        (n.meta as any).x = pos[0];
-                        (n.meta as any).y = pos[1];
-                        (n.meta as any).z = pos[2];
-                        if (n.parent && n.level === 3) touchedBooks.add(n.parent);
-                    }
-                }
-
-                for (const b of touchedBooks) updateBookLine(b);
-            }
-
-            // Post processing might change even without rebuild
-            configurePostProcessing(currentRenderMode, cfg);
-        }
-
-        // Apply focus
-        if (cfg.focus?.nodeId) {
-            applyFocus(cfg.focus.nodeId, cfg.focus.animate);
-        } else {
-            applyFocus(undefined, false);
-        }
-
-        updateDragControls(!!cfg.editable);
+        focusAnimRaf = requestAnimationFrame(tick);
     }
 
-    function setHandlers(next: Handlers) {
-        handlers = next;
-    }
+    function onPointerUp(ev: PointerEvent) {
+        if (isDragging) return;
 
-    // ---------------------------
-    // Resize
-    // ---------------------------
-    function resize() {
-        const w = container.clientWidth || 1;
-        const h = container.clientHeight || 1;
-        renderer.setSize(w, h, false);
-        camera.aspect = w / h;
-        camera.updateProjectionMatrix();
+        const node = pick(ev);
+        if (!node) return;
 
-        if (composer) {
-            composer.setSize(w, h);
+        // fire your existing handler
+        handlers.onSelect?.(node);
+
+        // optional: also do Stellarium-like “aim + zoom” on select
+        if (env.focusOnSelect) {
+            const mesh = meshById.get(node.id);
+            if (mesh) animateFocusTo(mesh);
         }
     }
 
@@ -1409,45 +1151,76 @@ export function createEngine({
         renderer.domElement.addEventListener("pointermove", onPointerMove);
         renderer.domElement.addEventListener("pointerdown", onPointerDown);
         renderer.domElement.addEventListener("pointerup", onPointerUp);
+
+        // wheel FOV zoom (passive:false so preventDefault works)
         renderer.domElement.addEventListener("wheel", onWheelFov, { passive: false });
+
         renderer.domElement.addEventListener("dblclick", onDblClick);
 
-        const objPos = new THREE.Vector3();
-        const objDir = new THREE.Vector3();
-        const cameraDir = new THREE.Vector3();
+        controls.addEventListener("change", onChange);
+        lastFrameMs = performance.now();
 
         const tick = () => {
             raf = requestAnimationFrame(tick);
 
-            // Smooth zoom
-            if (Math.abs(camera.fov - targetFov) > 0.001) {
-                camera.fov = THREE.MathUtils.lerp(camera.fov, targetFov, env.zoomLerp!);
-                camera.updateProjectionMatrix();
+            const now = performance.now();
+            const dt = Math.min(0.05, Math.max(0.0, (now - lastFrameMs) / 1000));
+            lastFrameMs = now;
+
+            // Smooth FOV easing (feels much more "planetarium" than hard steps)
+            const lerpK = 1 - Math.pow(1 - (env.zoomLerp ?? 0.12), dt * 60);
+            const prevFov = camera.fov;
+            camera.fov = THREE.MathUtils.lerp(camera.fov, targetFov, lerpK);
+            if (Math.abs(camera.fov - prevFov) > 1e-4) camera.updateProjectionMatrix();
+
+            // Rotation sensitivity based on zoom level (zoomed in => slower)
+            controls.rotateSpeed = camera.fov / (env.defaultFov || 90);
+
+            // Subtle sky drift (only the backdrop, so your "Bible constellation" geometry stays stable)
+            if (env.enableSkyDrift) {
+                backdropGroup.rotation.y += SIDEREAL_RATE * (env.timeScale ?? 60) * dt;
             }
 
-            // Damping rotation sensitivity based on zoom level
-            // More aggressive slowdown when zoomed in
-            const zoomRatio = camera.fov / (env.defaultFov || 80);
-            controls.rotateSpeed = Math.max(0.25, Math.pow(zoomRatio, 1.2));
+            // Normalized zoom amount: 0=zoomed out (wide FOV), 1=zoomed in (narrow FOV)
+            const fovNorm =
+                (env.maxFov! - camera.fov) / Math.max(1e-6, (env.maxFov! - env.minFov!));
+            const fovN = THREE.MathUtils.clamp(fovNorm, 0, 1);
 
-            // Improve points raycasting threshold as you zoom in/out
-            raycaster.params.Points!.threshold = THREE.MathUtils.clamp(14 * zoomRatio, 2, 20);
+            // Fade overlays as you zoom in (matches the demo's "clean when close" vibe)
+            const overlayFade = THREE.MathUtils.clamp(1 - fovN * 1.15, 0.0, 1.0);
 
-            // Dynamic scaling & fade for labels (keep readable, but reduce clutter)
-            const fov = camera.fov;
+            // Milky Way + atmosphere respond to zoom (subtle but engaging)
+            if (milkyWayMesh) {
+                milkyWayMesh.material.opacity = 0.25 + fovN * 0.55;
+            }
+            if (atmosphereMesh) {
+                const uniforms = (atmosphereMesh.material as THREE.ShaderMaterial).uniforms as any;
+                if (uniforms?.uIntensity) uniforms.uIntensity.value = 0.20 + fovN * 0.40;
+            }
+
+            // Dynamic scaling based on FOV (wide => larger for readability)
             const minZoomFov = 15;
-            const scaleFactor = Math.max(1, 1 + (fov - minZoomFov) * 0.05);
+            const scaleFactor = THREE.MathUtils.clamp(
+                1 + (camera.fov - minZoomFov) * 0.05,
+                0.85,
+                6.0
+            );
 
+            // Gaze-based fading for labels
+            const cameraDir = new THREE.Vector3();
             camera.getWorldDirection(cameraDir);
 
-            for (const item of dynamicObjects) {
-                if (item.type === "star" && currentRenderMode === "basic") {
-                    const s = item.initialScale.clone().multiplyScalar(scaleFactor);
-                    item.obj.scale.copy(s);
-                } else if (item.type === "label") {
-                    const s = item.initialScale.clone().multiplyScalar(scaleFactor * 0.75);
-                    item.obj.scale.copy(s);
+            // Re-use vectors to avoid GC
+            const objPos = new THREE.Vector3();
+            const objDir = new THREE.Vector3();
 
+            for (let i = 0; i < dynamicObjects.length; i++) {
+                const item = dynamicObjects[i];
+
+                // Scale from INITIAL vector to preserve aspect ratio
+                item.obj.scale.copy(item.initialScale).multiplyScalar(scaleFactor);
+
+                if (item.type === "label") {
                     const sprite = item.obj as THREE.Sprite;
 
                     sprite.getWorldPosition(objPos);
@@ -1459,39 +1232,32 @@ export function createEngine({
                     const invisibleDot = 0.88;
 
                     let opacity = 0;
-                    if (dot >= fullVisibleDot) opacity = 1;
-                    else if (dot > invisibleDot) opacity = (dot - invisibleDot) / (fullVisibleDot - invisibleDot);
+                    if (dot >= fullVisibleDot) {
+                        opacity = 1;
+                    } else if (dot > invisibleDot) {
+                        opacity = (dot - invisibleDot) / (fullVisibleDot - invisibleDot);
+                    }
 
-                    // Smooth enough for now
-                    (sprite.material as THREE.SpriteMaterial).opacity = opacity;
-                    sprite.visible = opacity > 0.01;
+                    const finalOpacity = opacity * overlayFade;
 
-                    // Optionally modulate matching line opacity, but preserve focus/hover base opacity
-                    const bookId = sprite.userData.id as string | undefined;
+                    sprite.material.opacity = finalOpacity;
+                    sprite.visible = finalOpacity > 0.01;
+
+                    // Fade the corresponding constellation lines too
+                    const bookId = nodeById.get(item.obj.userData.id)?.id;
                     if (bookId) {
                         const line = lineByBookId.get(bookId);
-                        if (line && hoveredLineBookId !== bookId) {
-                            const base = (line.userData as any).baseOpacity ?? 0.3;
-                            (line.material as THREE.LineBasicMaterial).opacity = THREE.MathUtils.clamp(base * (0.4 + opacity * 0.9), 0, 1);
+                        if (line) {
+                            (line.material as THREE.LineBasicMaterial).opacity =
+                                (0.05 + opacity * 0.45) * overlayFade;
                         }
                     }
                 }
             }
 
-            // Update cinematic uniforms
-            if (chapterMat) {
-                chapterMat.uniforms.uTime.value = performance.now();
-                chapterMat.uniforms.uPixelRatio.value = Math.min(window.devicePixelRatio || 1, 2);
-                chapterMat.uniforms.uInactiveDim.value = env.inactiveDim!;
-                chapterMat.uniforms.uTwinkleStrength.value = env.starTwinkleStrength!;
-            }
-
             controls.update();
-
-            if (composer) composer.render();
-            else renderer.render(scene, camera);
+            renderer.render(scene, camera);
         };
-
         tick();
     }
 
@@ -1507,13 +1273,15 @@ export function createEngine({
         renderer.domElement.removeEventListener("pointerup", onPointerUp);
         renderer.domElement.removeEventListener("wheel", onWheelFov as any);
         renderer.domElement.removeEventListener("dblclick", onDblClick);
+
+        controls.removeEventListener("change", onChange);
     }
 
     function dispose() {
         stop();
-
         clearRoot();
 
+        // env groups
         for (const child of [...groundGroup.children]) {
             groundGroup.remove(child);
             disposeObject(child);
@@ -1522,8 +1290,6 @@ export function createEngine({
             backdropGroup.remove(child);
             disposeObject(child);
         }
-
-        if (hoverLabelTex) hoverLabelTex.dispose();
 
         controls.dispose();
         renderer.dispose();
