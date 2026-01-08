@@ -1,6 +1,6 @@
 import * as THREE from "three";
-import { OrbitControls } from "three/examples/jsm/controls/OrbitControls";
-import { DragControls } from "three/examples/jsm/controls/DragControls";
+import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
+import { DragControls } from "three/examples/jsm/controls/DragControls.js";
 import type { StarMapConfig, SceneModel, SceneNode, StarArrangement } from "../types";
 import { computeLayoutPositions } from "./layout";
 import { applyVisuals } from "./materials";
@@ -637,6 +637,41 @@ export function createEngine({
         };
         const laidOut = computeLayoutPositions(model, layoutCfg);
 
+        // ---------------------------
+        // Division Boundaries
+        // ---------------------------
+        const boundaries = (laidOut.meta?.divisionBoundaries as number[]) ?? [];
+        if (boundaries.length > 0) {
+             const boundaryMat = new THREE.LineBasicMaterial({
+                color: 0x557799,
+                transparent: true,
+                opacity: 0.15,
+                depthWrite: false,
+                blending: THREE.AdditiveBlending
+            });
+
+            boundaries.forEach(angle => {
+                const points: THREE.Vector3[] = [];
+                // Create an arc from horizon (y=0.05) to zenith (y=1.0)
+                const steps = 32;
+                for (let i = 0; i <= steps; i++) {
+                    const t = i / steps;
+                    const y = 0.05 + t * (1.0 - 0.05);
+                    const rY = Math.sqrt(1 - y * y);
+                    
+                    const x = Math.cos(angle) * rY;
+                    const z = Math.sin(angle) * rY;
+                    
+                    // We need to scale by the layout radius
+                    const pos = new THREE.Vector3(x, y, z).multiplyScalar(layoutCfg.radius!);
+                    points.push(pos);
+                }
+                const geo = new THREE.BufferGeometry().setFromPoints(points);
+                const line = new THREE.Line(geo, boundaryMat);
+                root.add(line);
+            });
+        }
+
         // Create meshes
         for (const n of laidOut.nodes) {
             nodeById.set(n.id, n);
@@ -645,11 +680,14 @@ export function createEngine({
             let y = (n.meta?.y as number) ?? 0;
             let z = (n.meta?.z as number) ?? 0;
 
-            if (cfg.arrangement && cfg.arrangement[n.id]) {
-                const pos = cfg.arrangement[n.id].position;
-                x = pos[0];
-                y = pos[1];
-                z = pos[2];
+            if (cfg.arrangement) {
+                const arr = cfg.arrangement[n.id];
+                if (arr) {
+                    const pos = arr.position;
+                    x = pos[0];
+                    y = pos[1];
+                    z = pos[2];
+                }
             }
 
             // Level 3: Chapters -> Stars (Sprites)
@@ -924,7 +962,7 @@ export function createEngine({
 
         const hits = raycaster.intersectObjects(root.children, true);
         // pick meshes or sprites, but only if they are interactive
-        const hit = hits.find((h) =>
+        const hit = hits.find((h: THREE.Intersection) =>
             (h.object.type === "Mesh" || h.object.type === "Sprite") &&
             (h.object.userData.interactive !== false)
         );
@@ -945,7 +983,7 @@ export function createEngine({
                 const prevMesh = meshById.get(hoveredId);
                 const prevNode = nodeById.get(hoveredId);
                 if (prevMesh && prevNode && prevNode.level === 3) {
-                    const label = prevMesh.children.find((c) => c instanceof THREE.Sprite);
+                    const label = prevMesh.children.find((c: THREE.Object3D) => c instanceof THREE.Sprite);
                     if (label) label.visible = false;
                 }
             }
@@ -957,7 +995,7 @@ export function createEngine({
                 const mesh = meshById.get(nextId);
                 const n = nodeById.get(nextId);
                 if (mesh && n && n.level === 3) {
-                    const label = mesh.children.find((c) => c instanceof THREE.Sprite);
+                    const label = mesh.children.find((c: THREE.Object3D) => c instanceof THREE.Sprite);
                     if (label) {
                         label.visible = true;
                         // Since we are using sprites now, they look at camera.
@@ -1214,9 +1252,7 @@ export function createEngine({
             const objPos = new THREE.Vector3();
             const objDir = new THREE.Vector3();
 
-            for (let i = 0; i < dynamicObjects.length; i++) {
-                const item = dynamicObjects[i];
-
+            for (const item of dynamicObjects) {
                 // Scale from INITIAL vector to preserve aspect ratio
                 item.obj.scale.copy(item.initialScale).multiplyScalar(scaleFactor);
 

@@ -190,7 +190,10 @@ export function applyVisuals({
             if (typeof w !== "number" || !Number.isFinite(w)) continue;
 
             const key = JSON.stringify(rule.when) + "|" + rule.field;
-            const { min, max } = domains[key];
+            const domain = domains[key];
+            if (!domain) continue;
+
+            const { min, max } = domain;
             const range = max - min;
 
             const t = range === 0 ? 0.5 : (w - min) / range;
