@@ -544,7 +544,7 @@ export function createEngine({
         const ctx = canvas.getContext("2d");
         if (!ctx) return null;
 
-        const fontSize = 48;
+        const fontSize = 96;
         const font = `bold ${fontSize}px sans-serif`;
         ctx.font = font;
 
@@ -574,7 +574,7 @@ export function createEngine({
         const sprite = new THREE.Sprite(mat);
 
         // World-size label (you can later do Stellarium-style pixel fitting if you want)
-        const targetHeight = 2;
+        const targetHeight = 4;
         const aspect = w / h;
         sprite.scale.set(targetHeight * aspect, targetHeight, 1);
 
@@ -715,7 +715,7 @@ export function createEngine({
                 if (n.label) {
                     const labelSprite = createTextSprite(n.label);
                     if (labelSprite) {
-                        labelSprite.position.set(0, 1.2, 0);
+                        labelSprite.position.set(0, 3.0, 0);
                         labelSprite.visible = false;
                         sprite.add(labelSprite);
                     }
@@ -1000,7 +1000,7 @@ export function createEngine({
                         label.visible = true;
                         // Since we are using sprites now, they look at camera.
                         // We might want to offset the label so it doesn't overlap the star.
-                        label.position.set(0, 0.8, 0);
+                        label.position.set(0, 3.0, 0);
                     }
 
                     // Brighten lines on hover
