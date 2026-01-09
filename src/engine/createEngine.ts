@@ -716,6 +716,7 @@ export function createEngine({
                     const labelSprite = createTextSprite(n.label);
                     if (labelSprite) {
                         labelSprite.position.set(0, 3.0, 0);
+                        labelSprite.scale.multiplyScalar(2.0);
                         labelSprite.visible = false;
                         sprite.add(labelSprite);
                     }
@@ -733,7 +734,7 @@ export function createEngine({
 
                     // Division labels: smaller, static
                     // Book labels: larger, dynamic
-                    const baseScale = isBook ? 3.0 : 7.0;
+                    const baseScale = isBook ? 6.0 : 7.0;
 
                     const labelSprite = createTextSprite(n.label, color);
                     if (labelSprite) {
