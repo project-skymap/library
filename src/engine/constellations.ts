@@ -23,10 +23,10 @@ export function layoutSpiral(count: number, radius: number): Point3D[] {
         const theta = i * goldenAngle;
 
         const x = r * Math.cos(theta);
-        const z = r * Math.sin(theta);
+        const y = r * Math.sin(theta);
         
-        // slight variation in y for 3D depth, but mostly flat disc
-        const y = (Math.random() - 0.5) * (radius * 0.1); 
+        // slight variation in z for 3D depth (radial), but mostly flat on surface
+        const z = (Math.random() - 0.5) * (radius * 0.1); 
 
         points.push({ x, y, z });
     }
