@@ -9,7 +9,7 @@
 `🟪 epic` `🟩 story` `🟦 task` `🟥 bug`
 
 ## [0.2.0]
-🟪 [Arrangements](https://jrsmth.atlassian.net/browse/SKY-11) (??)
+🟪 [Arrangements](https://jrsmth.atlassian.net/browse/SKY-11) (10/01/25)
 - 🟩 `#12` Paul is a player who wants to see intriguing star patterns
 - 🟩 `#13` Dan is a developer who wants to configure the arrangement of stars
 

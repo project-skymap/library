@@ -589,8 +589,8 @@ export function createEngine({
 
         const gradient = ctx.createRadialGradient(32, 32, 0, 32, 32, 32);
         gradient.addColorStop(0, "rgba(255, 255, 255, 1)");
-        gradient.addColorStop(0.2, "rgba(255, 255, 255, 0.8)");
-        gradient.addColorStop(0.5, "rgba(255, 255, 255, 0.2)");
+        gradient.addColorStop(0.3, "rgba(255, 255, 255, 0.9)"); // Larger, brighter core
+        gradient.addColorStop(0.6, "rgba(255, 255, 255, 0.4)"); // Slower falloff
         gradient.addColorStop(1, "rgba(255, 255, 255, 0)");
 
         ctx.fillStyle = gradient;
@@ -672,6 +672,22 @@ export function createEngine({
             });
         }
 
+        // Calculate weight range for stars
+        let minWeight = Infinity;
+        let maxWeight = -Infinity;
+        for (const n of laidOut.nodes) {
+            if (n.level === 3 && typeof n.weight === "number") {
+                if (n.weight < minWeight) minWeight = n.weight;
+                if (n.weight > maxWeight) maxWeight = n.weight;
+            }
+        }
+        if (!Number.isFinite(minWeight)) {
+            minWeight = 0;
+            maxWeight = 1;
+        } else if (minWeight === maxWeight) {
+            maxWeight = minWeight + 1;
+        }
+
         // Create meshes
         for (const n of laidOut.nodes) {
             nodeById.set(n.id, n);
@@ -704,8 +720,14 @@ export function createEngine({
                 sprite.position.set(x, y, z);
                 sprite.userData = { id: n.id, level: n.level };
 
-                // Base size for stars
-                const baseScale = 2.0;
+                // Base size for stars (proportional to weight)
+                let baseScale = 3.5;
+                if (typeof n.weight === "number") {
+                    const t = (n.weight - minWeight) / (maxWeight - minWeight);
+                    // Map weight 0..1 to size 3.0..7.0
+                    baseScale = 3.0 + t * 4.0;
+                }
+                
                 sprite.scale.setScalar(baseScale);
 
                 // Add to dynamic scaling list
@@ -716,7 +738,7 @@ export function createEngine({
                     const labelSprite = createTextSprite(n.label);
                     if (labelSprite) {
                         labelSprite.position.set(0, 3.0, 0);
-                        labelSprite.scale.multiplyScalar(2.0);
+                        labelSprite.scale.multiplyScalar(1.33);
                         labelSprite.visible = false;
                         sprite.add(labelSprite);
                     }
@@ -734,7 +756,7 @@ export function createEngine({
 
                     // Division labels: smaller, static
                     // Book labels: larger, dynamic
-                    const baseScale = isBook ? 6.0 : 7.0;
+                    const baseScale = isBook ? 6.0 : 4.66;
 
                     const labelSprite = createTextSprite(n.label, color);
                     if (labelSprite) {
