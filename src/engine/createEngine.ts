@@ -1,9 +1,7 @@
 import * as THREE from "three";
-import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
-import { DragControls } from "three/examples/jsm/controls/DragControls.js";
 import type { StarMapConfig, SceneModel, SceneNode, StarArrangement } from "../types";
 import { computeLayoutPositions } from "./layout";
-import { applyVisuals } from "./materials";
+import { createSmartMaterial, globalUniforms } from "./materials";
 
 type Handlers = {
     onSelect?: (node: SceneNode) => void;
@@ -11,38 +9,21 @@ type Handlers = {
     onArrangementChange?: (arrangement: StarArrangement) => void;
 };
 
-type EngineConfig = {
-    // Stellarium-ish “stand in the middle and look out”
-    skyRadius?: number; // radius for procedural backdrop stars + milky way sphere
-    groundRadius?: number; // radius of the ground hemisphere used to occlude “below horizon”
-    horizonGlow?: boolean;
-
-    // "Planetarium feel" (subtle motion + atmospheric cues)
-    enableSkyDrift?: boolean; // slowly rotates the backdrop to feel "alive"
-    timeScale?: number; // multiplier for sky drift (like planetarium8 timeScale)
-
-    // Zoom behaviour (FOV-based)
-    defaultFov?: number;
-    minFov?: number;
-    maxFov?: number;
-    /** If true, you cannot zoom out beyond the initial FOV ("no zooming backwards"). */
-    lockZoomOutToInitialFov?: boolean;
-    /** Wheel delta -> FOV delta (scaled for ctrlKey pinch). */
-    fovWheelSensitivity?: number;
-    /** Lerp factor applied each frame when easing camera.fov -> targetFov */
-    zoomLerp?: number;
-    resetFovOnDblClick?: boolean;
-
-    // Click-to-focus behaviour
-    focusOnSelect?: boolean;
-    focusZoomFov?: number; // fov to animate to on focus
-    focusDurationMs?: number;
-
-    // Optional overlays
-    milkyWayEnabled?: boolean;
-    atmosphereEnabled?: boolean;
+// Config for the physics engine
+const ENGINE_CONFIG = {
+    minFov: 10,
+    maxFov: 165,
+    defaultFov: 120,
+    dragSpeed: 0.00125,
+    inertiaDamping: 0.92,
+    blendStart: 60,
+    blendEnd: 165,
+    zenithStartFov: 110,
+    zenithStrength: 0.02,
+    horizonLockStrength: 0.05,
+    edgePanThreshold: 0.15,
+    edgePanMaxSpeed: 0.02
 };
-
 
 export function createEngine({
                                  container,
@@ -58,496 +39,317 @@ export function createEngine({
     // ---------------------------
     // Renderer / Scene / Camera
     // ---------------------------
-    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
     renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
-    renderer.setClearColor(0x000000, 1);
+    renderer.setSize(container.clientWidth, container.clientHeight);
     container.appendChild(renderer.domElement);
-    // Ensure canvas fills the container (fixes HiDPI center alignment)
-    renderer.domElement.style.width = "100%";
-    renderer.domElement.style.height = "100%";
-    // Prevent browser gestures from fighting pointer controls
-    (renderer.domElement.style as any).touchAction = "none";
 
     const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x000000);
 
-    const camera = new THREE.PerspectiveCamera(90, 1, 0.1, 5000);
-    // Tiny offset so OrbitControls has a radius to work with (like your Angular app)
-    camera.position.set(0, 0, 0.01);
+    const camera = new THREE.PerspectiveCamera(60, 1, 0.1, 3000);
+    camera.position.set(0, 0, 0);
     camera.up.set(0, 1, 0);
 
     // ---------------------------
-    // Controls: “look around”
+    // Engine State
     // ---------------------------
-    const controls = new OrbitControls(camera, renderer.domElement);
-    controls.target.set(0, 0, 0);
-    controls.enableRotate = true;
-    controls.enablePan = false;
-    controls.enableZoom = false; // wheel controls FOV (not dolly)
-    controls.enableDamping = true;
-    controls.dampingFactor = 0.07;
-    controls.screenSpacePanning = false;
+    let running = false;
+    let raf = 0;
+    
+    // Physics State
+    const state = {
+        isDragging: false,
+        lastMouseX: 0,
+        lastMouseY: 0,
+        velocityX: 0,
+        velocityY: 0,
+        lat: 0.75, // Looking up slightly
+        lon: 0,
+        targetLat: 0.75,
+        targetLon: 0,
+        fov: ENGINE_CONFIG.defaultFov,
+        
+        // Object Drag State
+        dragMode: 'none' as 'none' | 'camera' | 'node',
+        draggedNodeId: null as string | null,
+        draggedStarIndex: -1, // If dragging a star point
+        draggedDist: 2000, // Distance to maintain
+        
+        // Group Drag State (for Books)
+        draggedGroup: null as null | {
+            labelInitialPos: THREE.Vector3,
+            children: { index: number, initialPos: THREE.Vector3 }[]
+        }
+    };
 
-    // Free yaw; clamp pitch so we don’t go “under” the horizon.
-    const EPS = THREE.MathUtils.degToRad(0.05);
-    controls.minAzimuthAngle = -Infinity;
-    controls.maxAzimuthAngle = Infinity;
-    // OrbitControls: 0=top(looking down), PI=bottom(looking up).
-    // We want to look UP at the sky, so we need range [PI/2, PI].
-    controls.minPolarAngle = Math.PI / 2 + EPS;
-    controls.maxPolarAngle = Math.PI - EPS;
-    controls.update();
+    const mouseNDC = new THREE.Vector2();
+    let isMouseInWindow = false;
+
+    let handlers: Handlers = { onSelect, onHover, onArrangementChange };
+    let currentConfig: StarMapConfig | undefined;
 
     // ---------------------------
-    // Stellarium-ish environment
+    // Helpers
     // ---------------------------
-    const env = {
-        skyRadius: 2800,
-        groundRadius: 995,
-        horizonGlow: true,
+    function mix(a: number, b: number, t: number) { return a * (1 - t) + b * t; }
+    
+    function getBlendFactor(fov: number) {
+        if (fov <= ENGINE_CONFIG.blendStart) return 0.0;
+        if (fov >= ENGINE_CONFIG.blendEnd) return 1.0;
+        let t = (fov - ENGINE_CONFIG.blendStart) / (ENGINE_CONFIG.blendEnd - ENGINE_CONFIG.blendStart);
+        return t * t * (3.0 - 2.0 * t);
+    }
 
-        enableSkyDrift: true,
-        timeScale: 60, // 1 = real-time; 60 = 60x faster drift
+    function updateUniforms() {
+        const blend = getBlendFactor(state.fov);
+        globalUniforms.uBlend.value = blend;
+        
+        const fovRad = state.fov * Math.PI / 180.0;
+        const scaleLinear = 1.0 / Math.tan(fovRad / 2.0);
+        const scaleStereo = 1.0 / (2.0 * Math.tan(fovRad / 4.0));
+        
+        globalUniforms.uScale.value = mix(scaleLinear, scaleStereo, blend);
+        globalUniforms.uAspect.value = camera.aspect;
+        
+        camera.fov = Math.min(state.fov, 120); 
+        camera.updateProjectionMatrix();
+    }
 
-        defaultFov: 90,
-        minFov: 6,
-        maxFov: 110,
-        lockZoomOutToInitialFov: true,
-        // 0.02 works well for mouse wheels; trackpads are moderated via ctrlKey
-        fovWheelSensitivity: 0.02,
-        zoomLerp: 0.12,
-        resetFovOnDblClick: true,
+    function getMouseViewVector(fovDeg: number, aspectRatio: number) {
+        const blend = getBlendFactor(fovDeg);
+        const fovRad = fovDeg * Math.PI / 180;
+        const uvX = mouseNDC.x * aspectRatio;
+        const uvY = mouseNDC.y;
+        const r_uv = Math.sqrt(uvX * uvX + uvY * uvY);
+        
+        const halfHeightLinear = Math.tan(fovRad / 2);
+        const theta_lin = Math.atan(r_uv * halfHeightLinear);
+        
+        const halfHeightStereo = 2 * Math.tan(fovRad / 4);
+        const theta_str = 2 * Math.atan((r_uv * halfHeightStereo) / 2);
+        
+        const theta = mix(theta_lin, theta_str, blend);
+        const phi = Math.atan2(uvY, uvX);
+        const sinTheta = Math.sin(theta);
+        const cosTheta = Math.cos(theta);
+        
+        return new THREE.Vector3(sinTheta * Math.cos(phi), sinTheta * Math.sin(phi), -cosTheta).normalize();
+    }
 
-        focusOnSelect: false,
-        focusZoomFov: 18,
-        focusDurationMs: 650,
-
-        milkyWayEnabled: false,
-        atmosphereEnabled: false,
-    } satisfies EngineConfig;
-
-    // Backdrop drift (planetarium feel)
-    const SIDEREAL_RATE = THREE.MathUtils.degToRad(15) / 3600; // rad/sec @ 1x
-    let lastFrameMs = performance.now();
-
-    // Zoom state (we ease FOV for a smoother Stellarium-like feel)
-    let targetFov = env.defaultFov!;
-    let zoomOutLimitFov = env.defaultFov!;
-
-
-    // Ground group: an inside-facing lower hemisphere that WRITES depth
-    // => hides below-horizon stars (very Stellarium)
+    // ---------------------------
+    // Environment
+    // ---------------------------
     const groundGroup = new THREE.Group();
     scene.add(groundGroup);
-
-    function buildGroundHemisphere(radius: number) {
+    
+    function createGround() {
         groundGroup.clear();
-
-        // inside-facing lower hemisphere
-        const hemi = new THREE.SphereGeometry(radius, 64, 32, 0, Math.PI * 2, Math.PI / 2, Math.PI);
-        hemi.scale(-1, 1, 1);
-
-        // vertex color gradient: darker down, brighter near horizon
-        const count = (hemi.attributes.position as THREE.BufferAttribute).count;
-        const colors = new Float32Array(count * 3);
-        const pos = hemi.attributes.position as THREE.BufferAttribute;
-        const c = new THREE.Color();
-
-        for (let i = 0; i < count; i++) {
-            const y = pos.getY(i); // [-radius, 0]
-            const t = THREE.MathUtils.clamp(1 - Math.abs(y) / radius, 0, 1);
-            // A simple deep-blue to near-horizon glow-ish ramp
-            c.setRGB(
-                THREE.MathUtils.lerp(0x06 / 255, 0x15 / 255, t),
-                THREE.MathUtils.lerp(0x10 / 255, 0x23 / 255, t),
-                THREE.MathUtils.lerp(0x17 / 255, 0x35 / 255, t)
-            );
-            colors.set([c.r, c.g, c.b], i * 3);
-        }
-        hemi.setAttribute("color", new THREE.BufferAttribute(colors, 3));
-
-        const groundMat = new THREE.MeshBasicMaterial({
-            vertexColors: true,
-            side: THREE.FrontSide,
-            depthWrite: true, // important: occlude stars under horizon
-            depthTest: true,
-        });
-
-        const hemiMesh = new THREE.Mesh(hemi, groundMat);
-        groundGroup.add(hemiMesh);
-
-        if (env.horizonGlow) {
-            const inner = radius * 0.985;
-            const outer = radius * 1.005;
-            const ringGeo = new THREE.RingGeometry(inner, outer, 128);
-            ringGeo.rotateX(-Math.PI / 2);
-
-            const ringMat = new THREE.ShaderMaterial({
-                transparent: true,
-                depthWrite: false,
-                uniforms: {
-                    uInner: { value: inner },
-                    uOuter: { value: outer },
-                    uColor: { value: new THREE.Color(0x7aa2ff) },
-                },
-                vertexShader: `
-          varying vec2 vXY;
-          void main() {
-            vXY = position.xz;
-            gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-          }
-        `,
-                fragmentShader: `
-          uniform float uInner;
-          uniform float uOuter;
-          uniform vec3 uColor;
-          varying vec2 vXY;
-
-          void main() {
-            float r = length(vXY);
-            float t = clamp((r - uInner) / (uOuter - uInner), 0.0, 1.0);
-            // peak glow near inner edge, fade outwards
-            float a = pow(1.0 - t, 2.2) * 0.35;
-            gl_FragColor = vec4(uColor, a);
-          }
-        `,
-            });
-
-            const ring = new THREE.Mesh(ringGeo, ringMat);
-            ring.position.y = 0.0;
-            groundGroup.add(ring);
-        }
-    }
-
-    buildGroundHemisphere(env.groundRadius);
-
-    // Backdrop stars (procedural points) far beyond your “model stars”
-    const backdropGroup = new THREE.Group();
-    scene.add(backdropGroup);
-
-    function buildBackdropStars(radius: number, count: number) {
-        backdropGroup.clear();
-
-        const starGeo = new THREE.BufferGeometry();
-        const starPos = new Float32Array(count * 3);
-
-        for (let i = 0; i < count; i++) {
-            const r = radius + Math.random() * (radius * 0.5);
-            const theta = Math.random() * Math.PI * 2;
-            const phi = Math.acos(2 * Math.random() - 1);
-            starPos[i * 3] = r * Math.sin(phi) * Math.cos(theta);
-            starPos[i * 3 + 1] = r * Math.sin(phi) * Math.sin(theta);
-            starPos[i * 3 + 2] = r * Math.cos(phi);
-        }
-
-        starGeo.setAttribute("position", new THREE.BufferAttribute(starPos, 3));
-        const starMat = new THREE.PointsMaterial({
-            color: 0x9aa6b2,
-            size: 0.5,
-            transparent: true,
-            opacity: 0.55,
-            depthWrite: false,
-        });
-
-        const stars = new THREE.Points(starGeo, starMat);
-        backdropGroup.add(stars);
-    }
-
-    buildBackdropStars(env.skyRadius, 6500);
-
-    // ---------------------------
-    // Milky Way + Atmosphere (from planetarium8.html mechanics)
-    // ---------------------------
-    let milkyWayMesh: THREE.Mesh<THREE.SphereGeometry, THREE.MeshBasicMaterial> | null = null;
-    let atmosphereMesh: THREE.Mesh<THREE.SphereGeometry, THREE.ShaderMaterial> | null = null;
-
-    function createMilkyWayTexture() {
-        const c = document.createElement("canvas");
-        c.width = 2048;
-        c.height = 1024;
-        const ctx = c.getContext("2d");
-        if (!ctx) return null;
-
-        ctx.fillStyle = "black";
-        ctx.fillRect(0, 0, c.width, c.height);
-
-        const g = ctx.createLinearGradient(0, c.height / 2, 0, c.height);
-        g.addColorStop(0.0, "rgba(255,255,255,0)");
-        g.addColorStop(0.45, "rgba(180,200,255,0.20)");
-        g.addColorStop(0.5, "rgba(230,230,255,0.45)");
-        g.addColorStop(0.55, "rgba(180,200,255,0.20)");
-        g.addColorStop(1.0, "rgba(255,255,255,0)");
-
-        ctx.fillStyle = g;
-        ctx.fillRect(0, 0, c.width, c.height);
-
-        // soft "dust"
-        for (let i = 0; i < 70000; i++) {
-            const x = Math.random() * c.width;
-            const y = c.height / 2 + (Math.random() - 0.5) * c.height * 0.32;
-            ctx.fillStyle = `rgba(255,255,255,${Math.random() * 0.08})`;
-            ctx.fillRect(x, y, 1, 1);
-        }
-
-        const tex = new THREE.CanvasTexture(c);
-        return tex;
-    }
-
-    function buildMilkyWay(radius: number) {
-        if (!env.milkyWayEnabled) return;
-
-        const tex = createMilkyWayTexture();
-        if (!tex) return;
-
-        const geo = new THREE.SphereGeometry(radius, 64, 64);
-        geo.scale(-1, 1, 1);
-
-        const mat = new THREE.MeshBasicMaterial({
-            map: tex,
-            transparent: true,
-            blending: THREE.AdditiveBlending,
-            opacity: 0.55,
-            depthWrite: false,
-        });
-
-        milkyWayMesh = new THREE.Mesh(geo, mat);
-        milkyWayMesh.rotation.z = THREE.MathUtils.degToRad(60);
-        milkyWayMesh.renderOrder = -10; // behind everything
-        backdropGroup.add(milkyWayMesh);
-    }
-
-    function buildAtmosphere(radius: number) {
-        if (!env.atmosphereEnabled) return;
-
-        const geo = new THREE.SphereGeometry(radius * 1.002, 96, 64);
-        geo.scale(-1, 1, 1);
-
-        const mat = new THREE.ShaderMaterial({
-            side: THREE.BackSide,
-            transparent: true,
-            depthWrite: false,
-            blending: THREE.AdditiveBlending,
-            uniforms: {
-                uGlowColor: { value: new THREE.Color(0x2e6bff) },
-                uIntensity: { value: 0.28 },
-                uWidth: { value: 0.22 },
-            },
-            vertexShader: `
-                varying float vYNorm;
-                void main() {
-                    vYNorm = normalize(position).y;
-                    gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        const radius = 995;
+        
+        const geometry = new THREE.SphereGeometry(radius, 128, 64, 0, Math.PI * 2, Math.PI / 2, Math.PI / 2);
+        const material = createSmartMaterial({
+            uniforms: { color: { value: new THREE.Color(0x080a0e) } },
+            vertexShaderBody: `
+                varying vec3 vPos; 
+                void main() { 
+                    vPos = position; 
+                    vec4 mvPosition = modelViewMatrix * vec4(position, 1.0); 
+                    gl_Position = smartProject(mvPosition); 
+                    vScreenPos = gl_Position.xy / gl_Position.w; 
                 }
             `,
             fragmentShader: `
-                varying float vYNorm;
-                uniform vec3 uGlowColor;
-                uniform float uIntensity;
-                uniform float uWidth;
-
-                void main() {
-                    float d = abs(vYNorm);
-                    float glow = smoothstep(uWidth, 0.0, d);
-                    float above = smoothstep(0.08, -0.02, vYNorm);
-                    float a = glow * above * uIntensity;
-                    gl_FragColor = vec4(uGlowColor * a, a);
+                uniform vec3 color; 
+                varying vec3 vPos; 
+                void main() { 
+                    float alphaMask = getMaskAlpha(); 
+                    if (alphaMask < 0.01) discard; 
+                    
+                    float noise = sin(vPos.x * 0.2) * sin(vPos.z * 0.2) * 0.05; 
+                    vec3 col = color + noise; 
+                    vec3 n = normalize(vPos); 
+                    float horizon = smoothstep(-0.02, 0.0, n.y); 
+                    col += vec3(0.1, 0.15, 0.2) * horizon; 
+                    gl_FragColor = vec4(col, 1.0); 
                 }
             `,
+            side: THREE.BackSide, 
+            transparent: false, 
+            depthWrite: true, 
+            depthTest: true
         });
 
-        atmosphereMesh = new THREE.Mesh(geo, mat);
-        atmosphereMesh.renderOrder = 5;
-        groundGroup.add(atmosphereMesh);
+        const ground = new THREE.Mesh(geometry, material);
+        groundGroup.add(ground);
+        
+        const boxGeo = new THREE.BoxGeometry(8, 30, 8);
+        for(let i=0; i<12; i++) {
+            const angle = (i/12) * Math.PI * 2; 
+            const b = new THREE.Mesh(boxGeo, material); 
+            const r = radius * 0.98;
+            b.position.set(Math.cos(angle)*r, -15, Math.sin(angle)*r); 
+            b.lookAt(0,0,0); 
+            groundGroup.add(b);
+        }
     }
+    
+    function createAtmosphere() {
+        const geometry = new THREE.SphereGeometry(990, 128, 64);
+        const material = createSmartMaterial({
+            uniforms: { top: { value: new THREE.Color(0x000000) }, bot: { value: new THREE.Color(0x111c2e) } },
+            vertexShaderBody: `
+                varying vec3 vP; 
+                void main() { 
+                    vP = position; 
+                    vec4 mv = modelViewMatrix * vec4(position, 1.0); 
+                    gl_Position = smartProject(mv); 
+                    vScreenPos = gl_Position.xy / gl_Position.w; 
+                }
+            `,
+            fragmentShader: `
+                uniform vec3 top; 
+                uniform vec3 bot; 
+                varying vec3 vP; 
+                void main() { 
+                    float alphaMask = getMaskAlpha(); 
+                    if (alphaMask < 0.01) discard; 
+                    vec3 n = normalize(vP); 
+                    float h = max(0.0, n.y); 
+                    gl_FragColor = vec4(mix(bot, top, pow(h, 0.4)), 1.0); 
+                }
+            `,
+            side: THREE.BackSide, 
+            depthWrite: false, 
+            depthTest: true
+        });
+        
+        const atm = new THREE.Mesh(geometry, material);
+        groundGroup.add(atm);
+    }
+    
+    const backdropGroup = new THREE.Group();
+    scene.add(backdropGroup);
+    
+    function createBackdropStars() {
+        backdropGroup.clear();
+        const geometry = new THREE.BufferGeometry();
+        const positions: number[] = [];
+        const sizes: number[] = [];
+        const colors: number[] = [];
+        const colorPalette = [ 
+            new THREE.Color(0x9bb0ff), new THREE.Color(0xaabfff), new THREE.Color(0xcad7ff), 
+            new THREE.Color(0xf8f7ff), new THREE.Color(0xfff4ea), new THREE.Color(0xffd2a1), new THREE.Color(0xffcc6f) 
+        ];
 
-    buildMilkyWay(env.skyRadius - 1);
-    buildAtmosphere(env.groundRadius);
+        const r = 2500;
+        for (let i = 0; i < 4000; i++) {
+            const u = Math.random();
+            const v = Math.random();
+            const theta = 2 * Math.PI * u;
+            const phi = Math.acos(2 * v - 1);
+            
+            const x = r * Math.sin(phi) * Math.cos(theta);
+            const y = r * Math.sin(phi) * Math.sin(theta);
+            const z = r * Math.cos(phi);
+            
+            positions.push(x, y, z);
+            
+            const size = 0.5 + (-Math.log(Math.random()) * 0.8) * 1.5;
+            sizes.push(size);
+            
+            const cIndex = Math.floor(Math.random() * colorPalette.length);
+            const c = colorPalette[cIndex]!;
+            colors.push(c.r, c.g, c.b);
+        }
+        
+        geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+        geometry.setAttribute('size', new THREE.Float32BufferAttribute(sizes, 1));
+        geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
 
+        const material = createSmartMaterial({
+            uniforms: { pixelRatio: { value: renderer.getPixelRatio() } },
+            vertexShaderBody: `
+                attribute float size; 
+                attribute vec3 color; 
+                varying vec3 vColor; 
+                uniform float pixelRatio; 
+                void main() { 
+                    vColor = color; 
+                    vec4 mvPosition = modelViewMatrix * vec4(position, 1.0); 
+                    gl_Position = smartProject(mvPosition); 
+                    vScreenPos = gl_Position.xy / gl_Position.w; 
+                    gl_PointSize = size * pixelRatio * (2000.0 / -mvPosition.z); 
+                }
+            `,
+            fragmentShader: `
+                varying vec3 vColor; 
+                void main() { 
+                    vec2 coord = gl_PointCoord - vec2(0.5); 
+                    if (length(coord) > 0.5) discard; 
+                    float alphaMask = getMaskAlpha(); 
+                    if (alphaMask < 0.01) discard; 
+                    float alpha = 1.0 - smoothstep(0.1, 0.5, length(coord)); 
+                    gl_FragColor = vec4(vColor, alpha * alphaMask); 
+                }
+            `,
+            transparent: true, 
+            depthWrite: false, 
+            depthTest: true
+        });
+
+        const points = new THREE.Points(geometry, material);
+        points.frustumCulled = false;
+        backdropGroup.add(points);
+    }
+    
+    createGround();
+    createAtmosphere();
+    createBackdropStars();
 
     // ---------------------------
     // Picking / Model content
     // ---------------------------
     const raycaster = new THREE.Raycaster();
+    raycaster.params.Points.threshold = 5.0; 
     const pointer = new THREE.Vector2();
 
     const root = new THREE.Group();
     scene.add(root);
 
-    let raf = 0;
-    let running = false;
-    let handlers: Handlers = { onSelect, onHover, onArrangementChange };
-    let hoveredId: string | null = null;
-    let isDragging = false;
-
-    let dragControls: DragControls | null = null;
-    let currentConfig: StarMapConfig | undefined;
-
     const nodeById = new Map<string, SceneNode>();
-    const meshById = new Map<string, THREE.Object3D>();
-    const lineByBookId = new Map<string, THREE.Line>();
-    const dynamicObjects: { obj: THREE.Object3D; initialScale: THREE.Vector3; type: "star" | "label" }[] = [];
+    const starIndexToId: string[] = [];
+    
+    // For Labels
+    const dynamicLabels: { obj: THREE.Mesh; node: SceneNode; initialScale: THREE.Vector2 }[] = [];
+    
+    let constellationLines: THREE.LineSegments | null = null;
+    let starPoints: THREE.Points | null = null;
 
-    function getFullArrangement(): StarArrangement {
-        const arr: StarArrangement = {};
-        for (const [id, mesh] of meshById.entries()) {
-            arr[id] = {
-                position: [mesh.position.x, mesh.position.y, mesh.position.z]
-            };
+    function clearRoot() {
+        for (const child of [...root.children]) {
+            root.remove(child);
+            if ((child as any).geometry) (child as any).geometry.dispose();
+            if ((child as any).material) {
+                const m = (child as any).material;
+                if (Array.isArray(m)) m.forEach((mm: any) => mm.dispose());
+                else m.dispose();
+            }
         }
-        return arr;
+        nodeById.clear();
+        starIndexToId.length = 0;
+        dynamicLabels.length = 0;
+        constellationLines = null;
+        starPoints = null;
     }
 
-    function updateBookLine(bookId: string) {
-        const line = lineByBookId.get(bookId);
-        if (!line) return;
-
-        // Find all stars for this book
-        const chapters: SceneNode[] = [];
-        for (const n of nodeById.values()) {
-            if (n.parent === bookId && n.level === 3) {
-                chapters.push(n);
-            }
-        }
-
-        // Sort
-        chapters.sort((a, b) => {
-            const cA = (a.meta?.chapter as number) || 0;
-            const cB = (b.meta?.chapter as number) || 0;
-            return cA - cB;
-        });
-
-        const points: THREE.Vector3[] = [];
-        for (const c of chapters) {
-            const m = meshById.get(c.id);
-            if (m) {
-                points.push(m.position.clone());
-            }
-        }
-
-        if (points.length > 1) {
-            line.geometry.setFromPoints(points);
-        }
-    }
-
-    function updateDragControls(editable: boolean) {
-        if (!editable) {
-            if (dragControls) {
-                dragControls.dispose();
-                dragControls = null;
-            }
-            return;
-        }
-
-        // Gather draggable objects (Level 3 stars AND Level 2 Book Labels)
-        const draggables: THREE.Object3D[] = [];
-        for (const [id, mesh] of meshById.entries()) {
-            const node = nodeById.get(id);
-            if (node?.level === 3) {
-                draggables.push(mesh);
-            } else if (node?.level === 2 && mesh instanceof THREE.Sprite) {
-                draggables.push(mesh);
-            }
-        }
-
-        if (dragControls) {
-            dragControls.dispose();
-        }
-
-        dragControls = new DragControls(draggables, camera, renderer.domElement);
-
-        const lastPos = new THREE.Vector3();
-
-        dragControls.addEventListener("dragstart", (event: any) => {
-            controls.enabled = false;
-            isDragging = true;
-            lastPos.copy(event.object.position);
-        });
-
-        dragControls.addEventListener("drag", (event: any) => {
-            const obj = event.object;
-            const id = obj.userData.id;
-            const node = nodeById.get(id);
-
-            if (node && node.level === 2) {
-                // Book Label Drag -> Move constellation
-                const currentPos = obj.position;
-                const delta = new THREE.Vector3().subVectors(currentPos, lastPos);
-
-                const bookId = id;
-                const childStars: THREE.Object3D[] = [];
-
-                for (const [nId, n] of nodeById.entries()) {
-                    if (n.parent === bookId && n.level === 3) {
-                        const starMesh = meshById.get(nId);
-                        if (starMesh) childStars.push(starMesh);
-                    }
-                }
-
-                for (const star of childStars) {
-                    star.position.add(delta);
-                }
-
-                updateBookLine(bookId);
-                lastPos.copy(currentPos);
-
-            } else if (node && node.level === 3) {
-                // Star Drag -> Update line
-                if (node.parent) {
-                    updateBookLine(node.parent);
-                }
-            }
-        });
-
-        dragControls.addEventListener("dragend", (event: any) => {
-            controls.enabled = true;
-            setTimeout(() => { isDragging = false; }, 0);
-
-            const obj = event.object;
-            const id = obj.userData.id;
-
-            if (id && currentConfig) {
-                // We update the local mesh position already (done by DragControls)
-                // Now we notify the handler with the FULL arrangement
-                handlers.onArrangementChange?.(getFullArrangement());
-            }
-        });
-    }
-
-    // ---------------------------
-    // Resize
-    // ---------------------------
-    function resize() {
-        const w = container.clientWidth || 1;
-        const h = container.clientHeight || 1;
-        renderer.setSize(w, h, false);
-        camera.aspect = w / h;
-        camera.updateProjectionMatrix();
-    }
-
-    // ---------------------------
-    // Dispose helpers
-    // ---------------------------
-    function disposeObject(obj: THREE.Object3D) {
-        obj.traverse((o: any) => {
-            if (o.geometry) o.geometry.dispose?.();
-            if (o.material) {
-                const mats = Array.isArray(o.material) ? o.material : [o.material];
-                mats.forEach((m: any) => {
-                    if (m.map) m.map.dispose?.();
-                    m.dispose?.();
-                });
-            }
-        });
-    }
-
-    function createTextSprite(text: string, color: string = "#ffffff") {
+    function createTextTexture(text: string, color: string = "#ffffff") {
         const canvas = document.createElement("canvas");
         const ctx = canvas.getContext("2d");
         if (!ctx) return null;
 
         const fontSize = 96;
-        const font = `bold ${fontSize}px sans-serif`;
-        ctx.font = font;
-
+        ctx.font = `bold ${fontSize}px sans-serif`;
         const metrics = ctx.measureText(text);
         const w = Math.ceil(metrics.width);
         const h = Math.ceil(fontSize * 1.2);
@@ -555,7 +357,7 @@ export function createEngine({
         canvas.width = w;
         canvas.height = h;
 
-        ctx.font = font;
+        ctx.font = `bold ${fontSize}px sans-serif`;
         ctx.fillStyle = color;
         ctx.textAlign = "center";
         ctx.textBaseline = "middle";
@@ -563,234 +365,179 @@ export function createEngine({
 
         const tex = new THREE.CanvasTexture(canvas);
         tex.minFilter = THREE.LinearFilter;
-
-        const mat = new THREE.SpriteMaterial({
-            map: tex,
-            transparent: true,
-            depthWrite: false,
-            depthTest: true,
-        });
-
-        const sprite = new THREE.Sprite(mat);
-
-        // World-size label (you can later do Stellarium-style pixel fitting if you want)
-        const targetHeight = 4;
-        const aspect = w / h;
-        sprite.scale.set(targetHeight * aspect, targetHeight, 1);
-
-        return sprite;
+        return { tex, aspect: w / h };
     }
 
-    function createStarTexture() {
-        const canvas = document.createElement("canvas");
-        canvas.width = 64;
-        canvas.height = 64;
-        const ctx = canvas.getContext("2d")!;
-
-        const gradient = ctx.createRadialGradient(32, 32, 0, 32, 32, 32);
-        gradient.addColorStop(0, "rgba(255, 255, 255, 1)");
-        gradient.addColorStop(0.3, "rgba(255, 255, 255, 0.9)"); // Larger, brighter core
-        gradient.addColorStop(0.6, "rgba(255, 255, 255, 0.4)"); // Slower falloff
-        gradient.addColorStop(1, "rgba(255, 255, 255, 0)");
-
-        ctx.fillStyle = gradient;
-        ctx.fillRect(0, 0, 64, 64);
-
-        const tex = new THREE.CanvasTexture(canvas);
-        return tex;
-    }
-
-    const starTexture = createStarTexture();
-
-    function clearRoot() {
-        for (const child of [...root.children]) {
-            root.remove(child);
-            disposeObject(child);
+    function getPosition(n: SceneNode) {
+        if (currentConfig?.arrangement) {
+             const arr = currentConfig.arrangement[n.id];
+             if (arr) {
+                return new THREE.Vector3(arr.position[0], arr.position[1], arr.position[2]);
+             }
         }
-        nodeById.clear();
-        meshById.clear();
-        lineByBookId.clear();
-        dynamicObjects.length = 0;
+        return new THREE.Vector3(
+            (n.meta?.x as number) ?? 0,
+            (n.meta?.y as number) ?? 0,
+            (n.meta?.z as number) ?? 0
+        );
+    }
+    
+    function getBoundaryPoint(angle: number, t: number, radius: number) {
+        const y = 0.05 + t * (1.0 - 0.05);
+        const rY = Math.sqrt(1 - y * y);
+        const x = Math.cos(angle) * rY;
+        const z = Math.sin(angle) * rY;
+        return new THREE.Vector3(x, y, z).multiplyScalar(radius);
     }
 
     function buildFromModel(model: SceneModel, cfg: StarMapConfig) {
         clearRoot();
 
-        // background + camera
         if (cfg.background && cfg.background !== "transparent") {
             scene.background = new THREE.Color(cfg.background);
         } else {
-            scene.background = null;
+            scene.background = new THREE.Color(0x000000);
         }
 
-        // Respect config FOV if provided, otherwise use Stellarium-ish default
-        camera.fov = cfg.camera?.fov ?? env.defaultFov;
-        camera.updateProjectionMatrix();
-
-        // reset zoom state whenever we rebuild the scene
-        targetFov = camera.fov;
-        zoomOutLimitFov = camera.fov;
-// Default to placing content at a "sky-like" radius if not specified
         const layoutCfg = {
             ...cfg.layout,
             radius: cfg.layout?.radius ?? 2000,
         };
         const laidOut = computeLayoutPositions(model, layoutCfg);
 
-        // ---------------------------
-        // Division Boundaries
-        // ---------------------------
-        const boundaries = (laidOut.meta?.divisionBoundaries as number[]) ?? [];
-        if (boundaries.length > 0) {
-             const boundaryMat = new THREE.LineBasicMaterial({
-                color: 0x557799,
-                transparent: true,
-                opacity: 0.15,
-                depthWrite: false,
-                blending: THREE.AdditiveBlending
-            });
-
-            boundaries.forEach(angle => {
-                const points: THREE.Vector3[] = [];
-                // Create an arc from horizon (y=0.05) to zenith (y=1.0)
-                const steps = 32;
-                for (let i = 0; i <= steps; i++) {
-                    const t = i / steps;
-                    const y = 0.05 + t * (1.0 - 0.05);
-                    const rY = Math.sqrt(1 - y * y);
-                    
-                    const x = Math.cos(angle) * rY;
-                    const z = Math.sin(angle) * rY;
-                    
-                    // We need to scale by the layout radius
-                    const pos = new THREE.Vector3(x, y, z).multiplyScalar(layoutCfg.radius!);
-                    points.push(pos);
-                }
-                const geo = new THREE.BufferGeometry().setFromPoints(points);
-                const line = new THREE.Line(geo, boundaryMat);
-                root.add(line);
-            });
-        }
-
-        // Calculate weight range for stars
+        // 1. Process Stars
+        const starPositions: number[] = [];
+        const starSizes: number[] = [];
+        const starColors: number[] = [];
+        
         let minWeight = Infinity;
         let maxWeight = -Infinity;
+        
         for (const n of laidOut.nodes) {
+            nodeById.set(n.id, n);
             if (n.level === 3 && typeof n.weight === "number") {
                 if (n.weight < minWeight) minWeight = n.weight;
                 if (n.weight > maxWeight) maxWeight = n.weight;
             }
         }
-        if (!Number.isFinite(minWeight)) {
-            minWeight = 0;
-            maxWeight = 1;
-        } else if (minWeight === maxWeight) {
-            maxWeight = minWeight + 1;
-        }
+        if (!Number.isFinite(minWeight)) { minWeight = 0; maxWeight = 1; }
+        else if (minWeight === maxWeight) { maxWeight = minWeight + 1; }
 
-        // Create meshes
         for (const n of laidOut.nodes) {
-            nodeById.set(n.id, n);
-
-            let x = (n.meta?.x as number) ?? 0;
-            let y = (n.meta?.y as number) ?? 0;
-            let z = (n.meta?.z as number) ?? 0;
-
-            if (cfg.arrangement) {
-                const arr = cfg.arrangement[n.id];
-                if (arr) {
-                    const pos = arr.position;
-                    x = pos[0];
-                    y = pos[1];
-                    z = pos[2];
-                }
-            }
-
-            // Level 3: Chapters -> Stars (Sprites)
             if (n.level === 3) {
-                const mat = new THREE.SpriteMaterial({
-                    map: starTexture,
-                    color: 0xffffff,
-                    transparent: true,
-                    blending: THREE.AdditiveBlending,
-                    depthWrite: false
-                });
-                const sprite = new THREE.Sprite(mat);
+                const p = getPosition(n);
+                starPositions.push(p.x, p.y, p.z);
+                starIndexToId.push(n.id);
 
-                sprite.position.set(x, y, z);
-                sprite.userData = { id: n.id, level: n.level };
-
-                // Base size for stars (proportional to weight)
-                let baseScale = 3.5;
+                let baseSize = 3.5;
                 if (typeof n.weight === "number") {
                     const t = (n.weight - minWeight) / (maxWeight - minWeight);
-                    // Map weight 0..1 to size 3.0..7.0
-                    baseScale = 3.0 + t * 4.0;
+                    baseSize = 3.0 + t * 4.0;
                 }
-                
-                sprite.scale.setScalar(baseScale);
-
-                // Add to dynamic scaling list
-                dynamicObjects.push({ obj: sprite, initialScale: sprite.scale.clone(), type: "star" });
-
-                // Hidden label for hover
-                if (n.label) {
-                    const labelSprite = createTextSprite(n.label);
-                    if (labelSprite) {
-                        labelSprite.position.set(0, 3.0, 0);
-                        labelSprite.scale.multiplyScalar(1.33);
-                        labelSprite.visible = false;
-                        sprite.add(labelSprite);
-                    }
-                }
-
-                root.add(sprite);
-                meshById.set(n.id, sprite);
+                starSizes.push(baseSize);
+                starColors.push(1.0, 1.0, 1.0);
             }
-            // Level 1 (Division) or 2 (Book) -> Text Labels on the Sky
-            else if (n.level === 1 || n.level === 2) {
-                if (n.label) {
-                    // Level 1 (e.g. "Gospels") vs Level 2 (e.g. "John")
-                    const isBook = n.level === 2;
-                    const color = isBook ? "#ffffff" : "#38bdf8";
+            // 2. Process Labels (Level 2 only - Books)
+            else if (n.level === 2) {
+                const color = "#ffffff";
+                const texRes = createTextTexture(n.label, color);
+                
+                if (texRes) {
+                    // Fix: Scale was way too huge. 0.05 means ~5% of screen height.
+                    const baseScale = 0.05; 
+                    const size = new THREE.Vector2(baseScale * texRes.aspect, baseScale);
+                    
+                    const mat = createSmartMaterial({
+                        uniforms: { 
+                            uMap: { value: texRes.tex },
+                            uSize: { value: size },
+                            uAlpha: { value: 0.0 } // Start hidden
+                        },
+                        vertexShaderBody: `
+                            uniform vec2 uSize;
+                            varying vec2 vUv;
+                            void main() {
+                                vUv = uv;
+                                vec4 mvPos = modelViewMatrix * vec4(0.0, 0.0, 0.0, 1.0);
+                                vec4 projected = smartProject(mvPos);
+                                // Billboard offset
+                                vec2 offset = position.xy * uSize;
+                                projected.xy += offset / vec2(uAspect, 1.0);
+                                gl_Position = projected;
+                            }
+                        `,
+                        fragmentShader: `
+                            uniform sampler2D uMap;
+                            uniform float uAlpha;
+                            varying vec2 vUv;
+                            void main() {
+                                float mask = getMaskAlpha();
+                                if (mask < 0.01) discard;
+                                vec4 tex = texture2D(uMap, vUv);
+                                gl_FragColor = vec4(tex.rgb, tex.a * uAlpha * mask);
+                            }
+                        `,
+                        transparent: true,
+                        depthWrite: false,
+                        depthTest: true
+                    });
 
-                    // Division labels: smaller, static
-                    // Book labels: larger, dynamic
-                    const baseScale = isBook ? 6.0 : 4.66;
-
-                    const labelSprite = createTextSprite(n.label, color);
-                    if (labelSprite) {
-                        labelSprite.position.set(x, y, z);
-                        labelSprite.scale.multiplyScalar(baseScale);
-                        root.add(labelSprite);
-
-                        // Only add Books to dynamicObjects so they scale/fade.
-                        // Divisions stay static.
-                        if (isBook) {
-                            labelSprite.userData = { id: n.id, level: n.level, interactive: true };
-                            meshById.set(n.id, labelSprite);
-                            dynamicObjects.push({ obj: labelSprite, initialScale: labelSprite.scale.clone(), type: "label" });
-                        }
-                    }
+                    const mesh = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), mat);
+                    const p = getPosition(n);
+                    mesh.position.set(p.x, p.y, p.z);
+                    // Sync CPU scale for Raycasting
+                    mesh.scale.set(size.x, size.y, 1.0);
+                    mesh.frustumCulled = false;
+                    mesh.userData = { id: n.id }; // For picking
+                    
+                    root.add(mesh);
+                    dynamicLabels.push({ obj: mesh, node: n, initialScale: size.clone() });
                 }
             }
         }
 
-        applyVisuals({ model: laidOut, cfg, meshById });
+        const starGeo = new THREE.BufferGeometry();
+        starGeo.setAttribute('position', new THREE.Float32BufferAttribute(starPositions, 3));
+        starGeo.setAttribute('size', new THREE.Float32BufferAttribute(starSizes, 1));
+        starGeo.setAttribute('color', new THREE.Float32BufferAttribute(starColors, 3));
 
-
-        // ---------------------------
-        // Draw Constellation Lines (Sequential)
-        // ---------------------------
-        const lineMat = new THREE.LineBasicMaterial({
-            color: 0x445566,
+        const starMat = createSmartMaterial({
+            uniforms: { pixelRatio: { value: renderer.getPixelRatio() } },
+            vertexShaderBody: `
+                attribute float size; 
+                attribute vec3 color; 
+                varying vec3 vColor; 
+                uniform float pixelRatio; 
+                void main() { 
+                    vColor = color; 
+                    vec4 mvPosition = modelViewMatrix * vec4(position, 1.0); 
+                    gl_Position = smartProject(mvPosition); 
+                    vScreenPos = gl_Position.xy / gl_Position.w; 
+                    gl_PointSize = size * pixelRatio * (2000.0 / -mvPosition.z); 
+                }
+            `,
+            fragmentShader: `
+                varying vec3 vColor; 
+                void main() { 
+                    vec2 coord = gl_PointCoord - vec2(0.5); 
+                    if (length(coord) > 0.5) discard; 
+                    float alphaMask = getMaskAlpha(); 
+                    if (alphaMask < 0.01) discard; 
+                    float d = length(coord);
+                    float alpha = 1.0 - smoothstep(0.1, 0.5, d);
+                    gl_FragColor = vec4(vColor, alpha * alphaMask); 
+                }
+            `,
             transparent: true,
-            opacity: 0.3,
             depthWrite: false,
-            blending: THREE.AdditiveBlending
+            depthTest: true
         });
 
-        // Group by book
+        starPoints = new THREE.Points(starGeo, starMat);
+        starPoints.frustumCulled = false;
+        root.add(starPoints);
+
+        const linePoints: number[] = [];
         const bookMap = new Map<string, SceneNode[]>();
         for (const n of laidOut.nodes) {
             if (n.level === 3 && n.parent) {
@@ -800,8 +547,7 @@ export function createEngine({
             }
         }
 
-        for (const [bookId, chapters] of bookMap.entries()) {
-            // Sort by chapter number
+        for (const chapters of bookMap.values()) {
             chapters.sort((a, b) => {
                 const cA = (a.meta?.chapter as number) || 0;
                 const cB = (b.meta?.chapter as number) || 0;
@@ -810,108 +556,101 @@ export function createEngine({
 
             if (chapters.length < 2) continue;
 
-            const points: THREE.Vector3[] = [];
-            for (const c of chapters) {
-                const x = (c.meta?.x as number) ?? 0;
-                const y = (c.meta?.y as number) ?? 0;
-                const z = (c.meta?.z as number) ?? 0;
-                points.push(new THREE.Vector3(x, y, z));
+            for (let i = 0; i < chapters.length - 1; i++) {
+                const c1 = chapters[i];
+                const c2 = chapters[i+1];
+                if (!c1 || !c2) continue;
+                
+                const p1 = getPosition(c1);
+                const p2 = getPosition(c2);
+                linePoints.push(p1.x, p1.y, p1.z);
+                linePoints.push(p2.x, p2.y, p2.z);
             }
+        }
 
-            const geo = new THREE.BufferGeometry().setFromPoints(points);
-            const line = new THREE.Line(geo, lineMat);
-            root.add(line);
-            lineByBookId.set(bookId, line);
+        if (linePoints.length > 0) {
+            const lineGeo = new THREE.BufferGeometry();
+            lineGeo.setAttribute('position', new THREE.Float32BufferAttribute(linePoints, 3));
+            
+            const lineMat = createSmartMaterial({
+                uniforms: { color: { value: new THREE.Color(0x445566) } },
+                vertexShaderBody: `
+                    uniform vec3 color;
+                    varying vec3 vColor;
+                    void main() {
+                        vColor = color;
+                        vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+                        gl_Position = smartProject(mvPosition);
+                        vScreenPos = gl_Position.xy / gl_Position.w;
+                    }
+                `,
+                fragmentShader: `
+                    varying vec3 vColor;
+                    void main() {
+                        float alphaMask = getMaskAlpha();
+                        if (alphaMask < 0.01) discard;
+                        gl_FragColor = vec4(vColor, 0.4 * alphaMask);
+                    }
+                `,
+                transparent: true,
+                depthWrite: false,
+                blending: THREE.AdditiveBlending
+            });
+
+            constellationLines = new THREE.LineSegments(lineGeo, lineMat);
+            constellationLines.frustumCulled = false;
+            root.add(constellationLines);
+        }
+
+        const boundaries = (laidOut.meta?.divisionBoundaries as number[]) ?? [];
+        if (boundaries.length > 0) {
+            const boundaryMat = createSmartMaterial({
+                uniforms: { color: { value: new THREE.Color(0x557799) } },
+                vertexShaderBody: `
+                    uniform vec3 color;
+                    varying vec3 vColor;
+                    void main() {
+                        vColor = color;
+                        vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+                        gl_Position = smartProject(mvPosition);
+                        vScreenPos = gl_Position.xy / gl_Position.w;
+                    }
+                `,
+                fragmentShader: `
+                    varying vec3 vColor;
+                    void main() {
+                        float alphaMask = getMaskAlpha();
+                        if (alphaMask < 0.01) discard;
+                        gl_FragColor = vec4(vColor, 0.15 * alphaMask);
+                    }
+                `,
+                transparent: true,
+                depthWrite: false,
+                blending: THREE.AdditiveBlending
+            });
+
+            const boundaryGeo = new THREE.BufferGeometry();
+            const bPoints: number[] = [];
+            
+            boundaries.forEach(angle => {
+                const steps = 32;
+                for (let i = 0; i < steps; i++) {
+                    const t1 = i / steps;
+                    const t2 = (i + 1) / steps;
+                    const p1 = getBoundaryPoint(angle, t1, layoutCfg.radius!);
+                    const p2 = getBoundaryPoint(angle, t2, layoutCfg.radius!);
+                    bPoints.push(p1.x, p1.y, p1.z);
+                    bPoints.push(p2.x, p2.y, p2.z);
+                }
+            });
+            
+            boundaryGeo.setAttribute('position', new THREE.Float32BufferAttribute(bPoints, 3));
+            const boundaryLines = new THREE.LineSegments(boundaryGeo, boundaryMat);
+            boundaryLines.frustumCulled = false;
+            root.add(boundaryLines);
         }
 
         resize();
-    }
-
-    function applyFocus(targetId: string | undefined, animate: boolean = true) {
-        if (!targetId) {
-            // Reset: show all full opacity
-            for (const [id, mesh] of meshById.entries()) {
-                mesh.traverse((obj: any) => {
-                    if (obj.material) obj.material.opacity = 1.0;
-                });
-                mesh.userData.interactive = true;
-            }
-            for (const line of lineByBookId.values()) {
-                line.visible = true;
-                (line.material as THREE.LineBasicMaterial).opacity = 0.3;
-            }
-            return;
-        }
-
-        // 1. Build downward graph
-        const childrenMap = new Map<string, string[]>();
-        for (const n of nodeById.values()) {
-            if (n.parent) {
-                const list = childrenMap.get(n.parent) ?? [];
-                list.push(n.id);
-                childrenMap.set(n.parent, list);
-            }
-        }
-
-        // 2. Find all descendants of targetId
-        const activeIds = new Set<string>();
-        const queue = [targetId];
-        activeIds.add(targetId);
-
-        while (queue.length > 0) {
-            const curr = queue.pop()!;
-            const kids = childrenMap.get(curr);
-            if (kids) {
-                for (const k of kids) {
-                    activeIds.add(k);
-                    queue.push(k);
-                }
-            }
-        }
-
-        // 3. Update visuals and interaction
-        for (const [id, mesh] of meshById.entries()) {
-            const isActive = activeIds.has(id);
-            const opacity = isActive ? 1.0 : 0.1;
-
-            mesh.traverse((obj: any) => {
-                if (obj.material) obj.material.opacity = opacity;
-            });
-
-            mesh.userData.interactive = isActive;
-        }
-
-        // 4. Update lines
-        for (const [bookId, line] of lineByBookId.entries()) {
-            const isActive = activeIds.has(bookId);
-            (line.material as THREE.LineBasicMaterial).opacity = isActive ? 0.3 : 0.05;
-        }
-
-        // 5. Animate (Focus)
-        if (animate) {
-            const targetMesh = meshById.get(targetId);
-            if (targetMesh) {
-                animateFocusTo(targetMesh);
-            } else {
-                // If no direct mesh, find centroid of all visible children
-                const sum = new THREE.Vector3();
-                let count = 0;
-
-                // Iterate over all active IDs (descendants)
-                for (const id of activeIds) {
-                    const mesh = meshById.get(id);
-                    if (mesh) {
-                        sum.add(mesh.getWorldPosition(new THREE.Vector3()));
-                        count++;
-                    }
-                }
-
-                if (count > 0) {
-                    const centroid = sum.divideScalar(count);
-                    animateFocusTo(centroid);
-                }
-            }
-        }
     }
 
     let lastData: any = undefined;
@@ -923,7 +662,6 @@ export function createEngine({
         let shouldRebuild = false;
         let model = cfg.model;
 
-        // 1. Resolve Model and check for changes
         if (!model && cfg.data && cfg.adapter) {
             if (cfg.data !== lastData || cfg.adapter !== lastAdapter) {
                 model = cfg.adapter(cfg.data);
@@ -932,11 +670,9 @@ export function createEngine({
                 lastAdapter = cfg.adapter;
                 lastModel = model;
             } else {
-                model = lastModel; // reuse
+                model = lastModel;
             }
         } else if (model) {
-            // direct model provided: assume it might have changed if strictly equal?
-            // Or just always rebuild if 'model' prop is used directly (simpler).
             shouldRebuild = true;
             lastData = undefined;
             lastAdapter = undefined;
@@ -945,412 +681,493 @@ export function createEngine({
 
         if (shouldRebuild && model) {
             buildFromModel(model, cfg);
-        } else if (cfg.arrangement) {
-            // If not rebuilding, apply arrangement positions to existing meshes
-            for (const [id, val] of Object.entries(cfg.arrangement)) {
-                const mesh = meshById.get(id);
-                if (mesh) {
-                    mesh.position.set(val.position[0], val.position[1], val.position[2]);
+        } else if (cfg.arrangement && starPoints) {
+            if (lastModel) buildFromModel(lastModel, cfg);
+        }
+    }
+    
+    function setHandlers(next: Handlers) {
+        handlers = next;
+    }
+    
+    function getFullArrangement(): StarArrangement {
+        const arr: StarArrangement = {};
+        if (starPoints && starPoints.geometry.attributes.position) {
+            const positions = starPoints.geometry.attributes.position.array;
+            for (let i = 0; i < starIndexToId.length; i++) {
+                const id = starIndexToId[i];
+                if (id) {
+                    const x = positions[i*3] ?? 0;
+                    const y = positions[i*3+1] ?? 0;
+                    const z = positions[i*3+2] ?? 0;
+                    
+                    // Sanity check to prevent disappearing stars
+                    if (Number.isFinite(x) && Number.isFinite(y) && Number.isFinite(z)) {
+                        arr[id] = {
+                            position: [x, y, z]
+                        };
+                    }
                 }
             }
         }
-
-        // 2. Apply Visuals (if not rebuilding, we might still need to update visuals?)
-        // For now, let's assume visuals are static unless rebuild happens.
-        // Actually, 'applyVisuals' depends on the mesh map which is stable.
-        // If we want to support dynamic visuals without rebuild, we'd call applyVisuals here.
-        // But the prompt specifically asked to fix the Zoom Reset issue, which is caused by buildFromModel.
-
-        // 3. Apply Focus
-        if (cfg.focus?.nodeId) {
-            applyFocus(cfg.focus.nodeId, cfg.focus.animate);
-        } else {
-            // Reset if no focus provided
-            applyFocus(undefined, false);
+        for (const item of dynamicLabels) {
+            arr[item.node.id] = {
+                position: [item.obj.position.x, item.obj.position.y, item.obj.position.z]
+            };
         }
-
-        updateDragControls(!!cfg.editable);
+        return arr;
     }
 
-    function setHandlers(next: Handlers) {
-        handlers = next;
+    // Replicate Shader Logic for CPU-side calculations (Picking)
+    function smartProjectJS(pos: THREE.Vector3) {
+        const dir = pos.clone().normalize();
+        const dist = pos.length();
+        const zLinear = Math.max(0.01, -dir.z);
+        const kStereo = 2.0 / (1.0 - dir.z);
+        const kLinear = 1.0 / zLinear;
+        const blend = globalUniforms.uBlend.value;
+        const k = mix(kLinear, kStereo, blend);
+        
+        // Raw projected coords (before aspect/scale)
+        return { x: k * dir.x, y: k * dir.y, z: dir.z };
     }
 
     function pick(ev: MouseEvent) {
         const rect = renderer.domElement.getBoundingClientRect();
-        pointer.x = ((ev.clientX - rect.left) / rect.width) * 2 - 1;
-        pointer.y = -(((ev.clientY - rect.top) / rect.height) * 2 - 1);
+        // Mouse in Pixels
+        const mX = ev.clientX - rect.left;
+        const mY = ev.clientY - rect.top;
+        
+        // Mouse in NDC
+        const ndcX = (mX / rect.width) * 2 - 1;
+        const ndcY = -(mY / rect.height) * 2 + 1;
 
-        raycaster.setFromCamera(pointer, camera);
+        // 1. Pick Labels (Screen Space Distance)
+        // This is robust for billboards
+        let closestLabel = null;
+        let minLabelDist = 40; // Pixels threshold
 
-        const hits = raycaster.intersectObjects(root.children, true);
-        // pick meshes or sprites, but only if they are interactive
-        const hit = hits.find((h: THREE.Intersection) =>
-            (h.object.type === "Mesh" || h.object.type === "Sprite") &&
-            (h.object.userData.interactive !== false)
-        );
-        const id = hit?.object?.userData?.id as string | undefined;
-        return id ? nodeById.get(id) : undefined;
-    }
+        const uScale = globalUniforms.uScale.value;
+        const uAspect = camera.aspect;
+        const w = rect.width;
+        const h = rect.height;
 
-    // ---------------------------
-    // Hover logic (labels on L3)
-    // ---------------------------
-    function onPointerMove(ev: PointerEvent) {
-        const node = pick(ev);
-        const nextId = node?.id ?? null;
+        for (const item of dynamicLabels) {
+            if (!item.obj.visible) continue;
+            
+            // Project Anchor
+            const p = item.obj.position;
+            const proj = smartProjectJS(p);
+            
+            // Apply Uniforms to get NDC
+            const xNDC = proj.x * uScale / uAspect;
+            const yNDC = proj.y * uScale;
+            
+            // To Pixels
+            const sX = (xNDC * 0.5 + 0.5) * w;
+            const sY = (-yNDC * 0.5 + 0.5) * h; // Flip Y for screen coords
+            
+            const dx = mX - sX;
+            const dy = mY - sY;
+            const d = Math.sqrt(dx*dx + dy*dy);
+            
+            // Check backward facing (clipped)
+            const isBehind = (globalUniforms.uBlend.value > 0.5 && proj.z > 0.4) ||
+                             (globalUniforms.uBlend.value < 0.1 && proj.z > -0.1);
 
-        if (nextId !== hoveredId) {
-            // hide previous hovered L3 label
-            if (hoveredId) {
-                const prevMesh = meshById.get(hoveredId);
-                const prevNode = nodeById.get(hoveredId);
-                if (prevMesh && prevNode && prevNode.level === 3) {
-                    const label = prevMesh.children.find((c: THREE.Object3D) => c instanceof THREE.Sprite);
-                    if (label) label.visible = false;
-                }
+            if (!isBehind && d < minLabelDist) {
+                minLabelDist = d;
+                closestLabel = item;
             }
-
-            hoveredId = nextId;
-
-            // show current hovered L3 label
-            if (nextId) {
-                const mesh = meshById.get(nextId);
-                const n = nodeById.get(nextId);
-                if (mesh && n && n.level === 3) {
-                    const label = mesh.children.find((c: THREE.Object3D) => c instanceof THREE.Sprite);
-                    if (label) {
-                        label.visible = true;
-                        // Since we are using sprites now, they look at camera.
-                        // We might want to offset the label so it doesn't overlap the star.
-                        label.position.set(0, 3.0, 0);
-                    }
-
-                    // Brighten lines on hover
-                    if (n.parent) {
-                        const line = lineByBookId.get(n.parent);
-                        if (line) (line.material as THREE.LineBasicMaterial).opacity = 0.8;
-                    }
-                }
-            }
-
-            handlers.onHover?.(node);
         }
+
+        if (closestLabel) {
+            return { 
+                type: 'label', 
+                node: closestLabel.node, 
+                object: closestLabel.obj, 
+                point: closestLabel.obj.position.clone(), // Use anchor pos
+                index: undefined 
+            };
+        }
+
+        // 2. Pick Stars (Custom Ray)
+        // We use the "View Vector" which accounts for the projection
+        const aspect = w / h;
+        mouseNDC.set(ndcX, ndcY); // Update global mouse state for getMouseViewVector
+        const viewDir = getMouseViewVector(state.fov, aspect);
+        
+        raycaster.ray.origin.set(0, 0, 0);
+        raycaster.ray.direction.copy(viewDir);
+        raycaster.params.Points.threshold = 5.0 * (state.fov / 60); // Dynamic threshold
+
+        const hits = raycaster.intersectObject(starPoints!, false);
+        const pointHit = hits[0]; // First hit
+        
+        if (pointHit && pointHit.index !== undefined) {
+            const id = starIndexToId[pointHit.index];
+            if (id) {
+                const node = nodeById.get(id);
+                if (node) return { type: 'star', node, index: pointHit.index, point: pointHit.point, object: undefined };
+            }
+        }
+        
+        return undefined;
     }
+    
+    function onMouseDown(e: MouseEvent) {
+        state.lastMouseX = e.clientX;
+        state.lastMouseY = e.clientY;
+        
+        if (currentConfig?.editable) {
+            const hit = pick(e);
+            if (hit) {
+                state.dragMode = 'node';
+                state.draggedNodeId = hit.node.id;
+                state.draggedDist = hit.point.length(); 
+                document.body.style.cursor = 'crosshair';
 
-    function onPointerDown() {
-        isDragging = false;
-    }
-
-    function onChange() {
-        // OrbitControls fires change while dragging
-        isDragging = true;
-    }
-
-    // ---------------------------
-    // Stellarium-ish zoom (FOV)
-    // ---------------------------
-    const onWheelFov = (ev: WheelEvent) => {
-        ev.preventDefault();
-
-        // Trackpad pinch on macOS often comes through as wheel with ctrlKey=true.
-        const speed = (ev.ctrlKey ? 0.15 : 1) * (env.fovWheelSensitivity ?? 0.02);
-
-        const maxFov = env.lockZoomOutToInitialFov
-            ? Math.min(env.maxFov!, zoomOutLimitFov)
-            : env.maxFov!;
-
-        targetFov = THREE.MathUtils.clamp(
-            targetFov + ev.deltaY * speed,
-            env.minFov!,
-            maxFov
-        );
-    };
-
-    const onDblClick = (ev: MouseEvent) => {
-        const node = pick(ev);
-        if (node) {
-            const mesh = meshById.get(node.id);
-            if (mesh) {
-                animateFocusTo(mesh);
+                if (hit.type === 'star') {
+                    state.draggedStarIndex = hit.index ?? -1;
+                    state.draggedGroup = null;
+                } else if (hit.type === 'label') {
+                    // Book Drag: Identify children
+                    const bookId = hit.node.id;
+                    const children: { index: number, initialPos: THREE.Vector3 }[] = [];
+                    
+                    if (starPoints && starPoints.geometry.attributes.position) {
+                        const positions = starPoints.geometry.attributes.position.array;
+                        for (let i = 0; i < starIndexToId.length; i++) {
+                            const starId = starIndexToId[i];
+                            if (starId) {
+                                const starNode = nodeById.get(starId);
+                                if (starNode && starNode.parent === bookId) {
+                                    children.push({
+                                        index: i,
+                                        initialPos: new THREE.Vector3(positions[i*3], positions[i*3+1], positions[i*3+2])
+                                    });
+                                }
+                            }
+                        }
+                    }
+                    
+                    state.draggedGroup = {
+                        labelInitialPos: hit.object!.position.clone(),
+                        children
+                    };
+                    state.draggedStarIndex = -1;
+                }
                 return;
             }
         }
 
-        if (!env.resetFovOnDblClick) return;
-        targetFov = env.defaultFov!;
-    };
-
-    // ---------------------------
-    // Click-to-focus (aim + zoom)
-    // ---------------------------
-    let focusAnimRaf = 0;
-
-    function cancelFocusAnim() {
-        if (focusAnimRaf) cancelAnimationFrame(focusAnimRaf);
-        focusAnimRaf = 0;
+        state.dragMode = 'camera';
+        state.isDragging = true;
+        state.velocityX = 0;
+        state.velocityY = 0;
+        document.body.style.cursor = 'grabbing';
     }
 
-    function getControlsAnglesSafe() {
-        // OrbitControls exposes getAzimuthalAngle/getPolarAngle
-        const getAz = (controls as any).getAzimuthalAngle?.bind(controls);
-        const getPol = (controls as any).getPolarAngle?.bind(controls);
-        return {
-            azimuth: typeof getAz === "function" ? getAz() : 0,
-            polar: typeof getPol === "function" ? getPol() : Math.PI / 4,
-        };
-    }
+    function onMouseMove(e: MouseEvent) {
+        mouseNDC.x = (e.clientX / window.innerWidth) * 2 - 1;
+        mouseNDC.y = -(e.clientY / window.innerHeight) * 2 + 1;
+        isMouseInWindow = true;
 
-    function setControlsAnglesSafe(azimuth: number, polar: number) {
-        // Newer three exposes setAzimuthalAngle / setPolarAngle.
-        const setAz = (controls as any).setAzimuthalAngle?.bind(controls);
-        const setPol = (controls as any).setPolarAngle?.bind(controls);
+        if (state.dragMode === 'node') {
+             const aspect = container.clientWidth / container.clientHeight;
+             const dir = getMouseViewVector(state.fov, aspect);
+             const newPos = dir.clone().multiplyScalar(state.draggedDist);
+             
+             // 1. Dragging a single star
+             if (state.draggedStarIndex !== -1 && starPoints) {
+                 const idx = state.draggedStarIndex;
+                 const attr = starPoints.geometry.attributes.position as THREE.BufferAttribute;
+                 attr.setXYZ(idx, newPos.x, newPos.y, newPos.z);
+                 attr.needsUpdate = true;
+             } 
+             // 2. Dragging a Book Label (Group Move)
+             else if (state.draggedGroup && state.draggedNodeId) {
+                 const group = state.draggedGroup;
+                 
+                 // Move Label
+                 const item = dynamicLabels.find(l => l.node.id === state.draggedNodeId);
+                 if (item) {
+                     item.obj.position.copy(newPos);
+                 }
+                 
+                 // Rotate Children
+                 const vStart = group.labelInitialPos.clone().normalize();
+                 const vEnd = newPos.clone().normalize();
+                 const q = new THREE.Quaternion().setFromUnitVectors(vStart, vEnd);
+                 
+                 if (starPoints && group.children.length > 0) {
+                     const attr = starPoints.geometry.attributes.position as THREE.BufferAttribute;
+                     const tempVec = new THREE.Vector3();
+                     
+                     for (const child of group.children) {
+                         // childNew = childInitial * Q
+                         tempVec.copy(child.initialPos).applyQuaternion(q);
+                         attr.setXYZ(child.index, tempVec.x, tempVec.y, tempVec.z);
+                     }
+                     attr.needsUpdate = true;
+                 }
+             }
+             
+        } else if (state.dragMode === 'camera') {
+            const deltaX = e.clientX - state.lastMouseX;
+            const deltaY = e.clientY - state.lastMouseY;
+            state.lastMouseX = e.clientX;
+            state.lastMouseY = e.clientY;
 
-        if (typeof setAz === "function" && typeof setPol === "function") {
-            setAz(azimuth);
-            setPol(polar);
-            controls.update();
-            return;
-        }
+            const speedScale = state.fov / 120;
+            
+            state.targetLon += deltaX * ENGINE_CONFIG.dragSpeed * speedScale;
+            state.targetLat += deltaY * ENGINE_CONFIG.dragSpeed * speedScale;
+            state.targetLat = Math.max(-Math.PI / 2 + 0.01, Math.min(Math.PI / 2 - 0.01, state.targetLat));
 
-        // Fallback: rotate camera directly to look at a direction
-        // (keeps the “standing in the middle” feel even if controls lacks setters)
-        const dir = new THREE.Vector3();
-        dir.setFromSphericalCoords(1, polar, azimuth);
-        const lookAt = dir.clone().multiplyScalar(10);
-        camera.lookAt(lookAt);
-    }
-
-    function aimAtWorldPoint(worldPoint: THREE.Vector3) {
-        // We’re “at the origin”, so direction is point normalized.
-        // OrbitControls places camera relative to target. To look AT 'dir', camera must be at '-dir'.
-        const dir = worldPoint.clone().normalize().negate();
-        // Convert direction -> spherical angles compatible with OrbitControls
-        // In three: Spherical(phi=polar from +Y, theta=azimuth around Y from +Z toward +X)
-        const spherical = new THREE.Spherical().setFromVector3(dir);
-        let targetPolar = spherical.phi;
-        let targetAz = spherical.theta;
-
-        // Clamp to our allowed range (zenith..horizon)
-        targetPolar = THREE.MathUtils.clamp(targetPolar, controls.minPolarAngle, controls.maxPolarAngle);
-
-        return { targetAz, targetPolar };
-    }
-
-    function easeInOutCubic(t: number) {
-        return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
-    }
-
-    function animateFocusTo(target: THREE.Object3D | THREE.Vector3) {
-        cancelFocusAnim();
-
-        const { azimuth: startAz, polar: startPolar } = getControlsAnglesSafe();
-        const startFov = camera.fov;
-
-        const targetPos = target instanceof THREE.Object3D
-            ? target.getWorldPosition(new THREE.Vector3())
-            : target;
-
-        const { targetAz, targetPolar } = aimAtWorldPoint(targetPos);
-        const endFov = THREE.MathUtils.clamp(env.focusZoomFov!, env.minFov!, env.maxFov!);
-
-        const start = performance.now();
-        const dur = Math.max(120, env.focusDurationMs || 650);
-
-        const tick = (now: number) => {
-            const t = THREE.MathUtils.clamp((now - start) / dur, 0, 1);
-            const k = easeInOutCubic(t);
-
-            // Interpolate angles (shortest path for azimuth)
-            let dAz = targetAz - startAz;
-            // wrap to [-PI, PI]
-            dAz = ((dAz + Math.PI) % (Math.PI * 2)) - Math.PI;
-
-            const curAz = startAz + dAz * k;
-            const curPolar = THREE.MathUtils.lerp(startPolar, targetPolar, k);
-            setControlsAnglesSafe(curAz, curPolar);
-
-            camera.fov = THREE.MathUtils.lerp(startFov, endFov, k);
-            camera.updateProjectionMatrix();
-
-            if (t < 1) {
-                focusAnimRaf = requestAnimationFrame(tick);
-            } else {
-                focusAnimRaf = 0;
+            state.velocityX = deltaX * ENGINE_CONFIG.dragSpeed * speedScale;
+            state.velocityY = deltaY * ENGINE_CONFIG.dragSpeed * speedScale;
+            
+            state.lon = state.targetLon;
+            state.lat = state.targetLat;
+        } else {
+            const hit = pick(e);
+            if (hit?.node.id !== (handlers as any)._lastHoverId) {
+                (handlers as any)._lastHoverId = hit?.node.id;
+                handlers.onHover?.(hit?.node);
             }
-        };
-
-        focusAnimRaf = requestAnimationFrame(tick);
-    }
-
-    function onPointerUp(ev: PointerEvent) {
-        if (isDragging) return;
-
-        const node = pick(ev);
-        if (!node) return;
-
-        // fire your existing handler
-        handlers.onSelect?.(node);
-
-        // optional: also do Stellarium-like “aim + zoom” on select
-        if (env.focusOnSelect) {
-            const mesh = meshById.get(node.id);
-            if (mesh) animateFocusTo(mesh);
+            if (hit) {
+                document.body.style.cursor = currentConfig?.editable ? 'crosshair' : 'pointer';
+            } else {
+                document.body.style.cursor = 'default';
+            }
         }
     }
 
-    // ---------------------------
-    // Lifecycle
-    // ---------------------------
+    function onMouseUp(e: MouseEvent) {
+        if (state.dragMode === 'node') {
+            const fullArr = getFullArrangement();
+            handlers.onArrangementChange?.(fullArr);
+            
+            state.dragMode = 'none';
+            state.draggedNodeId = null;
+            state.draggedStarIndex = -1;
+            state.draggedGroup = null;
+            document.body.style.cursor = 'default';
+            
+        } else if (state.dragMode === 'camera') {
+            state.isDragging = false;
+            state.dragMode = 'none';
+            document.body.style.cursor = 'default';
+        } else {
+            const hit = pick(e);
+            if (hit) {
+                handlers.onSelect?.(hit.node);
+            }
+        }
+    }
+    
+    function onWheel(e: WheelEvent) {
+        e.preventDefault();
+        const aspect = container.clientWidth / container.clientHeight;
+        
+        const vBefore = getMouseViewVector(state.fov, aspect);
+        
+        const zoomSpeed = 0.001 * state.fov;
+        state.fov += e.deltaY * zoomSpeed;
+        state.fov = Math.max(ENGINE_CONFIG.minFov, Math.min(ENGINE_CONFIG.maxFov, state.fov));
+        
+        updateUniforms(); 
+        const vAfter = getMouseViewVector(state.fov, aspect);
+        
+        const quaternion = new THREE.Quaternion().setFromUnitVectors(vAfter, vBefore);
+        
+        const y = Math.sin(state.lat);
+        const r = Math.cos(state.lat);
+        const x = r * Math.sin(state.lon);
+        const z = -r * Math.cos(state.lon);
+        
+        const currentLook = new THREE.Vector3(x, y, z);
+        const camForward = currentLook.clone().normalize();
+        const camUp = camera.up.clone();
+        const camRight = new THREE.Vector3().crossVectors(camForward, camUp).normalize();
+        const camUpOrtho = new THREE.Vector3().crossVectors(camRight, camForward).normalize();
+        
+        const mat = new THREE.Matrix4().makeBasis(camRight, camUpOrtho, camForward.clone().negate());
+        const qOld = new THREE.Quaternion().setFromRotationMatrix(mat);
+        
+        const qNew = qOld.clone().multiply(quaternion);
+        const newForward = new THREE.Vector3(0, 0, -1).applyQuaternion(qNew);
+        
+        state.lat = Math.asin(Math.max(-0.999, Math.min(0.999, newForward.y)));
+        state.lon = Math.atan2(newForward.x, -newForward.z);
+        
+        const newUp = new THREE.Vector3(0, 1, 0).applyQuaternion(qNew);
+        camera.up.copy(newUp);
+        
+        if (e.deltaY > 0 && state.fov > ENGINE_CONFIG.zenithStartFov) {
+            const range = ENGINE_CONFIG.maxFov - ENGINE_CONFIG.zenithStartFov;
+            let t = (state.fov - ENGINE_CONFIG.zenithStartFov) / range;
+            t = Math.max(0, Math.min(1, t));
+            const bias = ENGINE_CONFIG.zenithStrength * t;
+            const zenithLat = Math.PI / 2 - 0.001;
+            state.lat = mix(state.lat, zenithLat, bias);
+        }
+        
+        state.targetLat = state.lat;
+        state.targetLon = state.lon;
+    }
+
+    function resize() {
+        const w = container.clientWidth || 1;
+        const h = container.clientHeight || 1;
+        renderer.setSize(w, h, false);
+        camera.aspect = w / h;
+        updateUniforms();
+    }
+
     function start() {
         if (running) return;
         running = true;
-
+        
         resize();
         window.addEventListener("resize", resize);
+        
+        const el = renderer.domElement;
+        el.addEventListener("mousedown", onMouseDown);
+        window.addEventListener("mousemove", onMouseMove); 
+        window.addEventListener("mouseup", onMouseUp);
+        el.addEventListener("wheel", onWheel, { passive: false });
+        el.addEventListener("mouseenter", () => { isMouseInWindow = true; });
+        el.addEventListener("mouseleave", () => { isMouseInWindow = false; });
 
-        renderer.domElement.addEventListener("pointermove", onPointerMove);
-        renderer.domElement.addEventListener("pointerdown", onPointerDown);
-        renderer.domElement.addEventListener("pointerup", onPointerUp);
-
-        // wheel FOV zoom (passive:false so preventDefault works)
-        renderer.domElement.addEventListener("wheel", onWheelFov, { passive: false });
-
-        renderer.domElement.addEventListener("dblclick", onDblClick);
-
-        controls.addEventListener("change", onChange);
         lastFrameMs = performance.now();
-
-        const tick = () => {
-            raf = requestAnimationFrame(tick);
-
-            const now = performance.now();
-            const dt = Math.min(0.05, Math.max(0.0, (now - lastFrameMs) / 1000));
-            lastFrameMs = now;
-
-            // Smooth FOV easing (feels much more "planetarium" than hard steps)
-            const lerpK = 1 - Math.pow(1 - (env.zoomLerp ?? 0.12), dt * 60);
-            const prevFov = camera.fov;
-            camera.fov = THREE.MathUtils.lerp(camera.fov, targetFov, lerpK);
-            if (Math.abs(camera.fov - prevFov) > 1e-4) camera.updateProjectionMatrix();
-
-            // Rotation sensitivity based on zoom level (zoomed in => slower)
-            controls.rotateSpeed = camera.fov / (env.defaultFov || 90);
-
-            // Subtle sky drift (only the backdrop, so your "Bible constellation" geometry stays stable)
-            if (env.enableSkyDrift) {
-                backdropGroup.rotation.y += SIDEREAL_RATE * (env.timeScale ?? 60) * dt;
-            }
-
-            // Normalized zoom amount: 0=zoomed out (wide FOV), 1=zoomed in (narrow FOV)
-            const fovNorm =
-                (env.maxFov! - camera.fov) / Math.max(1e-6, (env.maxFov! - env.minFov!));
-            const fovN = THREE.MathUtils.clamp(fovNorm, 0, 1);
-
-            // Fade overlays as you zoom in (matches the demo's "clean when close" vibe)
-            const overlayFade = THREE.MathUtils.clamp(1 - fovN * 1.15, 0.0, 1.0);
-
-            // Milky Way + atmosphere respond to zoom (subtle but engaging)
-            if (milkyWayMesh) {
-                milkyWayMesh.material.opacity = 0.25 + fovN * 0.55;
-            }
-            if (atmosphereMesh) {
-                const uniforms = (atmosphereMesh.material as THREE.ShaderMaterial).uniforms as any;
-                if (uniforms?.uIntensity) uniforms.uIntensity.value = 0.20 + fovN * 0.40;
-            }
-
-            // Dynamic scaling based on FOV (wide => larger for readability)
-            const minZoomFov = 15;
-            const scaleFactor = THREE.MathUtils.clamp(
-                1 + (camera.fov - minZoomFov) * 0.05,
-                0.85,
-                6.0
-            );
-
-            // Gaze-based fading for labels
-            const cameraDir = new THREE.Vector3();
-            camera.getWorldDirection(cameraDir);
-
-            // Re-use vectors to avoid GC
-            const objPos = new THREE.Vector3();
-            const objDir = new THREE.Vector3();
-
-            for (const item of dynamicObjects) {
-                // Scale from INITIAL vector to preserve aspect ratio
-                item.obj.scale.copy(item.initialScale).multiplyScalar(scaleFactor);
-
-                if (item.type === "label") {
-                    const sprite = item.obj as THREE.Sprite;
-
-                    sprite.getWorldPosition(objPos);
-                    objDir.subVectors(objPos, camera.position).normalize();
-
-                    const dot = cameraDir.dot(objDir);
-
-                    const fullVisibleDot = 0.96;
-                    const invisibleDot = 0.88;
-
-                    let opacity = 0;
-                    if (dot >= fullVisibleDot) {
-                        opacity = 1;
-                    } else if (dot > invisibleDot) {
-                        opacity = (dot - invisibleDot) / (fullVisibleDot - invisibleDot);
-                    }
-
-                    const finalOpacity = opacity * overlayFade;
-
-                    sprite.material.opacity = finalOpacity;
-                    sprite.visible = finalOpacity > 0.01;
-
-                    // Fade the corresponding constellation lines too
-                    const bookId = nodeById.get(item.obj.userData.id)?.id;
-                    if (bookId) {
-                        const line = lineByBookId.get(bookId);
-                        if (line) {
-                            (line.material as THREE.LineBasicMaterial).opacity =
-                                (0.05 + opacity * 0.45) * overlayFade;
-                        }
-                    }
-                }
-            }
-
-            controls.update();
-            renderer.render(scene, camera);
-        };
         tick();
+    }
+    
+    let lastFrameMs = 0;
+
+    function tick() {
+        if (!running) return;
+        raf = requestAnimationFrame(tick);
+        
+        if (!state.isDragging && isMouseInWindow) {
+            const t = ENGINE_CONFIG.edgePanThreshold;
+            const speedBase = ENGINE_CONFIG.edgePanMaxSpeed * (state.fov / 120);
+            
+            let panX = 0;
+            let panY = 0;
+            
+            if (mouseNDC.x < -1 + t) {
+                const strength = (-1 + t - mouseNDC.x) / t;
+                panX = -strength * strength * speedBase;
+            } else if (mouseNDC.x > 1 - t) {
+                const strength = (mouseNDC.x - (1 - t)) / t;
+                panX = strength * strength * speedBase;
+            }
+            
+            if (mouseNDC.y < -1 + t) {
+                const strength = (-1 + t - mouseNDC.y) / t;
+                panY = -strength * strength * speedBase;
+            } else if (mouseNDC.y > 1 - t) {
+                const strength = (mouseNDC.y - (1 - t)) / t;
+                panY = strength * strength * speedBase;
+            }
+            
+            if (Math.abs(panX) > 0 || Math.abs(panY) > 0) {
+                state.lon += panX;
+                state.lat += panY;
+                state.targetLon = state.lon;
+                state.targetLat = state.lat;
+            } else {
+                state.lon += state.velocityX;
+                state.lat += state.velocityY;
+                state.velocityX *= ENGINE_CONFIG.inertiaDamping;
+                state.velocityY *= ENGINE_CONFIG.inertiaDamping;
+                if (Math.abs(state.velocityX) < 0.000001) state.velocityX = 0;
+                if (Math.abs(state.velocityY) < 0.000001) state.velocityY = 0;
+            }
+        } else if (!state.isDragging) {
+             state.lon += state.velocityX;
+             state.lat += state.velocityY;
+             state.velocityX *= ENGINE_CONFIG.inertiaDamping;
+             state.velocityY *= ENGINE_CONFIG.inertiaDamping;
+        }
+
+        state.lat = Math.max(-Math.PI / 2 + 0.01, Math.min(Math.PI / 2 - 0.01, state.lat));
+        
+        const y = Math.sin(state.lat);
+        const r = Math.cos(state.lat);
+        const x = r * Math.sin(state.lon);
+        const z = -r * Math.cos(state.lon);
+        const target = new THREE.Vector3(x, y, z);
+        
+        const idealUp = new THREE.Vector3(
+            -Math.sin(state.lat) * Math.sin(state.lon),
+            Math.cos(state.lat),
+            Math.sin(state.lat) * Math.cos(state.lon)
+        ).normalize();
+        
+        camera.up.lerp(idealUp, ENGINE_CONFIG.horizonLockStrength);
+        camera.up.normalize();
+        
+        camera.lookAt(target);
+        updateUniforms(); 
+
+        const cameraDir = new THREE.Vector3();
+        camera.getWorldDirection(cameraDir);
+        const objPos = new THREE.Vector3();
+        const objDir = new THREE.Vector3();
+
+        const SHOW_LABELS_FOV = 60;
+
+        for (const item of dynamicLabels) {
+            const uniforms = (item.obj.material as THREE.ShaderMaterial).uniforms as any;
+            
+            let targetAlpha = 0.0;
+            if (state.fov < SHOW_LABELS_FOV) {
+                item.obj.getWorldPosition(objPos);
+                objDir.subVectors(objPos, camera.position).normalize();
+                const dot = cameraDir.dot(objDir);
+
+                const fullVisibleDot = 0.98;
+                const invisibleDot = 0.90;
+
+                let gazeOpacity = 0;
+                if (dot >= fullVisibleDot) {
+                    gazeOpacity = 1;
+                } else if (dot > invisibleDot) {
+                    gazeOpacity = (dot - invisibleDot) / (fullVisibleDot - invisibleDot);
+                }
+                
+                const zoomFactor = 1.0 - THREE.MathUtils.smoothstep(40, SHOW_LABELS_FOV, state.fov);
+                targetAlpha = gazeOpacity * zoomFactor;
+            }
+
+            if (uniforms.uAlpha) {
+                uniforms.uAlpha.value = THREE.MathUtils.lerp(uniforms.uAlpha.value, targetAlpha, 0.1);
+                item.obj.visible = uniforms.uAlpha.value > 0.01;
+            }
+        }
+        
+        renderer.render(scene, camera);
     }
 
     function stop() {
         running = false;
         cancelAnimationFrame(raf);
-        cancelFocusAnim();
-
+        
         window.removeEventListener("resize", resize);
-
-        renderer.domElement.removeEventListener("pointermove", onPointerMove);
-        renderer.domElement.removeEventListener("pointerdown", onPointerDown);
-        renderer.domElement.removeEventListener("pointerup", onPointerUp);
-        renderer.domElement.removeEventListener("wheel", onWheelFov as any);
-        renderer.domElement.removeEventListener("dblclick", onDblClick);
-
-        controls.removeEventListener("change", onChange);
+        
+        const el = renderer.domElement;
+        el.removeEventListener("mousedown", onMouseDown);
+        window.removeEventListener("mousemove", onMouseMove);
+        window.removeEventListener("mouseup", onMouseUp);
+        el.removeEventListener("wheel", onWheel as any);
     }
-
+    
     function dispose() {
         stop();
-        clearRoot();
-
-        // env groups
-        for (const child of [...groundGroup.children]) {
-            groundGroup.remove(child);
-            disposeObject(child);
-        }
-        for (const child of [...backdropGroup.children]) {
-            backdropGroup.remove(child);
-            disposeObject(child);
-        }
-
-        controls.dispose();
         renderer.dispose();
         renderer.domElement.remove();
     }
