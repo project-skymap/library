@@ -213,17 +213,71 @@ export function createEngine({
         }
     }
     
-    function createAtmosphere() {
-        const geometry = new THREE.SphereGeometry(990, 128, 64);
-        const material = createSmartMaterial({
-            uniforms: { top: { value: new THREE.Color(0x000000) }, bot: { value: new THREE.Color(0x111c2e) } },
-            vertexShaderBody: `varying vec3 vP; void main() { vP = position; vec4 mv = modelViewMatrix * vec4(position, 1.0); gl_Position = smartProject(mv); vScreenPos = gl_Position.xy / gl_Position.w; }`,
-            fragmentShader: `uniform vec3 top; uniform vec3 bot; varying vec3 vP; void main() { float alphaMask = getMaskAlpha(); if (alphaMask < 0.01) discard; vec3 n = normalize(vP); float h = max(0.0, n.y); gl_FragColor = vec4(mix(bot, top, pow(h, 0.4)), 1.0); }`,
-            side: THREE.BackSide, depthWrite: false, depthTest: true
-        });
-        const atm = new THREE.Mesh(geometry, material);
-        groundGroup.add(atm);
-    }
+        function createAtmosphere() {
+    
+            const geometry = new THREE.SphereGeometry(990, 128, 64);
+    
+            const material = createSmartMaterial({
+    
+                uniforms: { top: { value: new THREE.Color(0x000000) }, bot: { value: new THREE.Color(0x1a202c) } },
+    
+                vertexShaderBody: `
+    
+                    varying vec3 vP; 
+    
+                    void main() { 
+    
+                        vP = position; 
+    
+                        vec4 mv = modelViewMatrix * vec4(position, 1.0); 
+    
+                        gl_Position = smartProject(mv); 
+    
+                        vScreenPos = gl_Position.xy / gl_Position.w; 
+    
+                    }
+    
+                `,
+    
+                fragmentShader: `
+    
+                    uniform vec3 top; 
+    
+                    uniform vec3 bot; 
+    
+                    varying vec3 vP; 
+    
+                    void main() { 
+    
+                        float alphaMask = getMaskAlpha(); 
+    
+                        if (alphaMask < 0.01) discard; 
+    
+                        vec3 n = normalize(vP); 
+    
+                        float h = max(0.0, n.y); 
+    
+                        gl_FragColor = vec4(mix(bot, top, pow(h, 0.6)), 1.0); 
+    
+                    }
+    
+                `,
+    
+                side: THREE.BackSide, 
+    
+                depthWrite: false, 
+    
+                depthTest: true
+    
+            });
+    
+            
+    
+            const atm = new THREE.Mesh(geometry, material);
+    
+            groundGroup.add(atm);
+    
+        }
     
     const backdropGroup = new THREE.Group();
     scene.add(backdropGroup);
@@ -234,26 +288,96 @@ export function createEngine({
         const positions: number[] = [];
         const sizes: number[] = [];
         const colors: number[] = [];
-        const colorPalette = [ new THREE.Color(0x9bb0ff), new THREE.Color(0xaabfff), new THREE.Color(0xcad7ff), new THREE.Color(0xf8f7ff), new THREE.Color(0xfff4ea), new THREE.Color(0xffd2a1), new THREE.Color(0xffcc6f) ];
+        // Spectral palette for backdrop too
+        const colorPalette = [ 
+            new THREE.Color(0x9bb0ff), new THREE.Color(0xaabfff), new THREE.Color(0xcad7ff), 
+            new THREE.Color(0xf8f7ff), new THREE.Color(0xfff4ea), new THREE.Color(0xffd2a1), 
+            new THREE.Color(0xffcc6f) 
+        ];
+
         const r = 2500;
+        // Milky Way orientation (approximate tilt)
+        const mwNormal = new THREE.Vector3(0, 1, 0.5).normalize(); 
+        
         for (let i = 0; i < 4000; i++) {
-            const u = Math.random(); const v = Math.random(); const theta = 2 * Math.PI * u; const phi = Math.acos(2 * v - 1);
-            const x = r * Math.sin(phi) * Math.cos(theta); const y = r * Math.sin(phi) * Math.sin(theta); const z = r * Math.cos(phi);
+            // 40% chance to be in Milky Way band
+            const isMilkyWay = Math.random() < 0.4;
+            
+            let x, y, z;
+            if (isMilkyWay) {
+                // Generate point in a ring
+                const theta = Math.random() * Math.PI * 2;
+                // Gaussian scatter from plane
+                const scatter = (Math.random() - 0.5) * 0.4; 
+                
+                // Base ring on XZ plane
+                const v = new THREE.Vector3(Math.cos(theta), scatter, Math.sin(theta));
+                v.normalize();
+                
+                // Rotate to align with Milky Way tilt (approx 60 deg)
+                v.applyAxisAngle(new THREE.Vector3(1,0,0), THREE.MathUtils.degToRad(60));
+                
+                x = v.x * r;
+                y = v.y * r;
+                z = v.z * r;
+            } else {
+                // Uniform
+                const u = Math.random();
+                const v = Math.random();
+                const theta = 2 * Math.PI * u;
+                const phi = Math.acos(2 * v - 1);
+                x = r * Math.sin(phi) * Math.cos(theta);
+                y = r * Math.sin(phi) * Math.sin(theta);
+                z = r * Math.cos(phi);
+            }
+            
             positions.push(x, y, z);
-            sizes.push(0.5 + (-Math.log(Math.random()) * 0.8) * 1.5);
+            
+            const size = 0.5 + (-Math.log(Math.random()) * 0.8) * 1.5;
+            sizes.push(size);
+            
             const cIndex = Math.floor(Math.random() * colorPalette.length);
             const c = colorPalette[cIndex]!;
             colors.push(c.r, c.g, c.b);
         }
+        
         geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
         geometry.setAttribute('size', new THREE.Float32BufferAttribute(sizes, 1));
         geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+
         const material = createSmartMaterial({
             uniforms: { pixelRatio: { value: renderer.getPixelRatio() } },
-            vertexShaderBody: `attribute float size; attribute vec3 color; varying vec3 vColor; uniform float pixelRatio; void main() { vColor = color; vec4 mvPosition = modelViewMatrix * vec4(position, 1.0); gl_Position = smartProject(mvPosition); vScreenPos = gl_Position.xy / gl_Position.w; gl_PointSize = size * pixelRatio * (600.0 / -mvPosition.z); }`,
-            fragmentShader: `varying vec3 vColor; void main() { vec2 coord = gl_PointCoord - vec2(0.5); if (length(coord) > 0.5) discard; float alphaMask = getMaskAlpha(); if (alphaMask < 0.01) discard; float alpha = 1.0 - smoothstep(0.1, 0.5, length(coord)); gl_FragColor = vec4(vColor, alpha * alphaMask); }`,
-            transparent: true, depthWrite: false, depthTest: true
+            vertexShaderBody: `
+                attribute float size; 
+                attribute vec3 color; 
+                varying vec3 vColor; 
+                uniform float pixelRatio; 
+                void main() { 
+                    vColor = color; 
+                    vec4 mvPosition = modelViewMatrix * vec4(position, 1.0); 
+                    gl_Position = smartProject(mvPosition); 
+                    vScreenPos = gl_Position.xy / gl_Position.w; 
+                    gl_PointSize = size * pixelRatio * (600.0 / -mvPosition.z); 
+                }
+            `,
+            fragmentShader: `
+                varying vec3 vColor; 
+                void main() { 
+                    vec2 coord = gl_PointCoord - vec2(0.5); 
+                    float dist = length(coord) * 2.0; 
+                    if (dist > 1.0) discard; 
+                    float alphaMask = getMaskAlpha(); 
+                    if (alphaMask < 0.01) discard; 
+                    // Use same Gaussian glow for backdrop
+                    float alpha = exp(-3.0 * dist * dist);
+                    gl_FragColor = vec4(vColor, alpha * alphaMask); 
+                }
+            `,
+            transparent: true, 
+            depthWrite: false, 
+            depthTest: true
         });
+
         const points = new THREE.Points(geometry, material);
         points.frustumCulled = false;
         backdropGroup.add(points);
@@ -346,7 +470,20 @@ export function createEngine({
         const starSizes: number[] = [];
         const starColors: number[] = [];
         
-        let minWeight = Infinity, maxWeight = -Infinity;
+        // Realistic Star Colors (approx. Kelvin to Hex)
+        const SPECTRAL_COLORS = [
+            new THREE.Color(0x9bb0ff), // O - Blue
+            new THREE.Color(0xaabfff), // B - Blue-white
+            new THREE.Color(0xcad7ff), // A - White-blue
+            new THREE.Color(0xf8f7ff), // F - White
+            new THREE.Color(0xfff4ea), // G - Yellow-white
+            new THREE.Color(0xffd2a1), // K - Yellow-orange
+            new THREE.Color(0xffcc6f)  // M - Orange-red
+        ];
+        
+        let minWeight = Infinity;
+        let maxWeight = -Infinity;
+        
         for (const n of laidOut.nodes) {
             nodeById.set(n.id, n);
             if (n.level === 3 && typeof n.weight === "number") {
@@ -362,32 +499,70 @@ export function createEngine({
                 const p = getPosition(n);
                 starPositions.push(p.x, p.y, p.z);
                 starIndexToId.push(n.id);
+
                 let baseSize = 3.5;
                 if (typeof n.weight === "number") {
                     const t = (n.weight - minWeight) / (maxWeight - minWeight);
                     baseSize = 3.0 + t * 4.0;
                 }
                 starSizes.push(baseSize);
-                starColors.push(1.0, 1.0, 1.0);
+                
+                // Assign weighted random spectral color
+                // Bias towards cooler stars (index higher) using pow(r, 1.5)
+                const colorIdx = Math.floor(Math.pow(Math.random(), 1.5) * SPECTRAL_COLORS.length);
+                const c = SPECTRAL_COLORS[Math.min(colorIdx, SPECTRAL_COLORS.length - 1)]!;
+                starColors.push(c.r, c.g, c.b);
             }
+            // 2. Process Labels (Level 2 only - Books)
             else if (n.level === 2) {
                 const color = "#ffffff";
                 const texRes = createTextTexture(n.label, color);
+                
                 if (texRes) {
                     const baseScale = 0.05; 
                     const size = new THREE.Vector2(baseScale * texRes.aspect, baseScale);
+                    
                     const mat = createSmartMaterial({
-                        uniforms: { uMap: { value: texRes.tex }, uSize: { value: size }, uAlpha: { value: 0.0 } },
-                        vertexShaderBody: `uniform vec2 uSize; varying vec2 vUv; void main() { vUv = uv; vec4 mvPos = modelViewMatrix * vec4(0.0, 0.0, 0.0, 1.0); vec4 projected = smartProject(mvPos); vec2 offset = position.xy * uSize; projected.xy += offset / vec2(uAspect, 1.0); gl_Position = projected; }`,
-                        fragmentShader: `uniform sampler2D uMap; uniform float uAlpha; varying vec2 vUv; void main() { float mask = getMaskAlpha(); if (mask < 0.01) discard; vec4 tex = texture2D(uMap, vUv); gl_FragColor = vec4(tex.rgb, tex.a * uAlpha * mask); }`,
-                        transparent: true, depthWrite: false, depthTest: true
+                        uniforms: { 
+                            uMap: { value: texRes.tex },
+                            uSize: { value: size },
+                            uAlpha: { value: 0.0 } 
+                        },
+                        vertexShaderBody: `
+                            uniform vec2 uSize;
+                            varying vec2 vUv;
+                            void main() {
+                                vUv = uv;
+                                vec4 mvPos = modelViewMatrix * vec4(0.0, 0.0, 0.0, 1.0);
+                                vec4 projected = smartProject(mvPos);
+                                vec2 offset = position.xy * uSize;
+                                projected.xy += offset / vec2(uAspect, 1.0);
+                                gl_Position = projected;
+                            }
+                        `,
+                        fragmentShader: `
+                            uniform sampler2D uMap;
+                            uniform float uAlpha;
+                            varying vec2 vUv;
+                            void main() {
+                                float mask = getMaskAlpha();
+                                if (mask < 0.01) discard;
+                                vec4 tex = texture2D(uMap, vUv);
+                                gl_FragColor = vec4(tex.rgb, tex.a * uAlpha * mask);
+                            }
+                        `,
+                        transparent: true,
+                        depthWrite: false,
+                        depthTest: true
                     });
+
                     const mesh = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), mat);
                     const p = getPosition(n);
                     mesh.position.set(p.x, p.y, p.z);
                     mesh.scale.set(size.x, size.y, 1.0); // Sync scale for raycast
                     mesh.frustumCulled = false;
                     mesh.userData = { id: n.id };
+                    
                     root.add(mesh);
                     dynamicLabels.push({ obj: mesh, node: n, initialScale: size.clone() });
                 }
@@ -398,12 +573,44 @@ export function createEngine({
         starGeo.setAttribute('position', new THREE.Float32BufferAttribute(starPositions, 3));
         starGeo.setAttribute('size', new THREE.Float32BufferAttribute(starSizes, 1));
         starGeo.setAttribute('color', new THREE.Float32BufferAttribute(starColors, 3));
+
         const starMat = createSmartMaterial({
             uniforms: { pixelRatio: { value: renderer.getPixelRatio() } },
-            vertexShaderBody: `attribute float size; attribute vec3 color; varying vec3 vColor; uniform float pixelRatio; void main() { vColor = color; vec4 mvPosition = modelViewMatrix * vec4(position, 1.0); gl_Position = smartProject(mvPosition); vScreenPos = gl_Position.xy / gl_Position.w; gl_PointSize = size * pixelRatio * (2000.0 / -mvPosition.z); }`,
-            fragmentShader: `varying vec3 vColor; void main() { vec2 coord = gl_PointCoord - vec2(0.5); if (length(coord) > 0.5) discard; float alphaMask = getMaskAlpha(); if (alphaMask < 0.01) discard; float d = length(coord); float alpha = 1.0 - smoothstep(0.1, 0.5, d); gl_FragColor = vec4(vColor, alpha * alphaMask); }`,
-            transparent: true, depthWrite: false, depthTest: true
+            vertexShaderBody: `
+                attribute float size; 
+                attribute vec3 color; 
+                varying vec3 vColor; 
+                uniform float pixelRatio; 
+                void main() { 
+                    vColor = color; 
+                    vec4 mvPosition = modelViewMatrix * vec4(position, 1.0); 
+                    gl_Position = smartProject(mvPosition); 
+                    vScreenPos = gl_Position.xy / gl_Position.w; 
+                    gl_PointSize = size * pixelRatio * (2000.0 / -mvPosition.z); 
+                }
+            `,
+            fragmentShader: `
+                varying vec3 vColor; 
+                void main() { 
+                    vec2 coord = gl_PointCoord - vec2(0.5); 
+                    // Use larger drawing area for glow
+                    float dist = length(coord) * 2.0; 
+                    if (dist > 1.0) discard; 
+                    
+                    float alphaMask = getMaskAlpha(); 
+                    if (alphaMask < 0.01) discard; 
+                    
+                    // Gaussian Glow: Sharp core, soft halo
+                    float alpha = exp(-3.0 * dist * dist);
+                    
+                    gl_FragColor = vec4(vColor, alpha * alphaMask); 
+                }
+            `,
+            transparent: true,
+            depthWrite: false,
+            depthTest: true
         });
+
         starPoints = new THREE.Points(starGeo, starMat);
         starPoints.frustumCulled = false;
         root.add(starPoints);
@@ -433,7 +640,7 @@ export function createEngine({
             const lineMat = createSmartMaterial({
                 uniforms: { color: { value: new THREE.Color(0x445566) } },
                 vertexShaderBody: `uniform vec3 color; varying vec3 vColor; void main() { vColor = color; vec4 mvPosition = modelViewMatrix * vec4(position, 1.0); gl_Position = smartProject(mvPosition); vScreenPos = gl_Position.xy / gl_Position.w; }`,
-                fragmentShader: `varying vec3 vColor; void main() { float alphaMask = getMaskAlpha(); if (alphaMask < 0.01) discard; gl_FragColor = vec4(vColor, 0.4 * alphaMask); }`,
+                fragmentShader: `varying vec3 vColor; void main() { float alphaMask = getMaskAlpha(); if (alphaMask < 0.01) discard; gl_FragColor = vec4(vColor, 0.2 * alphaMask); }`,
                 transparent: true, depthWrite: false, blending: THREE.AdditiveBlending
             });
             constellationLines = new THREE.LineSegments(lineGeo, lineMat);
@@ -446,7 +653,7 @@ export function createEngine({
             const boundaryMat = createSmartMaterial({
                 uniforms: { color: { value: new THREE.Color(0x557799) } },
                 vertexShaderBody: `uniform vec3 color; varying vec3 vColor; void main() { vColor = color; vec4 mvPosition = modelViewMatrix * vec4(position, 1.0); gl_Position = smartProject(mvPosition); vScreenPos = gl_Position.xy / gl_Position.w; }`,
-                fragmentShader: `varying vec3 vColor; void main() { float alphaMask = getMaskAlpha(); if (alphaMask < 0.01) discard; gl_FragColor = vec4(vColor, 0.15 * alphaMask); }`,
+                fragmentShader: `varying vec3 vColor; void main() { float alphaMask = getMaskAlpha(); if (alphaMask < 0.01) discard; gl_FragColor = vec4(vColor, 0.10 * alphaMask); }`,
                 transparent: true, depthWrite: false, blending: THREE.AdditiveBlending
             });
             const boundaryGeo = new THREE.BufferGeometry();
