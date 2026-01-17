@@ -3,10 +3,20 @@
 ## Version History
 - `0.1.x`  : End-to-End Demo
 - `0.2.x`  : Arrangements
+- `0.3.x`  : Planetarium
+- `0.4.x`  : Voronoi Layout
 
 ## Releases
 <!-- @LatestFirst -->
 `🟪 epic` `🟩 story` `🟦 task` `🟥 bug`
+
+## [0.4.0]
+🟪 [Voronoi Layout](https://jrsmth.atlassian.net/browse/SKY-16) (??)
+- 🟩 `#17` Paul is a player who wants the Biblical layout to be ordered and proportional
+
+## [0.3.0]
+🟪 [Planetarium](https://jrsmth.atlassian.net/browse/SKY-14) (17/01/25)
+- 🟩 `#15` Paul is a player who wants to see intriguing star patterns
 
 ## [0.2.0]
 🟪 [Arrangements](https://jrsmth.atlassian.net/browse/SKY-11) (10/01/25)
@@ -20,3 +30,5 @@
 
 [0.1.0]: https://github.com/project-skymap/library/releases/tag/v0.1.0
 [0.2.0]: https://github.com/project-skymap/library/compare/v0.1.0...v0.2.0
+[0.3.0]: https://github.com/project-skymap/library/compare/v0.2.0...v0.3.0
+[0.4.0]: https://github.com/project-skymap/library/compare/v0.3.0...v0.4.0

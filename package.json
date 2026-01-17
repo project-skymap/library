@@ -1,10 +1,12 @@
 {
   "name": "@project-skymap/library",
-  "version": "0.3.0-SNAPSHOT",
+  "version": "0.4.0-SNAPSHOT",
   "description": "ThreeJS-based React StarMap component",
   "scripts": {
     "build": "tsup",
     "dev": "tsup --watch",
+    "generate:layout": "tsx scripts/generate-layout.ts",
+    "generate:project": "tsx scripts/project-layout.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "type": "module",
@@ -28,9 +30,14 @@
     "three": ">=0.160.0"
   },
   "devDependencies": {
+    "@types/d3": "^7.4.3",
     "@types/react": "^18.0.0",
     "@types/react-dom": "^18.0.0",
+    "@types/seedrandom": "^3.0.8",
     "@types/three": "^0.182.0",
+    "d3": "^7.9.0",
+    "d3-voronoi-treemap": "^1.1.2",
+    "seedrandom": "^3.0.5",
     "three": "^0.170.0",
     "tsup": "^8.0.0",
     "typescript": "^5.0.0"

@@ -35,6 +35,7 @@ export type StarMapConfig = {
 
     // Arrangement overrides
     arrangement?: StarArrangement;
+    polygons?: Record<string, Vector3Arr[]>;
     editable?: boolean;
 
     // Either provide nodes/links directly, or a raw dataset + adapter

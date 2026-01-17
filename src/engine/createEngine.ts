@@ -402,6 +402,54 @@ export function createEngine({
     
     const dynamicLabels: { obj: THREE.Mesh; node: SceneNode; initialScale: THREE.Vector2 }[] = [];
     
+    // Hover Label
+    const hoverLabelMat = createSmartMaterial({
+        uniforms: { 
+            uMap: { value: null },
+            uSize: { value: new THREE.Vector2(1, 1) },
+            uAlpha: { value: 0.0 },
+            uAngle: { value: 0.0 }
+        },
+        vertexShaderBody: `
+            uniform vec2 uSize;
+            uniform float uAngle;
+            varying vec2 vUv;
+            void main() {
+                vUv = uv;
+                vec4 mvPos = modelViewMatrix * vec4(0.0, 0.0, 0.0, 1.0);
+                vec4 projected = smartProject(mvPos);
+                
+                float c = cos(uAngle);
+                float s = sin(uAngle);
+                mat2 rot = mat2(c, -s, s, c);
+                vec2 offset = rot * (position.xy * uSize);
+                
+                projected.xy += offset / vec2(uAspect, 1.0);
+                gl_Position = projected;
+            }
+        `,
+        fragmentShader: `
+            uniform sampler2D uMap;
+            uniform float uAlpha;
+            varying vec2 vUv;
+            void main() {
+                float mask = getMaskAlpha();
+                if (mask < 0.01) discard;
+                vec4 tex = texture2D(uMap, vUv);
+                gl_FragColor = vec4(tex.rgb, tex.a * uAlpha * mask);
+            }
+        `,
+        transparent: true,
+        depthWrite: false,
+        depthTest: false // Always on top of stars
+    });
+    const hoverLabelMesh = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), hoverLabelMat);
+    hoverLabelMesh.visible = false;
+    hoverLabelMesh.renderOrder = 999;
+    hoverLabelMesh.frustumCulled = false; // Ensure it's never culled
+    root.add(hoverLabelMesh);
+    let currentHoverNodeId: string | null = null;
+
     let constellationLines: THREE.LineSegments | null = null;
     let starPoints: THREE.Points | null = null;
 
@@ -466,6 +514,32 @@ export function createEngine({
         const layoutCfg = { ...cfg.layout, radius: cfg.layout?.radius ?? 2000 };
         const laidOut = computeLayoutPositions(model, layoutCfg);
 
+        // Pre-calculate Division centroids based on actual Book positions (Arrangement)
+        const divisionPositions = new Map<string, THREE.Vector3>();
+        if (cfg.arrangement) {
+             const divMap = new Map<string, SceneNode[]>();
+             for (const n of laidOut.nodes) {
+                 if (n.level === 2 && n.parent) { // Book
+                     const list = divMap.get(n.parent) ?? [];
+                     list.push(n);
+                     divMap.set(n.parent, list);
+                 }
+             }
+             for (const [divId, books] of divMap.entries()) {
+                 const centroid = new THREE.Vector3();
+                 let count = 0;
+                 for (const b of books) {
+                     const p = getPosition(b);
+                     centroid.add(p);
+                     count++;
+                 }
+                 if (count > 0) {
+                     centroid.divideScalar(count);
+                     divisionPositions.set(divId, centroid);
+                 }
+             }
+        }
+
         const starPositions: number[] = [];
         const starSizes: number[] = [];
         const starColors: number[] = [];
@@ -513,29 +587,36 @@ export function createEngine({
                 const c = SPECTRAL_COLORS[Math.min(colorIdx, SPECTRAL_COLORS.length - 1)]!;
                 starColors.push(c.r, c.g, c.b);
             }
-            // 2. Process Labels (Level 2 only - Books)
-            else if (n.level === 2) {
-                const color = "#ffffff";
+            // 2. Process Labels (Level 1 (Divisions) & Level 2 (Books))
+            else if (n.level === 1 || n.level === 2) {
+                const color = n.level === 1 ? "#38bdf8" : "#ffffff"; // Cyan for Divisions, White for Books
                 const texRes = createTextTexture(n.label, color);
                 
                 if (texRes) {
-                    const baseScale = 0.05; 
+                    const baseScale = n.level === 1 ? 0.08 : 0.05; // Divisions slightly larger
                     const size = new THREE.Vector2(baseScale * texRes.aspect, baseScale);
                     
                     const mat = createSmartMaterial({
                         uniforms: { 
                             uMap: { value: texRes.tex },
                             uSize: { value: size },
-                            uAlpha: { value: 0.0 } 
+                            uAlpha: { value: 0.0 },
+                            uAngle: { value: 0.0 }
                         },
                         vertexShaderBody: `
                             uniform vec2 uSize;
+                            uniform float uAngle;
                             varying vec2 vUv;
                             void main() {
                                 vUv = uv;
                                 vec4 mvPos = modelViewMatrix * vec4(0.0, 0.0, 0.0, 1.0);
                                 vec4 projected = smartProject(mvPos);
-                                vec2 offset = position.xy * uSize;
+                                
+                                float c = cos(uAngle);
+                                float s = sin(uAngle);
+                                mat2 rot = mat2(c, -s, s, c);
+                                vec2 offset = rot * (position.xy * uSize);
+                                
                                 projected.xy += offset / vec2(uAspect, 1.0);
                                 gl_Position = projected;
                             }
@@ -557,7 +638,20 @@ export function createEngine({
                     });
 
                     const mesh = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), mat);
-                    const p = getPosition(n);
+                    let p = getPosition(n);
+                    
+                    // Override for Division Labels: Place on Horizon
+                    if (n.level === 1) {
+                        // Use calculated centroid from children if available (matches Voronoi layout)
+                        if (divisionPositions.has(n.id)) {
+                            p.copy(divisionPositions.get(n.id)!);
+                        }
+                        
+                        const r = layoutCfg.radius * 0.95; 
+                        const angle = Math.atan2(p.z, p.x);
+                        p.set(r * Math.cos(angle), 150, r * Math.sin(angle)); // Lifted slightly
+                    }
+                    
                     mesh.position.set(p.x, p.y, p.z);
                     mesh.scale.set(size.x, size.y, 1.0); // Sync scale for raycast
                     mesh.frustumCulled = false;
@@ -638,9 +732,9 @@ export function createEngine({
             const lineGeo = new THREE.BufferGeometry();
             lineGeo.setAttribute('position', new THREE.Float32BufferAttribute(linePoints, 3));
             const lineMat = createSmartMaterial({
-                uniforms: { color: { value: new THREE.Color(0x445566) } },
+                uniforms: { color: { value: new THREE.Color(0xaaccff) } },
                 vertexShaderBody: `uniform vec3 color; varying vec3 vColor; void main() { vColor = color; vec4 mvPosition = modelViewMatrix * vec4(position, 1.0); gl_Position = smartProject(mvPosition); vScreenPos = gl_Position.xy / gl_Position.w; }`,
-                fragmentShader: `varying vec3 vColor; void main() { float alphaMask = getMaskAlpha(); if (alphaMask < 0.01) discard; gl_FragColor = vec4(vColor, 0.2 * alphaMask); }`,
+                fragmentShader: `varying vec3 vColor; void main() { float alphaMask = getMaskAlpha(); if (alphaMask < 0.01) discard; gl_FragColor = vec4(vColor, 0.4 * alphaMask); }`,
                 transparent: true, depthWrite: false, blending: THREE.AdditiveBlending
             });
             constellationLines = new THREE.LineSegments(lineGeo, lineMat);
@@ -671,6 +765,39 @@ export function createEngine({
             boundaryLines.frustumCulled = false;
             root.add(boundaryLines);
         }
+
+        // Render Voronoi Polygons (Cell Lines)
+        if (cfg.polygons) {
+            const polyPoints: number[] = [];
+            for (const pts of Object.values(cfg.polygons)) {
+                if (pts.length < 2) continue;
+                for (let i = 0; i < pts.length; i++) {
+                    const p1 = pts[i];
+                    const p2 = pts[(i + 1) % pts.length]; // Close loop
+                    if (p1 && p2) {
+                        polyPoints.push(p1[0], p1[1], p1[2]);
+                        polyPoints.push(p2[0], p2[1], p2[2]);
+                    }
+                }
+            }
+            if (polyPoints.length > 0) {
+                const polyGeo = new THREE.BufferGeometry();
+                polyGeo.setAttribute('position', new THREE.Float32BufferAttribute(polyPoints, 3));
+                
+                // Use a brighter color for cell lines and higher opacity
+                const polyMat = createSmartMaterial({
+                    uniforms: { color: { value: new THREE.Color(0x88ccff) } },
+                    vertexShaderBody: `uniform vec3 color; varying vec3 vColor; void main() { vColor = color; vec4 mvPosition = modelViewMatrix * vec4(position, 1.0); gl_Position = smartProject(mvPosition); vScreenPos = gl_Position.xy / gl_Position.w; }`,
+                    fragmentShader: `varying vec3 vColor; void main() { float alphaMask = getMaskAlpha(); if (alphaMask < 0.01) discard; gl_FragColor = vec4(vColor, 0.5 * alphaMask); }`,
+                    transparent: true, depthWrite: false, blending: THREE.AdditiveBlending
+                });
+                
+                const polyLines = new THREE.LineSegments(polyGeo, polyMat);
+                polyLines.frustumCulled = false;
+                root.add(polyLines);
+            }
+        }
+        
         resize();
     }
 
@@ -864,6 +991,31 @@ export function createEngine({
             state.lon = state.targetLon; state.lat = state.targetLat;
         } else {
             const hit = pick(e);
+            
+            // Hover Label Logic
+            if (hit && hit.type === 'star') {
+                if (currentHoverNodeId !== hit.node.id) {
+                    currentHoverNodeId = hit.node.id;
+                    const res = createTextTexture(hit.node.label, "#ffd700"); // Gold
+                    if (res) {
+                        hoverLabelMat.uniforms.uMap.value = res.tex;
+                        const baseScale = 0.03;
+                        const size = new THREE.Vector2(baseScale * res.aspect, baseScale);
+                        hoverLabelMat.uniforms.uSize.value = size;
+                        hoverLabelMesh.scale.set(size.x, size.y, 1);
+                    }
+                }
+                // Position at the star
+                hoverLabelMesh.position.copy(hit.point);
+                // No lookAt needed for billboard shader
+                hoverLabelMat.uniforms.uAlpha.value = 1.0;
+                hoverLabelMesh.visible = true;
+            } else {
+                currentHoverNodeId = null;
+                hoverLabelMat.uniforms.uAlpha.value = 0.0;
+                hoverLabelMesh.visible = false;
+            }
+
             if (hit?.node.id !== (handlers as any)._lastHoverId) {
                 (handlers as any)._lastHoverId = hit?.node.id;
                 handlers.onHover?.(hit?.node);
@@ -986,30 +1138,121 @@ export function createEngine({
         camera.lookAt(target);
         updateUniforms(); 
 
-        const cameraDir = new THREE.Vector3();
-        camera.getWorldDirection(cameraDir);
-        const objPos = new THREE.Vector3();
-        const objDir = new THREE.Vector3();
-        const SHOW_LABELS_FOV = 60;
+        const DIVISION_THRESHOLD = 60;
+        const showDivisions = state.fov > DIVISION_THRESHOLD;
+        
+        // --- Polished Label Management ---
+        // 1. Collect and Project
+        const rect = renderer.domElement.getBoundingClientRect();
+        const screenW = rect.width;
+        const screenH = rect.height;
+        const aspect = screenW / screenH;
+        const labelsToCheck = [];
+        
+        // Helper to check if a rect overlaps any in a list
+        const occupied: {x:number, y:number, w:number, h:number}[] = [];
+        function isOverlapping(x:number, y:number, w:number, h:number) {
+            for (const r of occupied) {
+                if (x < r.x + r.w && x + w > r.x && y < r.y + r.h && y + h > r.y) return true;
+            }
+            return false;
+        }
 
         for (const item of dynamicLabels) {
             const uniforms = (item.obj.material as THREE.ShaderMaterial).uniforms as any;
-            let targetAlpha = 0.0;
-            if (state.fov < SHOW_LABELS_FOV) {
-                item.obj.getWorldPosition(objPos);
-                objDir.subVectors(objPos, camera.position).normalize();
-                const dot = cameraDir.dot(objDir);
-                const fullVisibleDot = 0.98; const invisibleDot = 0.90;
-                let gazeOpacity = 0;
-                if (dot >= fullVisibleDot) gazeOpacity = 1;
-                else if (dot > invisibleDot) gazeOpacity = (dot - invisibleDot) / (fullVisibleDot - invisibleDot);
-                const zoomFactor = 1.0 - THREE.MathUtils.smoothstep(40, SHOW_LABELS_FOV, state.fov);
-                targetAlpha = gazeOpacity * zoomFactor;
+            
+            // Project to Screen
+            const pWorld = item.obj.position;
+            const pProj = smartProjectJS(pWorld);
+            
+            // Fix Frustum Cull:
+            // pProj.z is dot(viewDir, objDir).
+            // -1 = Center Front. 0 = Side (90 deg). 1 = Back.
+            // We want to SHOW things in front (z < 0) and slightly to side.
+            // We want to CULL things behind (z > 0.2 approx).
+            if (pProj.z > 0.2) { 
+                 uniforms.uAlpha.value = THREE.MathUtils.lerp(uniforms.uAlpha.value, 0, 0.1);
+                 item.obj.visible = uniforms.uAlpha.value > 0.01;
+                 continue;
+            } 
+            
+            const ndcX = pProj.x * globalUniforms.uScale.value / aspect;
+            const ndcY = pProj.y * globalUniforms.uScale.value;
+            
+            // Screen coords (approx center)
+            const sX = (ndcX * 0.5 + 0.5) * screenW;
+            const sY = (-ndcY * 0.5 + 0.5) * screenH;
+            
+            // Dimensions
+            const size = (uniforms.uSize.value as THREE.Vector2);
+            // Approx pixel size (very rough, assumes uSize is relative to screen height in linear projection)
+            // But uSize is world-ish scale in the shader logic? 
+            // In shader: `vec2 offset = position.xy * uSize;` then divided by `vec2(uAspect, 1.0)`.
+            // So uSize.y is fraction of screen height at z=0 (projection plane)?
+            // Let's approximate: 
+            const pixelH = size.y * screenH * 0.8; // scaling factor
+            const pixelW = size.x * screenH * 0.8; 
+            
+            labelsToCheck.push({ item, sX, sY, w: pixelW, h: pixelH, uniforms });
+        }
+        
+        // 2. Sort by Priority
+        // Priority: Selected > Hovered > Active Layer > Inactive
+        const hoverId = (handlers as any)._lastHoverId;
+        const selectedId = state.draggedNodeId; 
+        
+        labelsToCheck.sort((a, b) => {
+            const getScore = (l: typeof a) => {
+                if (l.item.node.id === selectedId) return 10;
+                if (l.item.node.id === hoverId) return 9;
+                const level = l.item.node.level;
+                // Books (2) are medium priority, Divisions (1) high if zoomed out
+                if (level === 2) return 5; 
+                if (level === 1) return showDivisions ? 6 : 1; 
+                return 0;
+            };
+            return getScore(b) - getScore(a);
+        });
+        
+        // 3. Collision & Target Alpha
+        for (const l of labelsToCheck) {
+            let target = 0.0;
+            const level = l.item.node.level;
+            const isSpecial = l.item.node.id === selectedId || l.item.node.id === hoverId;
+            
+            // Rotation Logic for Divisions
+            if (level === 1) {
+                let rot = 0;
+                const blend = globalUniforms.uBlend.value;
+                if (blend > 0.5) {
+                    const dx = l.sX - screenW / 2;
+                    const dy = l.sY - screenH / 2;
+                    rot = Math.atan2(-dy, -dx) - Math.PI / 2;
+                }
+                l.uniforms.uAngle.value = THREE.MathUtils.lerp(l.uniforms.uAngle.value, rot, 0.1);
             }
-            if (uniforms.uAlpha) {
-                uniforms.uAlpha.value = THREE.MathUtils.lerp(uniforms.uAlpha.value, targetAlpha, 0.1);
-                item.obj.visible = uniforms.uAlpha.value > 0.01;
+
+            // --- Visibility Logic ---
+            
+            if (level === 2) {
+                // Books: Always visible, no decluttering (reverting to previous behavior)
+                target = 1.0;
+                // Still add to occupied so Divisions (level 1) try to avoid them
+                occupied.push({ x: l.sX - l.w/2, y: l.sY - l.h/2, w: l.w, h: l.h });
+            } 
+            else if (level === 1) {
+                // Divisions: Show only if zoomed out and not colliding
+                if (showDivisions || isSpecial) {
+                    const pad = -5;
+                    if (!isOverlapping(l.sX - l.w/2 - pad, l.sY - l.h/2 - pad, l.w + pad*2, l.h + pad*2)) {
+                        target = 1.0;
+                        occupied.push({ x: l.sX - l.w/2, y: l.sY - l.h/2, w: l.w, h: l.h });
+                    }
+                }
             }
+            
+            l.uniforms.uAlpha.value = THREE.MathUtils.lerp(l.uniforms.uAlpha.value, target, 0.1);
+            l.item.obj.visible = l.uniforms.uAlpha.value > 0.01;
         }
         renderer.render(scene, camera);
     }
