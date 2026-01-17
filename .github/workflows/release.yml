@@ -89,3 +89,11 @@ jobs:
           git add package.json
           git commit -m "chore: bump version to $NEXT_VERSION [skip ci]"
           git push origin main
+
+      - name: Merge main back to develop
+        run: |
+          git fetch origin develop
+          git checkout develop
+          git merge main
+          git push origin develop
+          
