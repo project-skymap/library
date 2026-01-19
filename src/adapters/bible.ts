@@ -16,7 +16,14 @@ export type BibleJSON = {
     }>;
 };
 
-export function bibleToSceneModel(data: BibleJSON): SceneModel {
+export type GroupDefinition = Record<string, Array<{ 
+    name: string; 
+    start: number; 
+    end: number;
+    connections?: number[][];
+}>>;
+
+export function bibleToSceneModel(data: BibleJSON, groups?: GroupDefinition): SceneModel {
     const nodes: SceneNode[] = [];
     const links: SceneModel["links"] = [];
 
@@ -53,15 +60,50 @@ export function bibleToSceneModel(data: BibleJSON): SceneModel {
                 });
                 links.push({ source: bid, target: did });
 
+                const bookGroups = groups?.[b.name.toLowerCase()];
+                const groupNodes = new Map<number, string>(); // index -> id
+
                 const verseCounts = b.verses ?? Array(b.chapters).fill(1);
                 for (let i = 0; i < verseCounts.length; i++) {
                     const chapterNum = i + 1;
+                    let parentId = bid;
+                    let level = 3;
+                    let groupIndex: number | undefined = undefined;
+
+                    if (bookGroups) {
+                        const idx = bookGroups.findIndex(g => chapterNum >= g.start && chapterNum <= g.end);
+                        if (idx !== -1 && bookGroups[idx]) {
+                            groupIndex = idx;
+                            // Ensure Group Node exists
+                            if (!groupNodes.has(idx)) {
+                                const groupName = bookGroups[idx].name;
+                                const gid = `${bid}:G${idx}`; // Unique ID
+                                nodes.push({
+                                    id: gid,
+                                    label: groupName,
+                                    level: 3,
+                                    parent: bid,
+                                    meta: { 
+                                        testament: t.name, division: d.name, book: b.name, 
+                                        group: groupName, groupIndex: idx,
+                                        connections: bookGroups[idx].connections
+                                    }
+                                });
+                                links.push({ source: gid, target: bid });
+                                groupNodes.set(idx, gid);
+                            }
+                            parentId = groupNodes.get(idx)!;
+                            level = 4;
+                        }
+                    }
+
                     const cid = id.chapter(b.key, chapterNum);
+                    
                     nodes.push({
                         id: cid,
                         label: `${b.name} ${chapterNum}`,
-                        level: 3,
-                        parent: bid,
+                        level: level,
+                        parent: parentId,
                         weight: verseCounts[i],
                         icon: b.icons?.[i] ?? b.icons?.[0], 
                         meta: {
@@ -69,10 +111,11 @@ export function bibleToSceneModel(data: BibleJSON): SceneModel {
                             division: d.name,
                             bookKey: b.key,
                             book: b.name,
-                            chapter: chapterNum
+                            chapter: chapterNum,
+                            groupIndex
                         }
                     });
-                    links.push({ source: cid, target: bid });
+                    links.push({ source: cid, target: parentId });
                 }
             }
         }

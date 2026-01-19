@@ -188,14 +188,31 @@ export function computeLayoutPositions(
                     (uBook.meta as any).z = labelPos.z;
 
                     // 2. Layout Chapters (Constellation)
-                    const chapters = childrenMap.get(book.id) ?? [];
-                    if (chapters.length > 0) {
+                    // Gather all chapters (either direct children or grandchildren via Groups)
+                    const directChildren = childrenMap.get(book.id) ?? [];
+                    const allChapters: SceneNode[] = [];
+                    const groups: SceneNode[] = [];
+
+                    directChildren.forEach(child => {
+                        if (child.meta?.group) {
+                            groups.push(child);
+                            const grandkids = childrenMap.get(child.id) ?? [];
+                            allChapters.push(...grandkids);
+                        } else {
+                            allChapters.push(child);
+                        }
+                    });
+
+                    // Sort by chapter number
+                    allChapters.sort((a, b) => ((a.meta?.chapter as number) || 0) - ((b.meta?.chapter as number) || 0));
+
+                    if (allChapters.length > 0) {
                         // Adjust territory
                         const territoryRadius = (radius * 2) / Math.sqrt(books.length * 2) * 0.7; 
-                        const localPoints = getConstellationLayout(bookKey, chapters.length, territoryRadius);
+                        const localPoints = getConstellationLayout(bookKey, allChapters.length, territoryRadius);
                         const up = new THREE.Vector3(0, 1, 0); 
                         
-                        chapters.forEach((chap, idx) => {
+                        allChapters.forEach((chap, idx) => {
                             const uChap = updatedNodeMap.get(chap.id)!;
                             const lp = localPoints[idx];
                             if (!lp) return;
@@ -205,6 +222,26 @@ export function computeLayoutPositions(
                             (uChap.meta as any).x = wp.x;
                             (uChap.meta as any).y = wp.y;
                             (uChap.meta as any).z = wp.z;
+                        });
+
+                        // 3. Layout Groups (Centroids)
+                        groups.forEach(g => {
+                            const kids = childrenMap.get(g.id) ?? [];
+                            if (kids.length === 0) return;
+                            const uGroup = updatedNodeMap.get(g.id)!;
+                            
+                            const center = new THREE.Vector3();
+                            kids.forEach(k => {
+                                const uk = updatedNodeMap.get(k.id)!;
+                                center.add(new THREE.Vector3((uk.meta as any).x, (uk.meta as any).y, (uk.meta as any).z));
+                            });
+                            center.divideScalar(kids.length);
+                            
+                            // Push slightly towards camera/zenith to float above stars? 
+                            // Or keep on plane? Let's keep on plane for now.
+                            (uGroup.meta as any).x = center.x;
+                            (uGroup.meta as any).y = center.y;
+                            (uGroup.meta as any).z = center.z;
                         });
                     }
                 });
