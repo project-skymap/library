@@ -19,6 +19,7 @@ export type BibleJSON = {
 export function bibleToSceneModel(data: BibleJSON): SceneModel {
     const nodes: SceneNode[] = [];
     const links: SceneModel["links"] = [];
+    let bookCounter = 0;
 
     const id = {
         testament: (t: string) => `T:${t}`,
@@ -43,10 +44,12 @@ export function bibleToSceneModel(data: BibleJSON): SceneModel {
             links.push({ source: did, target: tid });
 
             for (const b of d.books) {
+                bookCounter++;
+                const bookLabel = `${bookCounter}. ${b.name}`;
                 const bid = id.book(b.key);
                 nodes.push({
                     id: bid,
-                    label: b.name,
+                    label: bookLabel,
                     level: 2,
                     parent: did,
                     meta: { testament: t.name, division: d.name, bookKey: b.key, book: b.name }
@@ -59,7 +62,7 @@ export function bibleToSceneModel(data: BibleJSON): SceneModel {
                     const cid = id.chapter(b.key, chapterNum);
                     nodes.push({
                         id: cid,
-                        label: `${b.name} ${chapterNum}`,
+                        label: `${bookLabel} ${chapterNum}`,
                         level: 3,
                         parent: bid,
                         weight: verseCounts[i],

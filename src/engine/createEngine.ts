@@ -494,7 +494,24 @@ export function createEngine({
     function getPosition(n: SceneNode) {
         if (currentConfig?.arrangement) {
              const arr = currentConfig.arrangement[n.id];
-             if (arr) return new THREE.Vector3(arr.position[0], arr.position[1], arr.position[2]);
+             if (arr) {
+                // If it's a 2D arrangement (z=0), project to sphere
+                if (arr.position[2] === 0) {
+                    const x = arr.position[0];
+                    const y = arr.position[1];
+                    const r_norm = Math.sqrt(x * x + y * y);
+                    const phi = Math.atan2(y, x);
+                    const theta = r_norm * (Math.PI / 2);
+                    const radius = currentConfig.layout?.radius ?? 2000;
+                    
+                    return new THREE.Vector3(
+                        Math.sin(theta) * Math.cos(phi),
+                        Math.cos(theta),
+                        Math.sin(theta) * Math.sin(phi)
+                    ).multiplyScalar(radius);
+                }
+                return new THREE.Vector3(arr.position[0], arr.position[1], arr.position[2]);
+             }
         }
         return new THREE.Vector3((n.meta?.x as number) ?? 0, (n.meta?.y as number) ?? 0, (n.meta?.z as number) ?? 0);
     }
@@ -769,15 +786,37 @@ export function createEngine({
         // Render Voronoi Polygons (Cell Lines)
         if (cfg.polygons) {
             const polyPoints: number[] = [];
+            const rBase = layoutCfg.radius;
+            
             for (const pts of Object.values(cfg.polygons)) {
                 if (pts.length < 2) continue;
                 for (let i = 0; i < pts.length; i++) {
-                    const p1 = pts[i];
-                    const p2 = pts[(i + 1) % pts.length]; // Close loop
-                    if (p1 && p2) {
-                        polyPoints.push(p1[0], p1[1], p1[2]);
-                        polyPoints.push(p2[0], p2[1], p2[2]);
-                    }
+                    const p1_2d = pts[i];
+                    const p2_2d = pts[(i + 1) % pts.length];
+                    if (!p1_2d || !p2_2d) continue;
+
+                    // Project 2D -> 3D Sphere
+                    const project2dTo3d = (p: number[]) => {
+                        const x = p[0]!;
+                        const y = p[1]!;
+                        const r_norm = Math.sqrt(x * x + y * y);
+                        const phi = Math.atan2(y, x);
+                        // Map r_norm (0..1) to angle from zenith (0..PI/2)
+                        // Horizon is at 0.05 in some other places, but let's use full PI/2 for cells
+                        const theta = r_norm * (Math.PI / 2);
+                        
+                        return new THREE.Vector3(
+                            Math.sin(theta) * Math.cos(phi),
+                            Math.cos(theta),
+                            Math.sin(theta) * Math.sin(phi)
+                        ).multiplyScalar(rBase);
+                    };
+
+                    const v1 = project2dTo3d(p1_2d);
+                    const v2 = project2dTo3d(p2_2d);
+
+                    polyPoints.push(v1.x, v1.y, v1.z);
+                    polyPoints.push(v2.x, v2.y, v2.z);
                 }
             }
             if (polyPoints.length > 0) {
@@ -786,9 +825,9 @@ export function createEngine({
                 
                 // Use a brighter color for cell lines and higher opacity
                 const polyMat = createSmartMaterial({
-                    uniforms: { color: { value: new THREE.Color(0x88ccff) } },
+                    uniforms: { color: { value: new THREE.Color(0x38bdf8) } }, // Cyan-ish
                     vertexShaderBody: `uniform vec3 color; varying vec3 vColor; void main() { vColor = color; vec4 mvPosition = modelViewMatrix * vec4(position, 1.0); gl_Position = smartProject(mvPosition); vScreenPos = gl_Position.xy / gl_Position.w; }`,
-                    fragmentShader: `varying vec3 vColor; void main() { float alphaMask = getMaskAlpha(); if (alphaMask < 0.01) discard; gl_FragColor = vec4(vColor, 0.5 * alphaMask); }`,
+                    fragmentShader: `varying vec3 vColor; void main() { float alphaMask = getMaskAlpha(); if (alphaMask < 0.01) discard; gl_FragColor = vec4(vColor, 0.2 * alphaMask); }`,
                     transparent: true, depthWrite: false, blending: THREE.AdditiveBlending
                 });
                 

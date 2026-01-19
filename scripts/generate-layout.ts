@@ -71,12 +71,20 @@ async function generate() {
         .sum(d => d.value || 0);
 
     console.log("Computing Voronoi Treemap...");
-    const rng = seedrandom(SEED);
+    
+    // Ordered Initialization Strategy
+    // We pre-calculate a queue of (x, y) coordinates (0-1 normalized)
+    // to guide the initial placement of sites in a clockwise spiral/circle.
+    const layoutQueue: number[] = [];
+    buildLayoutQueue(root, layoutQueue);
+    
+    // Create a PRNG that consumes the queue first, then falls back to seeded random
+    const orderedPrng = createOrderedPrng(layoutQueue, SEED);
     
     // Create the Voronoi Treemap layout
     const voronoi = d3VoronoiTreemap.voronoiTreemap()
         .clip(getCirclePolygon(LAYOUT_RADIUS, 128))
-        .prng(rng);
+        .prng(orderedPrng);
 
     voronoi(root);
 
@@ -191,6 +199,53 @@ function dist(p1: [number, number], p2: [number, number]): number {
 
 function distSq(p1: [number, number], p2: [number, number]): number {
     return (p1[0] - p2[0])**2 + (p1[1] - p2[1])**2;
+}
+
+function buildLayoutQueue(node: d3.HierarchyNode<HierarchyNode>, queue: number[], depth: number = 0) {
+    // If leaf, no children to arrange
+    if (!node.children || node.children.length === 0) return;
+    
+    // Only enforce order for top levels (Testaments and Divisions)
+    // Books (depth >= 2) will use random fallback to avoid eclipsing issues with disparate weights
+    const children = node.children;
+    if (depth < 2) {
+        // 1. Generate coordinates for current node's children
+        const count = children.length;
+        
+        // Radius strategy:
+        // Depth 0 (Root): 0.35 (Safe for circle/square).
+        // Depth 1 (Divisions): 0.15 (Pack tight in center to avoid complex polygon edges; Voronoi will expand them).
+        const r = depth === 0 ? 0.35 : 0.15;
+        
+        for (let i = 0; i < count; i++) {
+            // Clockwise starting from Top (-PI/2)
+            // Angle: -PI/2 + (i / count) * 2PI
+            const theta = -Math.PI / 2 + (i / count) * 2 * Math.PI;
+            
+            const x = 0.5 + r * Math.cos(theta);
+            const y = 0.5 + r * Math.sin(theta);
+            
+            queue.push(x);
+            queue.push(y);
+        }
+    }
+
+    // 2. Recurse (process children's children)
+    for (const child of children) {
+        buildLayoutQueue(child, queue, depth + 1);
+    }
+}
+
+function createOrderedPrng(queue: number[], seed: string) {
+    const rng = seedrandom(seed);
+    let queueIndex = 0;
+    
+    return function() {
+        if (queueIndex < queue.length) {
+            return queue[queueIndex++];
+        }
+        return rng();
+    };
 }
 
 generate().catch(console.error);
