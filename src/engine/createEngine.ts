@@ -76,7 +76,8 @@ export function createEngine({
         draggedGroup: null as null | {
             labelInitialPos: THREE.Vector3,
             children: { index: number, initialPos: THREE.Vector3 }[]
-        }
+        },
+        tempArrangement: {} as StarArrangement
     };
 
     const mouseNDC = new THREE.Vector2();
@@ -903,29 +904,13 @@ export function createEngine({
             }
         }
         
-        // Explicitly capture dragged stars to ensure accuracy
-        if (state.draggedGroup && state.draggedNodeId) {
-             const group = state.draggedGroup;
-             const item = dynamicLabels.find(l => l.node.id === state.draggedNodeId);
-             if (item) {
-                 const vStart = group.labelInitialPos.clone().normalize();
-                 const vEnd = item.obj.position.clone().normalize();
-                 const q = new THREE.Quaternion().setFromUnitVectors(vStart, vEnd);
-                 const tempVec = new THREE.Vector3();
-                 
-                 for (const child of group.children) {
-                     const id = starIndexToId[child.index];
-                     if (id) {
-                         tempVec.copy(child.initialPos).applyQuaternion(q);
-                         arr[id] = { position: [tempVec.x, tempVec.y, tempVec.z] };
-                     }
-                 }
-             }
-        }
-
         for (const item of dynamicLabels) {
             arr[item.node.id] = { position: [item.obj.position.x, item.obj.position.y, item.obj.position.z] };
         }
+        
+        // Merge temp arrangement to ensure dragged items are up to date
+        Object.assign(arr, state.tempArrangement);
+        
         return arr;
     }
 
@@ -1020,6 +1005,7 @@ export function createEngine({
         state.dragMode = 'camera';
         state.isDragging = true;
         state.velocityX = 0; state.velocityY = 0;
+        state.tempArrangement = {};
         document.body.style.cursor = 'grabbing';
     }
 
@@ -1045,7 +1031,10 @@ export function createEngine({
              else if (state.draggedGroup && state.draggedNodeId) {
                  const group = state.draggedGroup;
                  const item = dynamicLabels.find(l => l.node.id === state.draggedNodeId);
-                 if (item) item.obj.position.copy(newPos);
+                 if (item) {
+                     item.obj.position.copy(newPos);
+                     state.tempArrangement[item.node.id] = { position: [newPos.x, newPos.y, newPos.z] };
+                 }
                  
                  // Rotate children based on World Vectors
                  const vStart = group.labelInitialPos.clone().normalize();
@@ -1058,6 +1047,11 @@ export function createEngine({
                      for (const child of group.children) {
                          tempVec.copy(child.initialPos).applyQuaternion(q);
                          attr.setXYZ(child.index, tempVec.x, tempVec.y, tempVec.z);
+                         
+                         const id = starIndexToId[child.index];
+                         if (id) {
+                             state.tempArrangement[id] = { position: [tempVec.x, tempVec.y, tempVec.z] };
+                         }
                      }
                      attr.needsUpdate = true;
                  }
