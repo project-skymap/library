@@ -501,10 +501,11 @@ export function createEngine({
                 if (arr.position[2] === 0) {
                     const x = arr.position[0];
                     const y = arr.position[1];
-                    const r_norm = Math.sqrt(x * x + y * y);
+                    const radius = currentConfig.layout?.radius ?? 2000;
+                    
+                    const r_norm = Math.min(1.0, Math.sqrt(x * x + y * y) / radius);
                     const phi = Math.atan2(y, x);
                     const theta = r_norm * (Math.PI / 2);
-                    const radius = currentConfig.layout?.radius ?? 2000;
                     
                     return new THREE.Vector3(
                         Math.sin(theta) * Math.cos(phi),
@@ -606,13 +607,17 @@ export function createEngine({
                 const c = SPECTRAL_COLORS[Math.min(colorIdx, SPECTRAL_COLORS.length - 1)]!;
                 starColors.push(c.r, c.g, c.b);
             }
-            // 2. Process Labels (Level 1 (Divisions) & Level 2 (Books))
-            else if (n.level === 1 || n.level === 2) {
-                const color = n.level === 1 ? "#38bdf8" : "#ffffff"; // Cyan for Divisions, White for Books
+            
+            // 2. Process Labels (Level 1, 2, 3)
+            if (n.level === 1 || n.level === 2 || n.level === 3) {
+                const color = n.level === 1 ? "#38bdf8" : "#ffffff"; // Cyan for Divisions, White for Books/Chapters
                 const texRes = createTextTexture(n.label, color);
                 
                 if (texRes) {
-                    const baseScale = n.level === 1 ? 0.08 : 0.05; // Divisions slightly larger
+                    let baseScale = 0.05;
+                    if (n.level === 1) baseScale = 0.08;
+                    else if (n.level === 3) baseScale = 0.04;
+                    
                     const size = new THREE.Vector2(baseScale * texRes.aspect, baseScale);
                     
                     const mat = createSmartMaterial({
@@ -669,6 +674,9 @@ export function createEngine({
                         const r = layoutCfg.radius * 0.95; 
                         const angle = Math.atan2(p.z, p.x);
                         p.set(r * Math.cos(angle), 150, r * Math.sin(angle)); // Lifted slightly
+                    } else if (n.level === 3) {
+                        // Offset chapters slightly so they hover above the star
+                        p.multiplyScalar(1.002);
                     }
                     
                     mesh.position.set(p.x, p.y, p.z);
@@ -845,9 +853,24 @@ export function createEngine({
     let lastData: any = undefined;
     let lastAdapter: any = undefined;
     let lastModel: SceneModel | undefined = undefined;
+    let lastAppliedLon: number | undefined = undefined;
+    let lastAppliedLat: number | undefined = undefined;
 
     function setConfig(cfg: StarMapConfig) {
         currentConfig = cfg;
+        
+        // Update Camera Orientation if provided and changed
+        if (typeof cfg.camera?.lon === 'number' && cfg.camera.lon !== lastAppliedLon) {
+             state.lon = cfg.camera.lon;
+             state.targetLon = cfg.camera.lon;
+             lastAppliedLon = cfg.camera.lon;
+        }
+        if (typeof cfg.camera?.lat === 'number' && cfg.camera.lat !== lastAppliedLat) {
+             state.lat = cfg.camera.lat;
+             state.targetLat = cfg.camera.lat;
+             lastAppliedLat = cfg.camera.lat;
+        }
+
         let shouldRebuild = false;
         let model = cfg.model;
         if (!model && cfg.data && cfg.adapter) {
@@ -868,17 +891,38 @@ export function createEngine({
     function getFullArrangement(): StarArrangement {
         const arr: StarArrangement = {};
         if (starPoints && starPoints.geometry.attributes.position) {
-            const positions = starPoints.geometry.attributes.position.array;
+            const attr = starPoints.geometry.attributes.position;
             for (let i = 0; i < starIndexToId.length; i++) {
                 const id = starIndexToId[i];
                 if (id) {
-                    const x = positions[i*3] ?? 0; const y = positions[i*3+1] ?? 0; const z = positions[i*3+2] ?? 0;
-                    if (Number.isFinite(x) && Number.isFinite(y) && Number.isFinite(z)) {
-                        arr[id] = { position: [x, y, z] };
-                    }
+                    const x = attr.getX(i);
+                    const y = attr.getY(i);
+                    const z = attr.getZ(i);
+                    arr[id] = { position: [x, y, z] };
                 }
             }
         }
+        
+        // Explicitly capture dragged stars to ensure accuracy
+        if (state.draggedGroup && state.draggedNodeId) {
+             const group = state.draggedGroup;
+             const item = dynamicLabels.find(l => l.node.id === state.draggedNodeId);
+             if (item) {
+                 const vStart = group.labelInitialPos.clone().normalize();
+                 const vEnd = item.obj.position.clone().normalize();
+                 const q = new THREE.Quaternion().setFromUnitVectors(vStart, vEnd);
+                 const tempVec = new THREE.Vector3();
+                 
+                 for (const child of group.children) {
+                     const id = starIndexToId[child.index];
+                     if (id) {
+                         tempVec.copy(child.initialPos).applyQuaternion(q);
+                         arr[id] = { position: [tempVec.x, tempVec.y, tempVec.z] };
+                     }
+                 }
+             }
+        }
+
         for (const item of dynamicLabels) {
             arr[item.node.id] = { position: [item.obj.position.x, item.obj.position.y, item.obj.position.z] };
         }
@@ -1184,29 +1228,21 @@ export function createEngine({
 
         // --- Constellation Lines Visibility ---
         if (constellationLines) {
-            constellationLines.visible = currentConfig?.showConstellationLines ?? true;
+            constellationLines.visible = currentConfig?.showConstellationLines ?? false;
         }
         if (boundaryLines) {
-            boundaryLines.visible = currentConfig?.showDivisionBoundaries ?? true;
+            boundaryLines.visible = currentConfig?.showDivisionBoundaries ?? false;
         }
         
         // --- Polished Label Management ---
-        if (currentConfig?.showLabels === false) {
-             for (const item of dynamicLabels) {
-                 item.obj.visible = false;
-                 // Reset alphas so they fade in nicely when re-enabled
-                 (item.obj.material as any).uniforms.uAlpha.value = 0.0;
-             }
-        } else {
-            // 1. Collect and Project
-            const rect = renderer.domElement.getBoundingClientRect();
-            const screenW = rect.width;
+        // 1. Collect and Project
+        const rect = renderer.domElement.getBoundingClientRect();
+        const screenW = rect.width;
         const screenH = rect.height;
         const aspect = screenW / screenH;
         const labelsToCheck = [];
-        
-        // Helper to check if a rect overlaps any in a list
         const occupied: {x:number, y:number, w:number, h:number}[] = [];
+
         function isOverlapping(x:number, y:number, w:number, h:number) {
             for (const r of occupied) {
                 if (x < r.x + r.w && x + w > r.x && y < r.y + r.h && y + h > r.y) return true;
@@ -1214,46 +1250,64 @@ export function createEngine({
             return false;
         }
 
+        const showBookLabels = currentConfig?.showBookLabels === true;
+        const showDivisionLabels = currentConfig?.showDivisionLabels === true;
+        const showChapterLabels = currentConfig?.showChapterLabels === true;
+        
+        // FOV thresholds
+        // showDivisions already calculated above
+        const showChapters = state.fov < 35;
+
         for (const item of dynamicLabels) {
             const uniforms = (item.obj.material as THREE.ShaderMaterial).uniforms as any;
+            const level = item.node.level;
+
+            // Global Toggle Check
+            let isEnabled = false;
+            if (level === 2 && showBookLabels) isEnabled = true;
+            else if (level === 1 && showDivisionLabels) isEnabled = true;
+            else if (level === 3 && showChapterLabels) isEnabled = true;
             
+            if (!isEnabled) {
+                 uniforms.uAlpha.value = THREE.MathUtils.lerp(uniforms.uAlpha.value, 0, 0.2);
+                 item.obj.visible = uniforms.uAlpha.value > 0.01;
+                 continue;
+            }
+
             // Project to Screen
             const pWorld = item.obj.position;
             const pProj = smartProjectJS(pWorld);
             
-            // Fix Frustum Cull:
-            // pProj.z is dot(viewDir, objDir).
-            // -1 = Center Front. 0 = Side (90 deg). 1 = Back.
-            // We want to SHOW things in front (z < 0) and slightly to side.
-            // We want to CULL things behind (z > 0.2 approx).
+            // Frustum Cull
             if (pProj.z > 0.2) { 
-                 uniforms.uAlpha.value = THREE.MathUtils.lerp(uniforms.uAlpha.value, 0, 0.1);
+                 uniforms.uAlpha.value = THREE.MathUtils.lerp(uniforms.uAlpha.value, 0, 0.2);
                  item.obj.visible = uniforms.uAlpha.value > 0.01;
                  continue;
             } 
             
+            // Optimization: If Level 3 (Chapters) and not zoomed in, cull immediately
+            if (level === 3 && !showChapters && item.node.id !== state.draggedNodeId) {
+                 uniforms.uAlpha.value = THREE.MathUtils.lerp(uniforms.uAlpha.value, 0, 0.2);
+                 item.obj.visible = uniforms.uAlpha.value > 0.01;
+                 continue;
+            }
+
+            // Calculate screen coords
             const ndcX = pProj.x * globalUniforms.uScale.value / aspect;
             const ndcY = pProj.y * globalUniforms.uScale.value;
-            
-            // Screen coords (approx center)
             const sX = (ndcX * 0.5 + 0.5) * screenW;
             const sY = (-ndcY * 0.5 + 0.5) * screenH;
             
             // Dimensions
             const size = (uniforms.uSize.value as THREE.Vector2);
-            // Approx pixel size (very rough, assumes uSize is relative to screen height in linear projection)
-            // But uSize is world-ish scale in the shader logic? 
-            // In shader: `vec2 offset = position.xy * uSize;` then divided by `vec2(uAspect, 1.0)`.
-            // So uSize.y is fraction of screen height at z=0 (projection plane)?
-            // Let's approximate: 
-            const pixelH = size.y * screenH * 0.8; // scaling factor
+            const pixelH = size.y * screenH * 0.8; 
             const pixelW = size.x * screenH * 0.8; 
             
-            labelsToCheck.push({ item, sX, sY, w: pixelW, h: pixelH, uniforms });
+            // Push to check list
+            labelsToCheck.push({ item, sX, sY, w: pixelW, h: pixelH, uniforms, level });
         }
         
         // 2. Sort by Priority
-        // Priority: Selected > Hovered > Active Layer > Inactive
         const hoverId = (handlers as any)._lastHoverId;
         const selectedId = state.draggedNodeId; 
         
@@ -1261,23 +1315,21 @@ export function createEngine({
             const getScore = (l: typeof a) => {
                 if (l.item.node.id === selectedId) return 10;
                 if (l.item.node.id === hoverId) return 9;
-                const level = l.item.node.level;
-                // Books (2) are medium priority, Divisions (1) high if zoomed out
+                const level = l.level;
                 if (level === 2) return 5; 
                 if (level === 1) return showDivisions ? 6 : 1; 
                 return 0;
             };
             return getScore(b) - getScore(a);
         });
-        
+
         // 3. Collision & Target Alpha
         for (const l of labelsToCheck) {
             let target = 0.0;
-            const level = l.item.node.level;
             const isSpecial = l.item.node.id === selectedId || l.item.node.id === hoverId;
             
-            // Rotation Logic for Divisions
-            if (level === 1) {
+            // Rotation Logic for Divisions (Level 1)
+            if (l.level === 1) {
                 let rot = 0;
                 const blend = globalUniforms.uBlend.value;
                 if (blend > 0.5) {
@@ -1288,16 +1340,13 @@ export function createEngine({
                 l.uniforms.uAngle.value = THREE.MathUtils.lerp(l.uniforms.uAngle.value, rot, 0.1);
             }
 
-            // --- Visibility Logic ---
-            
-            if (level === 2) {
-                // Books: Always visible, no decluttering (reverting to previous behavior)
+            if (l.level === 2) {
+                // Books: Always visible if enabled
                 target = 1.0;
-                // Still add to occupied so Divisions (level 1) try to avoid them
                 occupied.push({ x: l.sX - l.w/2, y: l.sY - l.h/2, w: l.w, h: l.h });
             } 
-            else if (level === 1) {
-                // Divisions: Show only if zoomed out and not colliding
+            else if (l.level === 1) {
+                // Divisions: Check overlaps
                 if (showDivisions || isSpecial) {
                     const pad = -5;
                     if (!isOverlapping(l.sX - l.w/2 - pad, l.sY - l.h/2 - pad, l.w + pad*2, l.h + pad*2)) {
@@ -1306,11 +1355,16 @@ export function createEngine({
                     }
                 }
             }
+            else if (l.level === 3) {
+                // Chapters: No overlap check, just zoom check
+                if (showChapters || isSpecial) {
+                    target = 1.0;
+                }
+            }
             
             l.uniforms.uAlpha.value = THREE.MathUtils.lerp(l.uniforms.uAlpha.value, target, 0.1);
             l.item.obj.visible = l.uniforms.uAlpha.value > 0.01;
         }
-        } // End showLabels check
         renderer.render(scene, camera);
     }
 

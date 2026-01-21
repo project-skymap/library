@@ -31,7 +31,7 @@ export type VisualRule =
 
 export type StarMapConfig = {
     background?: string;
-    camera?: { fov?: number; z?: number };
+    camera?: { fov?: number; z?: number; lon?: number; lat?: number };
 
     // Arrangement overrides
     arrangement?: StarArrangement;
@@ -39,7 +39,9 @@ export type StarMapConfig = {
     editable?: boolean;
 
     // Display Toggles
-    showLabels?: boolean;
+    showBookLabels?: boolean;
+    showDivisionLabels?: boolean;
+    showChapterLabels?: boolean;
     showConstellationLines?: boolean;
     showDivisionBoundaries?: boolean;
 
