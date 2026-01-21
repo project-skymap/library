@@ -451,6 +451,7 @@ export function createEngine({
     let currentHoverNodeId: string | null = null;
 
     let constellationLines: THREE.LineSegments | null = null;
+    let boundaryLines: THREE.LineSegments | null = null;
     let starPoints: THREE.Points | null = null;
 
     function clearRoot() {
@@ -467,6 +468,7 @@ export function createEngine({
         starIndexToId.length = 0;
         dynamicLabels.length = 0;
         constellationLines = null;
+        boundaryLines = null;
         starPoints = null;
     }
 
@@ -778,7 +780,7 @@ export function createEngine({
                 }
             });
             boundaryGeo.setAttribute('position', new THREE.Float32BufferAttribute(bPoints, 3));
-            const boundaryLines = new THREE.LineSegments(boundaryGeo, boundaryMat);
+            boundaryLines = new THREE.LineSegments(boundaryGeo, boundaryMat);
             boundaryLines.frustumCulled = false;
             root.add(boundaryLines);
         }
@@ -1179,11 +1181,26 @@ export function createEngine({
 
         const DIVISION_THRESHOLD = 60;
         const showDivisions = state.fov > DIVISION_THRESHOLD;
+
+        // --- Constellation Lines Visibility ---
+        if (constellationLines) {
+            constellationLines.visible = currentConfig?.showConstellationLines ?? true;
+        }
+        if (boundaryLines) {
+            boundaryLines.visible = currentConfig?.showDivisionBoundaries ?? true;
+        }
         
         // --- Polished Label Management ---
-        // 1. Collect and Project
-        const rect = renderer.domElement.getBoundingClientRect();
-        const screenW = rect.width;
+        if (currentConfig?.showLabels === false) {
+             for (const item of dynamicLabels) {
+                 item.obj.visible = false;
+                 // Reset alphas so they fade in nicely when re-enabled
+                 (item.obj.material as any).uniforms.uAlpha.value = 0.0;
+             }
+        } else {
+            // 1. Collect and Project
+            const rect = renderer.domElement.getBoundingClientRect();
+            const screenW = rect.width;
         const screenH = rect.height;
         const aspect = screenW / screenH;
         const labelsToCheck = [];
@@ -1293,6 +1310,7 @@ export function createEngine({
             l.uniforms.uAlpha.value = THREE.MathUtils.lerp(l.uniforms.uAlpha.value, target, 0.1);
             l.item.obj.visible = l.uniforms.uAlpha.value > 0.01;
         }
+        } // End showLabels check
         renderer.render(scene, camera);
     }
 

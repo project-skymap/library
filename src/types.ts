@@ -38,6 +38,11 @@ export type StarMapConfig = {
     polygons?: Record<string, Vector3Arr[]>;
     editable?: boolean;
 
+    // Display Toggles
+    showLabels?: boolean;
+    showConstellationLines?: boolean;
+    showDivisionBoundaries?: boolean;
+
     // Either provide nodes/links directly, or a raw dataset + adapter
     model?: SceneModel;
     data?: any;
