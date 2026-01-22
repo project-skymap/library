@@ -4,15 +4,15 @@
 - `0.1.x`  : End-to-End Demo
 - `0.2.x`  : Arrangements
 - `0.3.x`  : Planetarium
-- `0.4.x`  : Voronoi Layout
+- `0.4.x`  : Layout
 
 ## Releases
 <!-- @LatestFirst -->
 `🟪 epic` `🟩 story` `🟦 task` `🟥 bug`
 
 ## [0.4.0]
-🟪 [Voronoi Layout](https://jrsmth.atlassian.net/browse/SKY-16) (??)
-- 🟩 `#17` Paul is a player who wants the Biblical layout to be ordered and proportional
+🟪 [Layout](https://jrsmth.atlassian.net/browse/SKY-16) (22/01/2026)
+- 🟩 `#17` Paul is a player who wants Biblical order to emerge from a sea of stars
 
 ## [0.3.0]
 🟪 [Planetarium](https://jrsmth.atlassian.net/browse/SKY-14) (17/01/25)
