@@ -6,3 +6,6 @@ export { bibleToSceneModel } from "./adapters/bible";
 export type { BibleJSON } from "./adapters/bible";
 
 export { default as defaultStars } from "./assets/default-stars.json";
+
+export { generateArrangement, defaultGenerateOptions } from "./generateArrangement";
+export type { GenerateOptions } from "./generateArrangement";

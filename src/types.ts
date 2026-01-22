@@ -31,11 +31,19 @@ export type VisualRule =
 
 export type StarMapConfig = {
     background?: string;
-    camera?: { fov?: number; z?: number };
+    camera?: { fov?: number; z?: number; lon?: number; lat?: number };
 
     // Arrangement overrides
     arrangement?: StarArrangement;
+    polygons?: Record<string, Vector3Arr[]>;
     editable?: boolean;
+
+    // Display Toggles
+    showBookLabels?: boolean;
+    showDivisionLabels?: boolean;
+    showChapterLabels?: boolean;
+    showConstellationLines?: boolean;
+    showDivisionBoundaries?: boolean;
 
     // Either provide nodes/links directly, or a raw dataset + adapter
     model?: SceneModel;
