@@ -14,10 +14,17 @@ vec4 smartProject(vec4 viewPos) {
     projected *= uScale;
     projected.x /= uAspect;
     float zMetric = -1.0 + (dist / 15000.0);
+    
+    // Radial Clipping: Push clipped points off-screen in their natural direction
+    // to prevent lines "darting" across the center.
+    vec2 escapeDir = (length(dir.xy) > 0.0001) ? normalize(dir.xy) : vec2(1.0, 1.0);
+    vec2 escapePos = escapeDir * 10000.0;
+
     // Clip backward facing points in fisheye mode
-    if (uBlend > 0.5 && dir.z > 0.4) return vec4(10.0, 10.0, 10.0, 1.0);
+    if (uBlend > 0.5 && dir.z > 0.4) return vec4(escapePos, 10.0, 1.0);
     // Clip very close points in linear mode
-    if (uBlend < 0.1 && dir.z > -0.1) return vec4(10.0, 10.0, 10.0, 1.0);
+    if (uBlend < 0.1 && dir.z > -0.1) return vec4(escapePos, 10.0, 1.0);
+    
     return vec4(projected, zMetric, 1.0);
 }
 `;

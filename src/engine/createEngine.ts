@@ -479,13 +479,15 @@ export function createEngine({
         const ctx = canvas.getContext("2d");
         if (!ctx) return null;
         const fontSize = 96;
-        ctx.font = `bold ${fontSize}px sans-serif`;
+        // Lighter weight (400) for cleaner look
+        const font = `400 ${fontSize}px "Inter", system-ui, sans-serif`;
+        ctx.font = font;
         const metrics = ctx.measureText(text);
         const w = Math.ceil(metrics.width);
         const h = Math.ceil(fontSize * 1.2);
         canvas.width = w;
         canvas.height = h;
-        ctx.font = `bold ${fontSize}px sans-serif`;
+        ctx.font = font;
         ctx.fillStyle = color;
         ctx.textAlign = "center";
         ctx.textBaseline = "middle";
@@ -610,15 +612,26 @@ export function createEngine({
                 starColors.push(c.r, c.g, c.b);
             }
             
+
             // 2. Process Labels (Level 1, 2, 3)
             if (n.level === 1 || n.level === 2 || n.level === 3) {
-                const color = n.level === 1 ? "#38bdf8" : "#ffffff"; // Cyan for Divisions, White for Books/Chapters
-                const texRes = createTextTexture(n.label, color);
+                let color = "#ffffff";
+                if (n.level === 1) color = "#38bdf8"; // Divisions: Sky Blue
+                else if (n.level === 2) color = "#cbd5e1"; // Books: Slate 300
+                else if (n.level === 3) color = "#94a3b8"; // Chapters: Slate 400 (Grey)
+                
+                let labelText = n.label;
+                if (n.level === 3 && n.meta?.chapter) {
+                    labelText = String(n.meta.chapter);
+                }
+                
+                const texRes = createTextTexture(labelText, color);
                 
                 if (texRes) {
                     let baseScale = 0.05;
                     if (n.level === 1) baseScale = 0.08;
-                    else if (n.level === 3) baseScale = 0.04;
+                    else if (n.level === 2) baseScale = 0.06; // Books: Slightly larger
+                    else if (n.level === 3) baseScale = 0.03; // Chapters: Small
                     
                     const size = new THREE.Vector2(baseScale * texRes.aspect, baseScale);
                     
@@ -678,7 +691,8 @@ export function createEngine({
                         p.set(r * Math.cos(angle), 150, r * Math.sin(angle)); // Lifted slightly
                     } else if (n.level === 3) {
                         // Offset chapters slightly so they hover above the star
-                        p.multiplyScalar(1.002);
+                        p.y += 30; // Lifted higher
+                        p.multiplyScalar(1.001);
                     }
                     
                     mesh.position.set(p.x, p.y, p.z);
@@ -825,12 +839,11 @@ export function createEngine({
 
                         // 2. Create Label
                         const labelText = `${g.name} (${g.start}-${g.end})`;
-                        const texRes = createTextTexture(labelText, "#fbbf24"); // Amber/Goldish
+                        const texRes = createTextTexture(labelText, "#f59e0b"); // Amber 500
                         
                         if (texRes) {
-                            // Scale: Between Book (0.05) and Chapter (0.04)? 
-                            // Or slightly smaller than Book?
-                            const baseScale = 0.045;
+                            // Scale: 0.05 (Between Book and Chapter)
+                            const baseScale = 0.05;
                             const size = new THREE.Vector2(baseScale * texRes.aspect, baseScale);
                             
                             const mat = createSmartMaterial({
@@ -1531,7 +1544,7 @@ export function createEngine({
         
         // FOV thresholds
         // showDivisions already calculated above
-        const showChapters = state.fov < 35;
+        const showChapters = state.fov < 70;
 
         for (const item of dynamicLabels) {
             const uniforms = (item.obj.material as THREE.ShaderMaterial).uniforms as any;

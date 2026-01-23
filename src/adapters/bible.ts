@@ -45,7 +45,7 @@ export function bibleToSceneModel(data: BibleJSON): SceneModel {
 
             for (const b of d.books) {
                 bookCounter++;
-                const bookLabel = `${bookCounter}. ${b.name}`;
+                const bookLabel = b.name;
                 const bid = id.book(b.key);
                 nodes.push({
                     id: bid,
