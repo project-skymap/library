@@ -13,7 +13,7 @@ vec4 smartProject(vec4 viewPos) {
     vec2 projected = vec2(k * dir.x, k * dir.y);
     projected *= uScale;
     projected.x /= uAspect;
-    float zMetric = -1.0 + (dist / 2000.0);
+    float zMetric = -1.0 + (dist / 15000.0);
     // Clip backward facing points in fisheye mode
     if (uBlend > 0.5 && dir.z > 0.4) return vec4(10.0, 10.0, 10.0, 1.0);
     // Clip very close points in linear mode

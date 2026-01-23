@@ -47,7 +47,7 @@ export function createEngine({
     const scene = new THREE.Scene();
     scene.background = new THREE.Color(0x000000);
 
-    const camera = new THREE.PerspectiveCamera(60, 1, 0.1, 3000);
+    const camera = new THREE.PerspectiveCamera(60, 1, 0.1, 10000); // Increased far plane to 10000
     camera.position.set(0, 0, 0);
     camera.up.set(0, 1, 0);
 
@@ -776,6 +776,120 @@ export function createEngine({
             root.add(constellationLines);
         }
 
+        // --- Group Labels (Level 2.5) ---
+        if (cfg.groups) {
+            for (const [bookId, chapters] of bookMap.entries()) {
+                const bookNode = nodeById.get(bookId);
+                if (!bookNode) continue;
+                
+                // Match key: Use meta.book if available (e.g. "Genesis") otherwise label
+                const bookName = (bookNode.meta?.book as string) || bookNode.label;
+                const groupList = cfg.groups[bookName.toLowerCase()];
+                
+                if (groupList) {
+                    groupList.forEach((g, idx) => {
+                        const groupId = `G:${bookId}:${idx}`;
+                        
+                        // 1. Calculate Position
+                        let p = new THREE.Vector3();
+                        let count = 0;
+                        
+                        // Check Arrangement First
+                        if (cfg.arrangement && cfg.arrangement[groupId]) {
+                            const arr = cfg.arrangement[groupId];
+                            p.set(arr.position[0], arr.position[1], arr.position[2]);
+                        } else {
+                            // Calculate Centroid
+                            const relevantChapters = chapters.filter(c => {
+                                const ch = c.meta?.chapter as number;
+                                return ch >= g.start && ch <= g.end;
+                            });
+                            
+                            if (relevantChapters.length === 0) return;
+                            
+                            for (const c of relevantChapters) {
+                                p.add(getPosition(c));
+                            }
+                            p.divideScalar(relevantChapters.length);
+                            
+                            // Push slightly outward/upward to float?
+                            // p.multiplyScalar(1.02);
+                        }
+
+                        // 2. Create Label
+                        const labelText = `${g.name} (${g.start}-${g.end})`;
+                        const texRes = createTextTexture(labelText, "#fbbf24"); // Amber/Goldish
+                        
+                        if (texRes) {
+                            // Scale: Between Book (0.05) and Chapter (0.04)? 
+                            // Or slightly smaller than Book?
+                            const baseScale = 0.045;
+                            const size = new THREE.Vector2(baseScale * texRes.aspect, baseScale);
+                            
+                            const mat = createSmartMaterial({
+                                uniforms: { 
+                                    uMap: { value: texRes.tex },
+                                    uSize: { value: size },
+                                    uAlpha: { value: 0.0 },
+                                    uAngle: { value: 0.0 }
+                                },
+                                vertexShaderBody: `
+                                    uniform vec2 uSize;
+                                    uniform float uAngle;
+                                    varying vec2 vUv;
+                                    void main() {
+                                        vUv = uv;
+                                        vec4 mvPos = modelViewMatrix * vec4(0.0, 0.0, 0.0, 1.0);
+                                        vec4 projected = smartProject(mvPos);
+                                        
+                                        float c = cos(uAngle);
+                                        float s = sin(uAngle);
+                                        mat2 rot = mat2(c, -s, s, c);
+                                        vec2 offset = rot * (position.xy * uSize);
+                                        
+                                        projected.xy += offset / vec2(uAspect, 1.0);
+                                        gl_Position = projected;
+                                    }
+                                `,
+                                fragmentShader: `
+                                    uniform sampler2D uMap;
+                                    uniform float uAlpha;
+                                    varying vec2 vUv;
+                                    void main() {
+                                        float mask = getMaskAlpha();
+                                        if (mask < 0.01) discard;
+                                        vec4 tex = texture2D(uMap, vUv);
+                                        gl_FragColor = vec4(tex.rgb, tex.a * uAlpha * mask);
+                                    }
+                                `,
+                                transparent: true,
+                                depthWrite: false,
+                                depthTest: true
+                            });
+
+                            const mesh = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), mat);
+                            mesh.position.copy(p);
+                            mesh.scale.set(size.x, size.y, 1.0);
+                            mesh.frustumCulled = false;
+                            mesh.userData = { id: groupId };
+                            
+                            root.add(mesh);
+                            
+                            // Fake Node
+                            const node: SceneNode = {
+                                id: groupId,
+                                label: labelText,
+                                level: 2.5, // Special Level
+                                parent: bookId
+                            };
+                            
+                            dynamicLabels.push({ obj: mesh, node, initialScale: size.clone() });
+                        }
+                    });
+                }
+            }
+        }
+
         const boundaries = (laidOut.meta?.divisionBoundaries as number[]) ?? [];
         if (boundaries.length > 0) {
             const boundaryMat = createSmartMaterial({
@@ -1359,6 +1473,7 @@ export function createEngine({
         updateUniforms(); 
         
         constellationLayer.update(state.fov, currentConfig?.showConstellationArt ?? false);
+        backdropGroup.visible = currentConfig?.showBackdropStars ?? true;
 
         const DIVISION_THRESHOLD = 60;
         const showDivisions = state.fov > DIVISION_THRESHOLD;
@@ -1390,6 +1505,7 @@ export function createEngine({
         const showBookLabels = currentConfig?.showBookLabels === true;
         const showDivisionLabels = currentConfig?.showDivisionLabels === true;
         const showChapterLabels = currentConfig?.showChapterLabels === true;
+        const showGroupLabels = currentConfig?.showGroupLabels === true;
         
         // FOV thresholds
         // showDivisions already calculated above
@@ -1404,6 +1520,7 @@ export function createEngine({
             if (level === 2 && showBookLabels) isEnabled = true;
             else if (level === 1 && showDivisionLabels) isEnabled = true;
             else if (level === 3 && showChapterLabels) isEnabled = true;
+            else if (level === 2.5 && showGroupLabels) isEnabled = true;
             
             if (!isEnabled) {
                  uniforms.uAlpha.value = THREE.MathUtils.lerp(uniforms.uAlpha.value, 0, 0.2);
@@ -1491,6 +1608,11 @@ export function createEngine({
                         occupied.push({ x: l.sX - l.w/2, y: l.sY - l.h/2, w: l.w, h: l.h });
                     }
                 }
+            }
+            else if (l.level === 2.5) {
+                // Groups: Check overlaps with Books/Divisions?
+                // Should probably act similar to Books but lower priority?
+                target = 1.0; // For now, just show them if enabled.
             }
             else if (l.level === 3) {
                 // Chapters: No overlap check, just zoom check
