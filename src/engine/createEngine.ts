@@ -894,6 +894,27 @@ export function createEngine({
         
         if (cfg.constellations) {
             constellationLayer.load(cfg.constellations, (id) => {
+                // 1. Check Arrangement (Override)
+                if (cfg.arrangement && cfg.arrangement[id]) {
+                    const arr = cfg.arrangement[id];
+                    // If it's a 2D arrangement, project it (same logic as getPosition)
+                    if (arr.position[2] === 0) {
+                        const x = arr.position[0];
+                        const y = arr.position[1];
+                        const radius = cfg.layout?.radius ?? 2000;
+                        const r_norm = Math.min(1.0, Math.sqrt(x * x + y * y) / radius);
+                        const phi = Math.atan2(y, x);
+                        const theta = r_norm * (Math.PI / 2);
+                        return new THREE.Vector3(
+                            Math.sin(theta) * Math.cos(phi),
+                            Math.cos(theta),
+                            Math.sin(theta) * Math.sin(phi)
+                        ).multiplyScalar(radius);
+                    }
+                    return new THREE.Vector3(arr.position[0], arr.position[1], arr.position[2]);
+                }
+                
+                // 2. Check Scene Nodes (Stars/Anchors)
                 const n = nodeById.get(id);
                 return n ? getPosition(n) : null;
             });
@@ -921,6 +942,11 @@ export function createEngine({
             arr[item.node.id] = { position: [item.obj.position.x, item.obj.position.y, item.obj.position.z] };
         }
         
+        // Add Constellations
+        for (const item of constellationLayer.getItems()) {
+            arr[item.config.id] = { position: [item.mesh.position.x, item.mesh.position.y, item.mesh.position.z] };
+        }
+        
         // Merge temp arrangement to ensure dragged items are up to date
         Object.assign(arr, state.tempArrangement);
         
@@ -931,58 +957,139 @@ export function createEngine({
         const rect = renderer.domElement.getBoundingClientRect();
         const mX = ev.clientX - rect.left;
         const mY = ev.clientY - rect.top;
+        
+        // Update Global NDC for other uses
         mouseNDC.x = (mX / rect.width) * 2 - 1;
         mouseNDC.y = -(mY / rect.height) * 2 + 1;
 
-        // 1. Pick Labels (2D Screen Distance - robust for billboards)
-        let closestLabel = null;
-        let minLabelDist = 40; // Pixel threshold
         const uScale = globalUniforms.uScale.value;
         const uAspect = camera.aspect;
-        const w = rect.width; const h = rect.height;
+        const w = rect.width; 
+        const h = rect.height;
+
+        // 1. Pick Labels (Highest Priority - Foreground UI)
+        let closestLabel = null;
+        let minLabelDist = 40; // Pixel threshold
 
         for (const item of dynamicLabels) {
             if (!item.obj.visible) continue;
-            // Project Anchor Position (World -> View -> Projected)
+            
             const pWorld = item.obj.position;
             const pProj = smartProjectJS(pWorld);
             
+            // Back-face cull check
+            const isBehind = (globalUniforms.uBlend.value > 0.5 && pProj.z > 0.4) || (globalUniforms.uBlend.value < 0.1 && pProj.z > -0.1);
+            if (isBehind) continue;
+
             const xNDC = pProj.x * uScale / uAspect;
             const yNDC = pProj.y * uScale;
             
             const sX = (xNDC * 0.5 + 0.5) * w;
             const sY = (-yNDC * 0.5 + 0.5) * h;
             
-            const dx = mX - sX; const dy = mY - sY;
+            const dx = mX - sX; 
+            const dy = mY - sY;
             const d = Math.sqrt(dx*dx + dy*dy);
             
-            // Back-face cull check
-            const isBehind = (globalUniforms.uBlend.value > 0.5 && pProj.z > 0.4) || (globalUniforms.uBlend.value < 0.1 && pProj.z > -0.1);
-            if (!isBehind && d < minLabelDist) { minLabelDist = d; closestLabel = item; }
-        }
-        if (closestLabel) return { type: 'label', node: closestLabel.node, object: closestLabel.obj, point: closestLabel.obj.position.clone(), index: undefined };
-
-        // 2. Pick Stars (Custom World Ray)
-        const worldDir = getMouseWorldVector(mX, mY, rect.width, rect.height);
-        raycaster.ray.origin.set(0, 0, 0);
-        raycaster.ray.direction.copy(worldDir);
-        raycaster.params.Points.threshold = 5.0 * (state.fov / 60);
-
-        const hits = raycaster.intersectObject(starPoints!, false);
-        const pointHit = hits[0];
-        if (pointHit && pointHit.index !== undefined) {
-            const id = starIndexToId[pointHit.index];
-            if (id) {
-                const node = nodeById.get(id);
-                if (node) return { type: 'star', node, index: pointHit.index, point: pointHit.point, object: undefined };
+            if (d < minLabelDist) { 
+                minLabelDist = d; 
+                closestLabel = item; 
             }
         }
+        if (closestLabel) {
+            return { type: 'label', node: closestLabel.node, object: closestLabel.obj, point: closestLabel.obj.position.clone(), index: undefined };
+        }
+
+        // 2. Pick Constellation Art (Billboards)
+        let closestConst = null;
+        let minConstDist = Infinity; 
+        
+        for (const item of constellationLayer.getItems()) {
+            if (!item.mesh.visible) continue;
+            
+            const pWorld = item.mesh.position;
+            const pProj = smartProjectJS(pWorld);
+            
+            const isBehind = (globalUniforms.uBlend.value > 0.5 && pProj.z > 0.4) || (globalUniforms.uBlend.value < 0.1 && pProj.z > -0.1);
+            if (isBehind) continue;
+
+            // Material Uniforms should exist if created by ConstellationArtworkLayer
+            const uniforms = item.material.uniforms;
+            if (!uniforms || !uniforms.uSize) continue;
+
+            const uSize = uniforms.uSize.value;
+            const uImgAspect = uniforms.uImgAspect.value;
+            const uImgRotation = uniforms.uImgRotation.value;
+            
+            const dist = pWorld.length(); 
+            // Avoid divide by zero
+            if (dist < 0.001) continue;
+
+            const scale = (uSize / dist) * uScale; 
+            
+            const halfH_px = (scale / 2) * (h / 2);
+            const halfW_px = halfH_px * uImgAspect;
+            
+            const xNDC = pProj.x * uScale / uAspect;
+            const yNDC = pProj.y * uScale;
+            const sX = (xNDC * 0.5 + 0.5) * w;
+            const sY = (-yNDC * 0.5 + 0.5) * h;
+            
+            const dx = mX - sX;
+            const dy = mY - sY; 
+            const dy_cart = -dy; 
+            
+            const cr = Math.cos(-uImgRotation);
+            const sr = Math.sin(-uImgRotation);
+            
+            const localX = dx * cr - dy_cart * sr;
+            const localY = dx * sr + dy_cart * cr;
+            
+            // Relaxed Hit Box (1.2x) to make grabbing easier
+            if (Math.abs(localX) < halfW_px * 1.2 && Math.abs(localY) < halfH_px * 1.2) {
+                const d = Math.sqrt(dx*dx + dy*dy);
+                if (!closestConst || d < minConstDist) {
+                    minConstDist = d;
+                    closestConst = item;
+                }
+            }
+        }
+        if (closestConst) {
+            const fakeNode: SceneNode = { 
+                id: closestConst.config.id, 
+                label: closestConst.config.title, 
+                level: -1 
+            };
+            return { type: 'constellation', node: fakeNode, object: closestConst.mesh, point: closestConst.mesh.position.clone(), index: undefined };
+        }
+
+        // 3. Pick Stars (Background)
+        // Ensure starPoints is valid
+        if (starPoints) {
+            const worldDir = getMouseWorldVector(mX, mY, rect.width, rect.height);
+            raycaster.ray.origin.set(0, 0, 0);
+            raycaster.ray.direction.copy(worldDir);
+            raycaster.params.Points.threshold = 5.0 * (state.fov / 60);
+
+            const hits = raycaster.intersectObject(starPoints, false);
+            const pointHit = hits[0];
+            if (pointHit && pointHit.index !== undefined) {
+                const id = starIndexToId[pointHit.index];
+                if (id) {
+                    const node = nodeById.get(id);
+                    if (node) return { type: 'star', node, index: pointHit.index, point: pointHit.point, object: undefined };
+                }
+            }
+        }
+        
         return undefined;
     }
     
     function onMouseDown(e: MouseEvent) {
         state.lastMouseX = e.clientX;
         state.lastMouseY = e.clientY;
+        
+        // In Edit Mode, we prioritize Object Interaction and disable Camera Panning
         if (currentConfig?.editable) {
             const hit = pick(e);
             if (hit) {
@@ -990,11 +1097,12 @@ export function createEngine({
                 state.draggedNodeId = hit.node.id;
                 state.draggedDist = hit.point.length(); 
                 document.body.style.cursor = 'crosshair';
+                
                 if (hit.type === 'star') {
                     state.draggedStarIndex = hit.index ?? -1;
                     state.draggedGroup = null;
                 } else if (hit.type === 'label') {
-                    // Group capture
+                    // Group capture logic
                     const bookId = hit.node.id;
                     const children: { index: number, initialPos: THREE.Vector3 }[] = [];
                     if (starPoints && starPoints.geometry.attributes.position) {
@@ -1011,10 +1119,17 @@ export function createEngine({
                     }
                     state.draggedGroup = { labelInitialPos: hit.object!.position.clone(), children };
                     state.draggedStarIndex = -1;
+                } else if (hit.type === 'constellation') {
+                    // Constellation Drag
+                    state.draggedGroup = null;
+                    state.draggedStarIndex = -1;
                 }
-                return;
             }
+            // In Edit Mode, always disable camera pan
+            return;
         }
+
+        // View Mode: Camera Pan
         state.dragMode = 'camera';
         state.isDragging = true;
         state.velocityX = 0; state.velocityY = 0;
@@ -1047,6 +1162,14 @@ export function createEngine({
                  if (item) {
                      item.obj.position.copy(newPos);
                      state.tempArrangement[item.node.id] = { position: [newPos.x, newPos.y, newPos.z] };
+                 }
+                 // Handle Constellation Drag
+                 else if (state.draggedNodeId) {
+                     const cItem = constellationLayer.getItems().find(c => c.config.id === state.draggedNodeId);
+                     if (cItem) {
+                         cItem.mesh.position.copy(newPos);
+                         state.tempArrangement[state.draggedNodeId] = { position: [newPos.x, newPos.y, newPos.z] };
+                     }
                  }
                  
                  // Rotate children based on World Vectors
@@ -1203,7 +1326,8 @@ export function createEngine({
         if (!running) return;
         raf = requestAnimationFrame(tick);
         
-        if (!state.isDragging && isMouseInWindow) {
+        // Edge Pan Logic (Disable in Edit Mode)
+        if (!state.isDragging && isMouseInWindow && !currentConfig?.editable) {
             const t = ENGINE_CONFIG.edgePanThreshold;
             const speedBase = ENGINE_CONFIG.edgePanMaxSpeed * (state.fov / ENGINE_CONFIG.defaultFov);
             let panX = 0; let panY = 0;

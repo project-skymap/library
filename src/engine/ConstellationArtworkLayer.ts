@@ -20,6 +20,15 @@ export class ConstellationArtworkLayer {
         root.add(this.root);
     }
 
+    getItems() { return this.items; }
+
+    setPosition(id: string, pos: THREE.Vector3) {
+        const item = this.items.find(i => i.config.id === id);
+        if (item) {
+            item.mesh.position.copy(pos);
+        }
+    }
+
     load(config: ConstellationConfig, getPosition: (id: string) => THREE.Vector3 | null) {
         this.clear();
         // Remove trailing slash if present
@@ -31,7 +40,26 @@ export class ConstellationArtworkLayer {
             let valid = false;
             let radius = 2000; // Default dome radius
 
-            if (c.center) {
+            // Priority 0: Arrangement Override (via getPosition)
+            const arrPos = getPosition(c.id);
+            if (arrPos) {
+                center.copy(arrPos);
+                valid = true;
+                // If we have an explicit position, we still need a radius for sizing.
+                // If anchors exist, use them for radius? Or default?
+                if (c.anchors.length > 0) {
+                     // Try to guess radius from anchors even if position is overridden
+                     const points: THREE.Vector3[] = [];
+                     for (const anchorId of c.anchors) {
+                        const p = getPosition(anchorId);
+                        if (p) points.push(p);
+                     }
+                     if (points.length > 0) {
+                         radius = points[0].length();
+                     }
+                }
+            }
+            else if (c.center) {
                 center.set(c.center[0], c.center[1], c.center[2]);
                 valid = true;
             } else if (c.anchors.length > 0) {
@@ -137,48 +165,48 @@ export class ConstellationArtworkLayer {
                     void main() {
                         vUv = uv;
                         
-                        // 1. Project Center Point (Anchor)
-                        // We assume the Mesh is positioned at the constellation center.
-                        // We use the origin (0,0,0) of the mesh space.
-                        vec4 mvCenter = modelViewMatrix * vec4(0.0, 0.0, 0.0, 1.0);
+                        // 1. Project Center Point
+                        vec4 worldCenter = modelMatrix * vec4(0.0, 0.0, 0.0, 1.0);
+                        vec4 viewCenter = viewMatrix * worldCenter;
+                        vec4 clipCenter = smartProject(viewCenter);
                         
-                        // Project to Clip Space using our custom engine projection
-                        vec4 clipCenter = smartProject(mvCenter);
+                        // 2. Project "Up" Point (World Zenith)
+                        // We use a small offset to calculate the local vertical direction on screen
+                        vec4 worldUp = worldCenter + vec4(0.0, 10.0, 0.0, 0.0);
+                        vec4 viewUp = viewMatrix * worldUp;
+                        vec4 clipUp = smartProject(viewUp);
                         
-                        // 2. Calculate Billboard Offset in Screen Space
-                        // position.xy is [-0.5, 0.5] from PlaneGeometry(1,1)
+                        // 3. Calculate Horizon Angle
+                        vec2 screenCenter = clipCenter.xy / clipCenter.w;
+                        vec2 screenUp = clipUp.xy / clipUp.w;
+                        vec2 screenDir = normalize(screenUp - screenCenter);
+                        
+                        // Default "Up" is (0,1). angle = atan(y,x). 
+                        // We want rotation relative to this derived Up.
+                        // Standard angle of (0,1) is PI/2.
+                        float horizonAngle = atan(screenDir.y, screenDir.x) - 1.5708; // -90 deg
+                        
+                        // 4. Combine with User Rotation
+                        float finalAngle = uImgRotation + horizonAngle;
+                        
+                        // 5. Billboard Offset
                         vec2 offset = position.xy;
                         
-                        // Apply Image Rotation (2D)
-                        float cr = cos(uImgRotation);
-                        float sr = sin(uImgRotation);
+                        float cr = cos(finalAngle);
+                        float sr = sin(finalAngle);
                         vec2 rotated = vec2(
                             offset.x * cr - offset.y * sr,
                             offset.x * sr + offset.y * cr
                         );
                         
-                        // Apply Image Aspect Ratio
                         rotated.x *= uImgAspect;
                         
-                        // Calculate Scale factor
-                        // uScale (Zoom) is injected globally.
-                        // We scale by World Size / Distance to simulate perspective size
-                        // effectively keeping angular size constant-ish.
-                        // uScale handles the "Zoom" part.
-                        float dist = length(mvCenter.xyz);
+                        float dist = length(viewCenter.xyz);
                         float scale = (uSize / dist) * uScale;
                         
-                        // Apply Scale
                         rotated *= scale;
-                        
-                        // Correct for Screen Aspect Ratio (Square pixels)
-                        // uAspect is Screen Width/Height
                         rotated.x /= uAspect;
                         
-                        // 3. Final Position
-                        // Add offset to the projected center
-                        // smartProject returns w=1.0 for its result usually, 
-                        // but let's be safe if that changes.
                         gl_Position = clipCenter;
                         gl_Position.xy += rotated * clipCenter.w;
                         
@@ -218,6 +246,7 @@ export class ConstellationArtworkLayer {
 
             const mesh = new THREE.Mesh(geometry, material);
             mesh.frustumCulled = false; // Important: Custom vertex shader displaces geometry, so we must disable frustum culling.
+            mesh.userData = { id: c.id, type: 'constellation' };
             
             mesh.position.copy(center);
             // We DO NOT rotate the mesh geometry base. 
@@ -239,23 +268,9 @@ export class ConstellationArtworkLayer {
         for (const item of this.items) {
             const { fade } = item.config;
             
-            // Default Opacity (No Zoom Fade)
-            // We use the "maxOpacity" defined in config as the constant visible opacity.
+            // Constant Opacity (No Zoom Fade, No Hover Boost)
             let opacity = fade.maxOpacity;
             
-            // Hover/Focus Boost
-            // We check if the ID matches OR if the Type+Title matches (heuristic)
-            const isActive = 
-                (this.hoveredId === item.config.id) || 
-                (this.focusedId === item.config.id) ||
-                (item.config.type === 'book' && this.hoveredId === `B:${item.config.id}`) || 
-                (this.hoveredId === `B:${item.config.id}`) ||
-                (this.focusedId === `B:${item.config.id}`);
-
-            if (isActive) {
-                opacity += fade.hoverBoost;
-            }
-
             // Clamp
             opacity = Math.min(Math.max(opacity, 0), 1);
 
