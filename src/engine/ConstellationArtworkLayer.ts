@@ -269,8 +269,24 @@ export class ConstellationArtworkLayer {
         for (const item of this.items) {
             const { fade } = item.config;
             
-            // Constant Opacity (No Zoom Fade, No Hover Boost)
             let opacity = fade.maxOpacity;
+
+            // Logic: "Fade Out when Zooming In"
+            // High FOV (Zoom Out) -> Max Opacity
+            // Low FOV (Zoom In) -> Min Opacity
+            
+            if (fov >= fade.zoomInStart) {
+                // Fully Zoomed Out
+                opacity = fade.maxOpacity;
+            } else if (fov <= fade.zoomInEnd) {
+                // Fully Zoomed In
+                opacity = fade.minOpacity;
+            } else {
+                // Transition
+                // t = 0 at Start (60), 1 at End (20)
+                const t = (fade.zoomInStart - fov) / (fade.zoomInStart - fade.zoomInEnd);
+                opacity = THREE.MathUtils.lerp(fade.maxOpacity, fade.minOpacity, t);
+            }
             
             // Clamp
             opacity = Math.min(Math.max(opacity, 0), 1);

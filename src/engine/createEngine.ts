@@ -22,7 +22,8 @@ const ENGINE_CONFIG = {
     zenithStrength: 0.02,
     horizonLockStrength: 0.05,
     edgePanThreshold: 0.15,
-    edgePanMaxSpeed: 0.02
+    edgePanMaxSpeed: 0.02,
+    edgePanDelay: 250
 };
 
 export function createEngine({
@@ -83,6 +84,7 @@ export function createEngine({
 
     const mouseNDC = new THREE.Vector2();
     let isMouseInWindow = false;
+    let edgeHoverStart = 0;
 
     let handlers: Handlers = { onSelect, onHover, onArrangementChange };
     let currentConfig: StarMapConfig | undefined;
@@ -1445,26 +1447,40 @@ export function createEngine({
         if (!running) return;
         raf = requestAnimationFrame(tick);
         
+        let panX = 0; let panY = 0;
+
         // Edge Pan Logic (Disable in Edit Mode)
         if (!state.isDragging && isMouseInWindow && !currentConfig?.editable) {
             const t = ENGINE_CONFIG.edgePanThreshold;
-            const speedBase = ENGINE_CONFIG.edgePanMaxSpeed * (state.fov / ENGINE_CONFIG.defaultFov);
-            let panX = 0; let panY = 0;
-            if (mouseNDC.x < -1 + t) { const s = (-1 + t - mouseNDC.x) / t; panX = -s * s * speedBase; }
-            else if (mouseNDC.x > 1 - t) { const s = (mouseNDC.x - (1 - t)) / t; panX = s * s * speedBase; }
-            if (mouseNDC.y < -1 + t) { const s = (-1 + t - mouseNDC.y) / t; panY = -s * s * speedBase; }
-            else if (mouseNDC.y > 1 - t) { const s = (mouseNDC.y - (1 - t)) / t; panY = s * s * speedBase; }
-            if (Math.abs(panX) > 0 || Math.abs(panY) > 0) {
-                state.lon += panX; state.lat += panY; state.targetLon = state.lon; state.targetLat = state.lat;
+            const inZoneX = mouseNDC.x < -1 + t || mouseNDC.x > 1 - t;
+            const inZoneY = mouseNDC.y < -1 + t || mouseNDC.y > 1 - t;
+            
+            if (inZoneX || inZoneY) {
+                // Start timer if not started
+                if (edgeHoverStart === 0) edgeHoverStart = performance.now();
+                
+                // Only pan if delay exceeded
+                if (performance.now() - edgeHoverStart > ENGINE_CONFIG.edgePanDelay) {
+                    const speedBase = ENGINE_CONFIG.edgePanMaxSpeed * (state.fov / ENGINE_CONFIG.defaultFov);
+                    if (mouseNDC.x < -1 + t) { const s = (-1 + t - mouseNDC.x) / t; panX = -s * s * speedBase; }
+                    else if (mouseNDC.x > 1 - t) { const s = (mouseNDC.x - (1 - t)) / t; panX = s * s * speedBase; }
+                    if (mouseNDC.y < -1 + t) { const s = (-1 + t - mouseNDC.y) / t; panY = -s * s * speedBase; }
+                    else if (mouseNDC.y > 1 - t) { const s = (mouseNDC.y - (1 - t)) / t; panY = s * s * speedBase; }
+                }
             } else {
-                state.lon += state.velocityX; state.lat += state.velocityY;
-                state.velocityX *= ENGINE_CONFIG.inertiaDamping; state.velocityY *= ENGINE_CONFIG.inertiaDamping;
-                if (Math.abs(state.velocityX) < 0.000001) state.velocityX = 0;
-                if (Math.abs(state.velocityY) < 0.000001) state.velocityY = 0;
+                edgeHoverStart = 0;
             }
+        } else {
+            edgeHoverStart = 0;
+        }
+
+        if (Math.abs(panX) > 0 || Math.abs(panY) > 0) {
+            state.lon += panX; state.lat += panY; state.targetLon = state.lon; state.targetLat = state.lat;
         } else if (!state.isDragging) {
              state.lon += state.velocityX; state.lat += state.velocityY;
              state.velocityX *= ENGINE_CONFIG.inertiaDamping; state.velocityY *= ENGINE_CONFIG.inertiaDamping;
+             if (Math.abs(state.velocityX) < 0.000001) state.velocityX = 0;
+             if (Math.abs(state.velocityY) < 0.000001) state.velocityY = 0;
         }
 
         state.lat = Math.max(-Math.PI / 2 + 0.01, Math.min(Math.PI / 2 - 0.01, state.lat));
