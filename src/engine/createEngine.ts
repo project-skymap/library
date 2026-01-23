@@ -2,6 +2,7 @@ import * as THREE from "three";
 import type { StarMapConfig, SceneModel, SceneNode, StarArrangement } from "../types";
 import { computeLayoutPositions } from "./layout";
 import { createSmartMaterial, globalUniforms } from "./materials";
+import { ConstellationArtworkLayer } from "./ConstellationArtworkLayer";
 
 type Handlers = {
     onSelect?: (node: SceneNode) => void;
@@ -85,6 +86,11 @@ export function createEngine({
 
     let handlers: Handlers = { onSelect, onHover, onArrangementChange };
     let currentConfig: StarMapConfig | undefined;
+    
+    // ---------------------------
+    // Constellation Artwork Layer
+    // ---------------------------
+    const constellationLayer = new ConstellationArtworkLayer(scene);
 
     // ---------------------------
     // Helpers
@@ -885,6 +891,13 @@ export function createEngine({
         }
         if (shouldRebuild && model) { buildFromModel(model, cfg); }
         else if (cfg.arrangement && starPoints) { if (lastModel) buildFromModel(lastModel, cfg); }
+        
+        if (cfg.constellations) {
+            constellationLayer.load(cfg.constellations, (id) => {
+                const n = nodeById.get(id);
+                return n ? getPosition(n) : null;
+            });
+        }
     }
     
     function setHandlers(next: Handlers) { handlers = next; }
@@ -1098,6 +1111,7 @@ export function createEngine({
             if (hit?.node.id !== (handlers as any)._lastHoverId) {
                 (handlers as any)._lastHoverId = hit?.node.id;
                 handlers.onHover?.(hit?.node);
+                constellationLayer.setHovered(hit?.node.id ?? null);
             }
             document.body.style.cursor = hit ? (currentConfig?.editable ? 'crosshair' : 'pointer') : 'default';
         }
@@ -1115,7 +1129,10 @@ export function createEngine({
             document.body.style.cursor = 'default';
         } else {
             const hit = pick(e);
-            if (hit) handlers.onSelect?.(hit.node);
+            if (hit) {
+                handlers.onSelect?.(hit.node);
+                constellationLayer.setFocused(hit.node.id);
+            }
         }
     }
     
@@ -1216,6 +1233,8 @@ export function createEngine({
         camera.up.normalize();
         camera.lookAt(target);
         updateUniforms(); 
+        
+        constellationLayer.update(state.fov, currentConfig?.showConstellationArt ?? false);
 
         const DIVISION_THRESHOLD = 60;
         const showDivisions = state.fov > DIVISION_THRESHOLD;
@@ -1372,7 +1391,7 @@ export function createEngine({
         window.removeEventListener("mouseup", onMouseUp);
         el.removeEventListener("wheel", onWheel as any);
     }
-    function dispose() { stop(); renderer.dispose(); renderer.domElement.remove(); }
+    function dispose() { stop(); constellationLayer.dispose(); renderer.dispose(); renderer.domElement.remove(); }
 
     return { setConfig, start, stop, dispose, setHandlers, getFullArrangement };
 }
