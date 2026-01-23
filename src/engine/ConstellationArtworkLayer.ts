@@ -1,0 +1,282 @@
+import * as THREE from "three";
+import { ConstellationConfig, ConstellationItem } from "../types";
+import { createSmartMaterial } from "./materials";
+
+export class ConstellationArtworkLayer {
+    private root: THREE.Group;
+    private items: {
+        config: ConstellationItem;
+        mesh: THREE.Mesh;
+        material: THREE.ShaderMaterial;
+        baseOpacity: number;
+    }[] = [];
+    private textureLoader = new THREE.TextureLoader();
+    private hoveredId: string | null = null;
+    private focusedId: string | null = null;
+
+    constructor(root: THREE.Group) {
+        this.root = new THREE.Group();
+        this.root.renderOrder = -1; // Render early, but zBias handles depth
+        root.add(this.root);
+    }
+
+    load(config: ConstellationConfig, getPosition: (id: string) => THREE.Vector3 | null) {
+        this.clear();
+        // Remove trailing slash if present
+        const basePath = config.atlasBasePath.replace(/\/$/, ""); 
+
+        config.constellations.forEach(c => {
+            // 1. Calculate Center
+            let center = new THREE.Vector3();
+            let valid = false;
+            let radius = 2000; // Default dome radius
+
+            if (c.center) {
+                center.set(c.center[0], c.center[1], c.center[2]);
+                valid = true;
+            } else if (c.anchors.length > 0) {
+                const points: THREE.Vector3[] = [];
+                for (const anchorId of c.anchors) {
+                    const p = getPosition(anchorId);
+                    if (p) points.push(p);
+                }
+                
+                if (points.length > 0) {
+                    // Centroid
+                    for (const p of points) center.add(p);
+                    center.divideScalar(points.length);
+                    
+                    // Normalize to dome radius
+                    const len = center.length();
+                    if (len > 0.001) {
+                        // Infer radius from anchor points if possible, or use constant
+                        // We use the length of the first anchor as "dome radius"
+                        radius = points[0].length();
+                        center.normalize().multiplyScalar(radius);
+                    }
+                    valid = true;
+                }
+            }
+
+            if (!valid) return;
+
+            // 2. Orientation
+            // Normal (Z for the plane) should face 0,0,0 (Camera)
+            // So Normal = -center.normalized()
+            const normal = center.clone().normalize().negate();
+            const upVec = center.clone().normalize(); // This is "Up" in world space (away from center)
+
+            // Calculate "Right" and "Top" for the image plane
+            let right = new THREE.Vector3(1, 0, 0); 
+            
+            if (c.anchors.length >= 2) {
+                 const p0 = getPosition(c.anchors[0]);
+                 const p1 = getPosition(c.anchors[1]);
+                 if (p0 && p1) {
+                     const diff = new THREE.Vector3().subVectors(p1, p0);
+                     // Project diff onto the plane tangent to 'upVec'
+                     // right = diff - (diff . upVec) * upVec
+                     right.copy(diff).sub(upVec.clone().multiplyScalar(diff.dot(upVec))).normalize();
+                 }
+            } else {
+                // Default right
+                if (Math.abs(upVec.y) > 0.9) right.set(1, 0, 0).cross(upVec).normalize();
+                else right.set(0, 1, 0).cross(upVec).normalize();
+            }
+
+            // "Top" (Y axis of plane)
+            const top = new THREE.Vector3().crossVectors(upVec, right).normalize();
+            
+            // Re-orthogonalize Right
+            right.crossVectors(top, upVec).normalize();
+
+            // Construct Rotation Matrix for the Mesh
+            // Plane Geometry: X=Right, Y=Top, Z=Normal
+            // Our target basis:
+            // X axis -> right
+            // Y axis -> top
+            // Z axis -> normal (which is -upVec, pointing IN to center)
+            const basis = new THREE.Matrix4().makeBasis(right, top, normal); 
+            
+            // 3. Geometry & Mesh
+            // We use a Screen-Space Billboard technique to ensure the image remains
+            // a flat, undistorted 2D "card" regardless of camera projection or position.
+            
+            // Base Geometry: Unit Quad (1x1)
+            const geometry = new THREE.PlaneGeometry(1, 1); 
+            
+            // Size: JSON radius -> Diameter (approx)
+            let size = c.radius;
+            if (size <= 1.0) size *= radius; 
+            size *= 2; // Radius to Diameter
+
+            // Texture
+            const texPath = `${basePath}/${c.image}`;
+            
+            // Blending
+            let blending = THREE.NormalBlending;
+            if (c.blend === "additive") blending = THREE.AdditiveBlending;
+            
+            // Create Material with Billboard Shader
+            const material = createSmartMaterial({
+                uniforms: {
+                    uMap: { value: this.textureLoader.load(texPath) }, // Placeholder, updated below
+                    uOpacity: { value: c.opacity },
+                    uSize: { value: size },
+                    uImgRotation: { value: THREE.MathUtils.degToRad(c.rotationDeg) },
+                    uImgAspect: { value: c.aspectRatio ?? 1.0 },
+                    // uScale, uAspect (screen) are injected by createSmartMaterial/globalUniforms
+                },
+                vertexShaderBody: `
+                    uniform float uSize;
+                    uniform float uImgRotation;
+                    uniform float uImgAspect;
+                    
+                    varying vec2 vUv;
+                    
+                    void main() {
+                        vUv = uv;
+                        
+                        // 1. Project Center Point (Anchor)
+                        // We assume the Mesh is positioned at the constellation center.
+                        // We use the origin (0,0,0) of the mesh space.
+                        vec4 mvCenter = modelViewMatrix * vec4(0.0, 0.0, 0.0, 1.0);
+                        
+                        // Project to Clip Space using our custom engine projection
+                        vec4 clipCenter = smartProject(mvCenter);
+                        
+                        // 2. Calculate Billboard Offset in Screen Space
+                        // position.xy is [-0.5, 0.5] from PlaneGeometry(1,1)
+                        vec2 offset = position.xy;
+                        
+                        // Apply Image Rotation (2D)
+                        float cr = cos(uImgRotation);
+                        float sr = sin(uImgRotation);
+                        vec2 rotated = vec2(
+                            offset.x * cr - offset.y * sr,
+                            offset.x * sr + offset.y * cr
+                        );
+                        
+                        // Apply Image Aspect Ratio
+                        rotated.x *= uImgAspect;
+                        
+                        // Calculate Scale factor
+                        // uScale (Zoom) is injected globally.
+                        // We scale by World Size / Distance to simulate perspective size
+                        // effectively keeping angular size constant-ish.
+                        // uScale handles the "Zoom" part.
+                        float dist = length(mvCenter.xyz);
+                        float scale = (uSize / dist) * uScale;
+                        
+                        // Apply Scale
+                        rotated *= scale;
+                        
+                        // Correct for Screen Aspect Ratio (Square pixels)
+                        // uAspect is Screen Width/Height
+                        rotated.x /= uAspect;
+                        
+                        // 3. Final Position
+                        // Add offset to the projected center
+                        // smartProject returns w=1.0 for its result usually, 
+                        // but let's be safe if that changes.
+                        gl_Position = clipCenter;
+                        gl_Position.xy += rotated * clipCenter.w;
+                        
+                        vScreenPos = gl_Position.xy / gl_Position.w;
+                    }
+                `,
+                fragmentShader: `
+                    uniform sampler2D uMap;
+                    uniform float uOpacity;
+                    varying vec2 vUv;
+                    void main() {
+                        float mask = getMaskAlpha();
+                        if (mask < 0.01) discard;
+                        vec4 tex = texture2D(uMap, vUv);
+                        gl_FragColor = vec4(tex.rgb, tex.a * uOpacity * mask);
+                    }
+                `,
+                transparent: true,
+                depthWrite: false,
+                depthTest: true,
+                blending: blending,
+                side: THREE.DoubleSide
+            });
+
+            // Load Texture & Update Aspect Ratio
+            material.uniforms.uMap.value = this.textureLoader.load(texPath, (tex) => {
+                 if (c.aspectRatio === undefined && tex.image.width && tex.image.height) {
+                     const natAspect = tex.image.width / tex.image.height;
+                     material.uniforms.uImgAspect.value = natAspect;
+                 }
+            });
+            
+            if (c.zBias) {
+                material.polygonOffset = true;
+                material.polygonOffsetFactor = -c.zBias; 
+            }
+
+            const mesh = new THREE.Mesh(geometry, material);
+            mesh.frustumCulled = false; // Important: Custom vertex shader displaces geometry, so we must disable frustum culling.
+            
+            mesh.position.copy(center);
+            // We DO NOT rotate the mesh geometry base. 
+            // The orientation is handled in the shader via uImgRotation (Z-roll).
+            // But we might want the mesh's coordinate system to face the center?
+            // No, the billboard shader ignores mesh orientation (it uses mvCenter).
+            // So mesh rotation is irrelevant, except maybe for 'up' if we used it.
+            // But we just project (0,0,0). So Mesh Rotation is ignored.
+            
+            this.root.add(mesh);
+            this.items.push({ config: c, mesh, material, baseOpacity: c.opacity });
+        });
+    }
+
+    update(fov: number, showArt: boolean) {
+        this.root.visible = showArt;
+        if (!showArt) return;
+
+        for (const item of this.items) {
+            const { fade } = item.config;
+            
+            // Default Opacity (No Zoom Fade)
+            // We use the "maxOpacity" defined in config as the constant visible opacity.
+            let opacity = fade.maxOpacity;
+            
+            // Hover/Focus Boost
+            // We check if the ID matches OR if the Type+Title matches (heuristic)
+            const isActive = 
+                (this.hoveredId === item.config.id) || 
+                (this.focusedId === item.config.id) ||
+                (item.config.type === 'book' && this.hoveredId === `B:${item.config.id}`) || 
+                (this.hoveredId === `B:${item.config.id}`) ||
+                (this.focusedId === `B:${item.config.id}`);
+
+            if (isActive) {
+                opacity += fade.hoverBoost;
+            }
+
+            // Clamp
+            opacity = Math.min(Math.max(opacity, 0), 1);
+
+            item.material.uniforms.uOpacity.value = opacity;
+        }
+    }
+
+    setHovered(id: string | null) { this.hoveredId = id; }
+    setFocused(id: string | null) { this.focusedId = id; }
+    
+    dispose() {
+        this.clear();
+        this.root.removeFromParent();
+    }
+
+    clear() {
+        this.items.forEach(i => {
+            this.root.remove(i.mesh);
+            i.material.dispose();
+            i.mesh.geometry.dispose();
+        });
+        this.items = [];
+    }
+}
