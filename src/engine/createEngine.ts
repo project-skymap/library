@@ -198,93 +198,83 @@ export function createEngine({
     
     function createGround() {
         groundGroup.clear();
+        // Extend slightly above equator (PI/2 - 0.15) to allow for mountains
         const radius = 995;
-        const geometry = new THREE.SphereGeometry(radius, 128, 64, 0, Math.PI * 2, Math.PI / 2, Math.PI / 2);
+        const geometry = new THREE.SphereGeometry(radius, 128, 64, 0, Math.PI * 2, Math.PI / 2 - 0.15, Math.PI / 2 + 0.15);
+        
         const material = createSmartMaterial({
-            uniforms: { color: { value: new THREE.Color(0x080a0e) } },
-            vertexShaderBody: `varying vec3 vPos; void main() { vPos = position; vec4 mvPosition = modelViewMatrix * vec4(position, 1.0); gl_Position = smartProject(mvPosition); vScreenPos = gl_Position.xy / gl_Position.w; }`,
-            fragmentShader: `uniform vec3 color; varying vec3 vPos; void main() { float alphaMask = getMaskAlpha(); if (alphaMask < 0.01) discard; float noise = sin(vPos.x * 0.2) * sin(vPos.z * 0.2) * 0.05; vec3 col = color + noise; vec3 n = normalize(vPos); float horizon = smoothstep(-0.02, 0.0, n.y); col += vec3(0.1, 0.15, 0.2) * horizon; gl_FragColor = vec4(col, 1.0); }`,
-            side: THREE.BackSide, transparent: false, depthWrite: true, depthTest: true
+            uniforms: { 
+                color: { value: new THREE.Color(0x020203) }, // Very dark almost black
+                fogColor: { value: new THREE.Color(0x051024) } // Matches atmosphere bot color
+            },
+            vertexShaderBody: `
+                varying vec3 vPos; 
+                varying vec3 vWorldPos;
+                void main() { 
+                    vPos = position; 
+                    vec4 mvPosition = modelViewMatrix * vec4(position, 1.0); 
+                    gl_Position = smartProject(mvPosition); 
+                    vScreenPos = gl_Position.xy / gl_Position.w; 
+                    vWorldPos = (modelMatrix * vec4(position, 1.0)).xyz;
+                }
+            `,
+            fragmentShader: `
+                uniform vec3 color; 
+                uniform vec3 fogColor;
+                varying vec3 vPos; 
+                varying vec3 vWorldPos;
+                
+                void main() { 
+                    float alphaMask = getMaskAlpha(); 
+                    if (alphaMask < 0.01) discard; 
+                    
+                    // Procedural Horizon (Mountains)
+                    float angle = atan(vPos.z, vPos.x);
+                    
+                    // Simple FBM-like terrain
+                    float h = 0.0;
+                    h += sin(angle * 6.0) * 20.0;
+                    h += sin(angle * 13.0 + 1.0) * 10.0;
+                    h += sin(angle * 29.0 + 2.0) * 5.0;
+                    h += sin(angle * 63.0 + 4.0) * 2.0;
+                    
+                    // Base horizon offset (lift slightly)
+                    float terrainHeight = h + 10.0;
+                    
+                    if (vPos.y > terrainHeight) discard;
+                    
+                    // Atmospheric Haze / Fog on the ground
+                    // Mix ground color with fog color based on vertical height (fade into horizon)
+                    // Closer to horizon (higher y) -> more fog
+                    float fogFactor = smoothstep(-100.0, terrainHeight, vPos.y);
+                    vec3 finalCol = mix(color, fogColor, fogFactor * 0.5);
+                    
+                    gl_FragColor = vec4(finalCol, 1.0); 
+                }
+            `,
+            side: THREE.BackSide, 
+            transparent: false, 
+            depthWrite: true, 
+            depthTest: true
         });
         const ground = new THREE.Mesh(geometry, material);
         groundGroup.add(ground);
-        
-        const boxGeo = new THREE.BoxGeometry(8, 30, 8);
-        for(let i=0; i<12; i++) {
-            const angle = (i/12) * Math.PI * 2; 
-            const b = new THREE.Mesh(boxGeo, material); 
-            const r = radius * 0.98;
-            b.position.set(Math.cos(angle)*r, -15, Math.sin(angle)*r); 
-            b.lookAt(0,0,0); 
-            groundGroup.add(b);
-        }
     }
     
-        function createAtmosphere() {
-    
-            const geometry = new THREE.SphereGeometry(990, 128, 64);
-    
-            const material = createSmartMaterial({
-    
-                uniforms: { top: { value: new THREE.Color(0x000000) }, bot: { value: new THREE.Color(0x1a202c) } },
-    
-                vertexShaderBody: `
-    
-                    varying vec3 vP; 
-    
-                    void main() { 
-    
-                        vP = position; 
-    
-                        vec4 mv = modelViewMatrix * vec4(position, 1.0); 
-    
-                        gl_Position = smartProject(mv); 
-    
-                        vScreenPos = gl_Position.xy / gl_Position.w; 
-    
-                    }
-    
-                `,
-    
-                fragmentShader: `
-    
-                    uniform vec3 top; 
-    
-                    uniform vec3 bot; 
-    
-                    varying vec3 vP; 
-    
-                    void main() { 
-    
-                        float alphaMask = getMaskAlpha(); 
-    
-                        if (alphaMask < 0.01) discard; 
-    
-                        vec3 n = normalize(vP); 
-    
-                        float h = max(0.0, n.y); 
-    
-                        gl_FragColor = vec4(mix(bot, top, pow(h, 0.6)), 1.0); 
-    
-                    }
-    
-                `,
-    
-                side: THREE.BackSide, 
-    
-                depthWrite: false, 
-    
-                depthTest: true
-    
-            });
-    
-            
-    
-            const atm = new THREE.Mesh(geometry, material);
-    
-            groundGroup.add(atm);
-    
-        }
+        let atmosphereMesh: THREE.Mesh | null = null;
+
+    function createAtmosphere() {
+        const geometry = new THREE.SphereGeometry(990, 128, 64);
+        const material = createSmartMaterial({
+            uniforms: { top: { value: new THREE.Color(0x000000) }, bot: { value: new THREE.Color(0x051024) } },
+            vertexShaderBody: `varying vec3 vP; void main() { vP = position; vec4 mv = modelViewMatrix * vec4(position, 1.0); gl_Position = smartProject(mv); vScreenPos = gl_Position.xy / gl_Position.w; }`,
+            fragmentShader: `uniform vec3 top; uniform vec3 bot; varying vec3 vP; void main() { float alphaMask = getMaskAlpha(); if (alphaMask < 0.01) discard; vec3 n = normalize(vP); float h = max(0.0, n.y); gl_FragColor = vec4(mix(bot, top, pow(h, 0.6)), 1.0); }`,
+            side: THREE.BackSide, depthWrite: false, depthTest: true
+        });
+        const atm = new THREE.Mesh(geometry, material);
+        atmosphereMesh = atm;
+        groundGroup.add(atm);
+    }
     
     const backdropGroup = new THREE.Group();
     scene.add(backdropGroup);
@@ -353,18 +343,22 @@ export function createEngine({
         geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
 
         const material = createSmartMaterial({
-            uniforms: { pixelRatio: { value: renderer.getPixelRatio() } },
+            uniforms: { 
+                pixelRatio: { value: renderer.getPixelRatio() },
+                uScale: globalUniforms.uScale 
+            },
             vertexShaderBody: `
                 attribute float size; 
                 attribute vec3 color; 
                 varying vec3 vColor; 
                 uniform float pixelRatio; 
+                // uniform float uScale; // Removed to avoid redefinition
                 void main() { 
                     vColor = color; 
                     vec4 mvPosition = modelViewMatrix * vec4(position, 1.0); 
                     gl_Position = smartProject(mvPosition); 
                     vScreenPos = gl_Position.xy / gl_Position.w; 
-                    gl_PointSize = size * pixelRatio * (600.0 / -mvPosition.z); 
+                    gl_PointSize = size * uScale * 0.5 * pixelRatio * (600.0 / -mvPosition.z); 
                 }
             `,
             fragmentShader: `
@@ -375,7 +369,6 @@ export function createEngine({
                     if (dist > 1.0) discard; 
                     float alphaMask = getMaskAlpha(); 
                     if (alphaMask < 0.01) discard; 
-                    // Use same Gaussian glow for backdrop
                     float alpha = exp(-3.0 * dist * dist);
                     gl_FragColor = vec4(vColor, alpha * alphaMask); 
                 }
@@ -571,15 +564,15 @@ export function createEngine({
         const starSizes: number[] = [];
         const starColors: number[] = [];
         
-        // Realistic Star Colors (approx. Kelvin to Hex)
+        // Realistic Star Colors (High Brightness/Whiteness for Stellarium Look)
         const SPECTRAL_COLORS = [
-            new THREE.Color(0x9bb0ff), // O - Blue
-            new THREE.Color(0xaabfff), // B - Blue-white
-            new THREE.Color(0xcad7ff), // A - White-blue
-            new THREE.Color(0xf8f7ff), // F - White
-            new THREE.Color(0xfff4ea), // G - Yellow-white
-            new THREE.Color(0xffd2a1), // K - Yellow-orange
-            new THREE.Color(0xffcc6f)  // M - Orange-red
+            new THREE.Color(0xddeeff), // O - Blueish White
+            new THREE.Color(0xeef4ff), // B - White
+            new THREE.Color(0xf8fcff), // A - White
+            new THREE.Color(0xfffff8), // F - White
+            new THREE.Color(0xfff8ee), // G - Yellowish White
+            new THREE.Color(0xffefdd), // K - Pale Orange
+            new THREE.Color(0xffeacc)  // M - Light Orange
         ];
         
         let minWeight = Infinity;
@@ -703,7 +696,10 @@ export function createEngine({
         starGeo.setAttribute('color', new THREE.Float32BufferAttribute(starColors, 3));
 
         const starMat = createSmartMaterial({
-            uniforms: { pixelRatio: { value: renderer.getPixelRatio() } },
+            uniforms: { 
+                pixelRatio: { value: renderer.getPixelRatio() },
+                uScale: globalUniforms.uScale 
+            },
             vertexShaderBody: `
                 attribute float size; 
                 attribute vec3 color; 
@@ -714,29 +710,38 @@ export function createEngine({
                     vec4 mvPosition = modelViewMatrix * vec4(position, 1.0); 
                     gl_Position = smartProject(mvPosition); 
                     vScreenPos = gl_Position.xy / gl_Position.w; 
-                    gl_PointSize = size * pixelRatio * (2000.0 / -mvPosition.z); 
+                    // Stellarium Scaling: Base Size * Zoom * DistanceAttenuation
+                    // We increase base size to compensate for shader softness
+                    gl_PointSize = (size * 1.5) * uScale * pixelRatio * (2000.0 / -mvPosition.z); 
                 }
             `,
             fragmentShader: `
                 varying vec3 vColor; 
                 void main() { 
                     vec2 coord = gl_PointCoord - vec2(0.5); 
-                    // Use larger drawing area for glow
-                    float dist = length(coord) * 2.0; 
-                    if (dist > 1.0) discard; 
+                    float d = length(coord) * 2.0; 
+                    if (d > 1.0) discard; 
                     
                     float alphaMask = getMaskAlpha(); 
                     if (alphaMask < 0.01) discard; 
                     
-                    // Gaussian Glow: Sharp core, soft halo
-                    float alpha = exp(-3.0 * dist * dist);
+                    float dd = d * d;
+                    // Stellarium Profile: Sharp Core, Soft Halo
+                    float core = exp(-20.0 * dd);
+                    float halo = exp(-4.0 * dd);
                     
-                    gl_FragColor = vec4(vColor, alpha * alphaMask); 
+                    // Core is white hot (1.5 brightness), Halo is colored
+                    vec3 cCore = vec3(1.0) * core * 1.5;
+                    vec3 cHalo = vColor * halo * 0.6;
+                    
+                    // Additive blend output
+                    gl_FragColor = vec4((cCore + cHalo) * alphaMask, 1.0); 
                 }
             `,
             transparent: true,
             depthWrite: false,
-            depthTest: true
+            depthTest: true,
+            blending: THREE.AdditiveBlending
         });
 
         starPoints = new THREE.Points(starGeo, starMat);
@@ -1474,6 +1479,7 @@ export function createEngine({
         
         constellationLayer.update(state.fov, currentConfig?.showConstellationArt ?? false);
         backdropGroup.visible = currentConfig?.showBackdropStars ?? true;
+        if (atmosphereMesh) atmosphereMesh.visible = currentConfig?.showAtmosphere ?? false;
 
         const DIVISION_THRESHOLD = 60;
         const showDivisions = state.fov > DIVISION_THRESHOLD;

@@ -165,26 +165,27 @@ export class ConstellationArtworkLayer {
                     void main() {
                         vUv = uv;
                         
-                        // 1. Project Center Point
-                        vec4 worldCenter = modelMatrix * vec4(0.0, 0.0, 0.0, 1.0);
-                        vec4 viewCenter = viewMatrix * worldCenter;
-                        vec4 clipCenter = smartProject(viewCenter);
+                        // 1. Project Center Point (Proven Method)
+                        vec4 mvCenter = modelViewMatrix * vec4(0.0, 0.0, 0.0, 1.0);
+                        vec4 clipCenter = smartProject(mvCenter);
                         
                         // 2. Project "Up" Point (World Zenith)
-                        // We use a small offset to calculate the local vertical direction on screen
-                        vec4 worldUp = worldCenter + vec4(0.0, 10.0, 0.0, 0.0);
-                        vec4 viewUp = viewMatrix * worldUp;
-                        vec4 clipUp = smartProject(viewUp);
+                        // Transform World Up (0,1,0) to View Space
+                        vec3 viewUpDir = mat3(viewMatrix) * vec3(0.0, 1.0, 0.0);
+                        // Offset center by a significant amount (1000.0) to ensure screen delta
+                        vec4 mvUp = mvCenter + vec4(viewUpDir * 1000.0, 0.0);
+                        vec4 clipUp = smartProject(mvUp);
                         
                         // 3. Calculate Horizon Angle
                         vec2 screenCenter = clipCenter.xy / clipCenter.w;
                         vec2 screenUp = clipUp.xy / clipUp.w;
-                        vec2 screenDir = normalize(screenUp - screenCenter);
+                        vec2 screenDelta = screenUp - screenCenter;
                         
-                        // Default "Up" is (0,1). angle = atan(y,x). 
-                        // We want rotation relative to this derived Up.
-                        // Standard angle of (0,1) is PI/2.
-                        float horizonAngle = atan(screenDir.y, screenDir.x) - 1.5708; // -90 deg
+                        float horizonAngle = 0.0;
+                        if (length(screenDelta) > 0.001) {
+                             vec2 screenDir = normalize(screenDelta);
+                             horizonAngle = atan(screenDir.y, screenDir.x) - 1.5708; // -90 deg
+                        }
                         
                         // 4. Combine with User Rotation
                         float finalAngle = uImgRotation + horizonAngle;
@@ -201,7 +202,7 @@ export class ConstellationArtworkLayer {
                         
                         rotated.x *= uImgAspect;
                         
-                        float dist = length(viewCenter.xyz);
+                        float dist = length(mvCenter.xyz);
                         float scale = (uSize / dist) * uScale;
                         
                         rotated *= scale;
