@@ -8,6 +8,7 @@ type Handlers = {
     onSelect?: (node: SceneNode) => void;
     onHover?: (node?: SceneNode) => void;
     onArrangementChange?: (arrangement: StarArrangement) => void;
+    onFovChange?: (fov: number) => void;
 };
 
 const ENGINE_CONFIG = {
@@ -31,12 +32,17 @@ export function createEngine({
                                  onSelect,
                                  onHover,
                                  onArrangementChange,
+                                 onFovChange,
                              }: {
     container: HTMLDivElement;
     onSelect?: Handlers["onSelect"];
     onHover?: Handlers["onHover"];
     onArrangementChange?: Handlers["onArrangementChange"];
+    onFovChange?: Handlers["onFovChange"];
 }) {
+    // ... (rest of function starts)
+    // Actually I should just update the internal handlers initialization
+    // Let me find where 'handlers' is initialized in the file.
     // ---------------------------
     // Renderer / Scene / Camera
     // ---------------------------
@@ -86,7 +92,7 @@ export function createEngine({
     let isMouseInWindow = false;
     let edgeHoverStart = 0;
 
-    let handlers: Handlers = { onSelect, onHover, onArrangementChange };
+    let handlers: Handlers = { onSelect, onHover, onArrangementChange, onFovChange };
     let currentConfig: StarMapConfig | undefined;
     
     // ---------------------------
@@ -318,63 +324,42 @@ export function createEngine({
     const backdropGroup = new THREE.Group();
     scene.add(backdropGroup);
     
-    function createBackdropStars() {
+    function createBackdropStars(count: number = 31000) {
         backdropGroup.clear();
+        // Clear any existing children properly
+        while(backdropGroup.children.length > 0){ 
+            const c = backdropGroup.children[0];
+            backdropGroup.remove(c);
+            if((c as any).geometry) (c as any).geometry.dispose();
+            if((c as any).material) (c as any).material.dispose();
+        }
+
         const geometry = new THREE.BufferGeometry();
         const positions: number[] = [];
         const sizes: number[] = [];
         const colors: number[] = [];
-        // Spectral palette for backdrop too
-        const colorPalette = [ 
-            new THREE.Color(0x9bb0ff), new THREE.Color(0xaabfff), new THREE.Color(0xcad7ff), 
-            new THREE.Color(0xf8f7ff), new THREE.Color(0xfff4ea), new THREE.Color(0xffd2a1), 
-            new THREE.Color(0xffcc6f) 
-        ];
-
-        const r = 2500;
-        // Milky Way orientation (approximate tilt)
-        const mwNormal = new THREE.Vector3(0, 1, 0.5).normalize(); 
         
-        for (let i = 0; i < 4000; i++) {
-            // 40% chance to be in Milky Way band
-            const isMilkyWay = Math.random() < 0.4;
+        const r = 2500;
+        
+        for (let i = 0; i < count; i++) {
+            // Purely uniform spherical distribution
+            const u = Math.random();
+            const v = Math.random();
+            const theta = 2 * Math.PI * u;
+            const phi = Math.acos(2 * v - 1);
             
-            let x, y, z;
-            if (isMilkyWay) {
-                // Generate point in a ring
-                const theta = Math.random() * Math.PI * 2;
-                // Gaussian scatter from plane
-                const scatter = (Math.random() - 0.5) * 0.4; 
-                
-                // Base ring on XZ plane
-                const v = new THREE.Vector3(Math.cos(theta), scatter, Math.sin(theta));
-                v.normalize();
-                
-                // Rotate to align with Milky Way tilt (approx 60 deg)
-                v.applyAxisAngle(new THREE.Vector3(1,0,0), THREE.MathUtils.degToRad(60));
-                
-                x = v.x * r;
-                y = v.y * r;
-                z = v.z * r;
-            } else {
-                // Uniform
-                const u = Math.random();
-                const v = Math.random();
-                const theta = 2 * Math.PI * u;
-                const phi = Math.acos(2 * v - 1);
-                x = r * Math.sin(phi) * Math.cos(theta);
-                y = r * Math.sin(phi) * Math.sin(theta);
-                z = r * Math.cos(phi);
-            }
+            const x = r * Math.sin(phi) * Math.cos(theta);
+            const y = r * Math.cos(phi);
+            const z = r * Math.sin(phi) * Math.sin(theta);
             
             positions.push(x, y, z);
             
-            const size = 0.5 + (-Math.log(Math.random()) * 0.8) * 1.5;
+            // Log-normal distribution for size variation
+            const size = 1.0 + (-Math.log(Math.random()) * 0.8) * 1.5;
             sizes.push(size);
             
-            const cIndex = Math.floor(Math.random() * colorPalette.length);
-            const c = colorPalette[cIndex]!;
-            colors.push(c.r, c.g, c.b);
+            // Pure White for high visibility/contrast
+            colors.push(1.0, 1.0, 1.0);
         }
         
         geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
@@ -403,12 +388,18 @@ export function createEngine({
                     float airmass = 1.0 / (max(0.05, altitude + 0.05));
                     float extinction = exp(-uAtmExtinction * 0.15 * airmass);
 
-                    vColor = color * extinction * horizonFade;
+                    // Boost intensity significantly (3.0x)
+                    vColor = color * 3.0 * extinction * horizonFade;
 
                     vec4 mvPosition = modelViewMatrix * vec4(position, 1.0); 
                     gl_Position = smartProject(mvPosition); 
                     vScreenPos = gl_Position.xy / gl_Position.w; 
-                    gl_PointSize = size * uScale * 0.5 * pixelRatio * (600.0 / -mvPosition.z) * horizonFade; 
+                    
+                    // Non-linear scale with zoom to keep stars looking like points
+                    // pow(uScale, 0.5) prevents them from getting too large at low FOV
+                    float zoomScale = pow(uScale, 0.5); 
+                    
+                    gl_PointSize = size * zoomScale * 0.5 * pixelRatio * (800.0 / -mvPosition.z) * horizonFade; 
                 }
             `,
             fragmentShader: `
@@ -419,13 +410,16 @@ export function createEngine({
                     if (dist > 1.0) discard; 
                     float alphaMask = getMaskAlpha(); 
                     if (alphaMask < 0.01) discard; 
-                    float alpha = exp(-3.0 * dist * dist);
+                    
+                    // Sharp falloff for intense point look
+                    float alpha = exp(-4.0 * dist * dist);
                     gl_FragColor = vec4(vColor, alpha * alphaMask); 
                 }
             `,
             transparent: true, 
             depthWrite: false, 
-            depthTest: true
+            depthTest: true,
+            blending: THREE.AdditiveBlending 
         });
 
         const points = new THREE.Points(geometry, material);
@@ -650,7 +644,9 @@ export function createEngine({
                 let baseSize = 3.5;
                 if (typeof n.weight === "number") {
                     const t = (n.weight - minWeight) / (maxWeight - minWeight);
-                    baseSize = 3.0 + t * 4.0;
+                    // Non-linear scaling (square root) to boost smaller chapters
+                    // Range: 0.1 to 12.0
+                    baseSize = 0.1 + Math.pow(t, 0.5) * 11.9;
                 }
                 starSizes.push(baseSize);
                 
@@ -682,7 +678,7 @@ export function createEngine({
                 if (texRes) {
                     let baseScale = 0.05;
                     if (n.level === 1) baseScale = 0.08;
-                    else if (n.level === 2) baseScale = 0.06; // Books: Slightly larger
+                    else if (n.level === 2) baseScale = 0.04; // Books: Decreased from 0.06
                     else if (n.level === 3) baseScale = 0.03; // Chapters: Small
                     
                     const size = new THREE.Vector2(baseScale * texRes.aspect, baseScale);
@@ -1070,6 +1066,7 @@ export function createEngine({
     let lastModel: SceneModel | undefined = undefined;
     let lastAppliedLon: number | undefined = undefined;
     let lastAppliedLat: number | undefined = undefined;
+    let lastBackdropCount: number | undefined = undefined;
 
     function setConfig(cfg: StarMapConfig) {
         currentConfig = cfg;
@@ -1084,6 +1081,13 @@ export function createEngine({
              state.lat = cfg.camera.lat;
              state.targetLat = cfg.camera.lat;
              lastAppliedLat = cfg.camera.lat;
+        }
+
+        // Rebuild Backdrop Stars if count changed
+        const desiredBackdropCount = typeof cfg.backdropStarsCount === 'number' ? cfg.backdropStarsCount : 4000;
+        if (lastBackdropCount !== desiredBackdropCount) {
+            createBackdropStars(desiredBackdropCount);
+            lastBackdropCount = desiredBackdropCount;
         }
 
         let shouldRebuild = false;
@@ -1482,6 +1486,8 @@ export function createEngine({
         state.fov += e.deltaY * zoomSpeed;
         state.fov = Math.max(ENGINE_CONFIG.minFov, Math.min(ENGINE_CONFIG.maxFov, state.fov));
         
+        handlers.onFovChange?.(state.fov);
+
         updateUniforms(); 
         const vAfter = getMouseViewVector(state.fov, aspect);
         
@@ -1624,6 +1630,7 @@ export function createEngine({
         
         // FOV thresholds
         // showDivisions already calculated above
+        const showBooks = state.fov < 120;
         const showChapters = state.fov < 70;
 
         for (const item of dynamicLabels) {
@@ -1654,6 +1661,13 @@ export function createEngine({
                  continue;
             } 
             
+            // Optimization: If Level 2 (Books) and not zoomed in, cull immediately
+            if (level === 2 && !showBooks && item.node.id !== state.draggedNodeId) {
+                uniforms.uAlpha.value = THREE.MathUtils.lerp(uniforms.uAlpha.value, 0, 0.2);
+                item.obj.visible = uniforms.uAlpha.value > 0.01;
+                continue;
+            }
+
             // Optimization: If Level 3 (Chapters) and not zoomed in, cull immediately
             if (level === 3 && !showChapters && item.node.id !== state.draggedNodeId) {
                  uniforms.uAlpha.value = THREE.MathUtils.lerp(uniforms.uAlpha.value, 0, 0.2);
@@ -1710,9 +1724,11 @@ export function createEngine({
             }
 
             if (l.level === 2) {
-                // Books: Always visible if enabled
-                target = 1.0;
-                occupied.push({ x: l.sX - l.w/2, y: l.sY - l.h/2, w: l.w, h: l.h });
+                // Books: Visible if zoomed in OR special (hover/drag)
+                if (showBooks || isSpecial) {
+                    target = 1.0;
+                    occupied.push({ x: l.sX - l.w/2, y: l.sY - l.h/2, w: l.w, h: l.h });
+                }
             } 
             else if (l.level === 1) {
                 // Divisions: Check overlaps

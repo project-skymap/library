@@ -83,6 +83,7 @@ export type StarMapConfig = {
     showDivisionBoundaries?: boolean;
     showConstellationArt?: boolean;
     showBackdropStars?: boolean;
+    backdropStarsCount?: number;
     showAtmosphere?: boolean;
 
     // Either provide nodes/links directly, or a raw dataset + adapter
