@@ -1073,6 +1073,10 @@ export function createEngine({
         }
         
         for (const item of dynamicLabels) {
+            // Skip Level 3 (Chapters) labels, as their position is derived from the Star position (plus offset).
+            // We want the Arrangement to store the Star position, which is captured in the loop above.
+            if (item.node.level === 3) continue;
+            
             arr[item.node.id] = { position: [item.obj.position.x, item.obj.position.y, item.obj.position.z] };
         }
         
