@@ -266,11 +266,48 @@ export function createEngine({
         let atmosphereMesh: THREE.Mesh | null = null;
 
     function createAtmosphere() {
-        const geometry = new THREE.SphereGeometry(990, 128, 64);
+        const geometry = new THREE.SphereGeometry(990, 64, 64);
+        
+        // Inverted sphere (BackSide) so we see it from inside
         const material = createSmartMaterial({
-            uniforms: { top: { value: new THREE.Color(0x000000) }, bot: { value: new THREE.Color(0x051024) } },
-            vertexShaderBody: `varying vec3 vP; void main() { vP = position; vec4 mv = modelViewMatrix * vec4(position, 1.0); gl_Position = smartProject(mv); vScreenPos = gl_Position.xy / gl_Position.w; }`,
-            fragmentShader: `uniform vec3 top; uniform vec3 bot; varying vec3 vP; void main() { float alphaMask = getMaskAlpha(); if (alphaMask < 0.01) discard; vec3 n = normalize(vP); float h = max(0.0, n.y); gl_FragColor = vec4(mix(bot, top, pow(h, 0.6)), 1.0); }`,
+            vertexShaderBody: `
+                varying vec3 vWorldNormal;
+                void main() { 
+                    vWorldNormal = normalize(position);
+                    vec4 mv = modelViewMatrix * vec4(position, 1.0); 
+                    gl_Position = smartProject(mv); 
+                    vScreenPos = gl_Position.xy / gl_Position.w;
+                }`,
+            fragmentShader: `
+                varying vec3 vWorldNormal;
+                
+                uniform float uAtmGlow;
+                uniform float uAtmDark;
+                uniform vec3 uColorHorizon;
+                uniform vec3 uColorZenith;
+                
+                void main() {
+                    float alphaMask = getMaskAlpha();
+                    if (alphaMask < 0.01) discard;
+
+                    // Altitude angle (Y is up)
+                    float h = normalize(vWorldNormal).y;
+                    
+                    // Gradient Logic
+                    // 1. Base gradient from Horizon to Zenith
+                    float t = smoothstep(-0.1, 0.5, h);
+                    
+                    // Non-linear mix for realistic sky falloff
+                    // Zenith darkness adjustment
+                    vec3 skyColor = mix(uColorHorizon * uAtmGlow, uColorZenith * (1.0 - uAtmDark), pow(t, 0.6));
+                    
+                    // 2. Horizon Glow Band (Simulate scattering/haze layer)
+                    float horizonBand = exp(-15.0 * abs(h - 0.02)); // Sharp peak near 0
+                    skyColor += uColorHorizon * horizonBand * 0.5 * uAtmGlow;
+
+                    gl_FragColor = vec4(skyColor, 1.0);
+                }
+            `,
             side: THREE.BackSide, depthWrite: false, depthTest: true
         });
         const atm = new THREE.Mesh(geometry, material);
@@ -354,13 +391,24 @@ export function createEngine({
                 attribute vec3 color; 
                 varying vec3 vColor; 
                 uniform float pixelRatio; 
-                // uniform float uScale; // Removed to avoid redefinition
+                
+                uniform float uAtmExtinction;
+
                 void main() { 
-                    vColor = color; 
+                    vec3 nPos = normalize(position);
+                    float altitude = nPos.y;
+                    
+                    // Simple Extinction & Horizon Fade
+                    float horizonFade = smoothstep(-0.1, 0.1, altitude);
+                    float airmass = 1.0 / (max(0.05, altitude + 0.05));
+                    float extinction = exp(-uAtmExtinction * 0.15 * airmass);
+
+                    vColor = color * extinction * horizonFade;
+
                     vec4 mvPosition = modelViewMatrix * vec4(position, 1.0); 
                     gl_Position = smartProject(mvPosition); 
                     vScreenPos = gl_Position.xy / gl_Position.w; 
-                    gl_PointSize = size * uScale * 0.5 * pixelRatio * (600.0 / -mvPosition.z); 
+                    gl_PointSize = size * uScale * 0.5 * pixelRatio * (600.0 / -mvPosition.z) * horizonFade; 
                 }
             `,
             fragmentShader: `
@@ -567,6 +615,7 @@ export function createEngine({
         const starPositions: number[] = [];
         const starSizes: number[] = [];
         const starColors: number[] = [];
+        const starPhases: number[] = [];
         
         // Realistic Star Colors (High Brightness/Whiteness for Stellarium Look)
         const SPECTRAL_COLORS = [
@@ -610,6 +659,9 @@ export function createEngine({
                 const colorIdx = Math.floor(Math.pow(Math.random(), 1.5) * SPECTRAL_COLORS.length);
                 const c = SPECTRAL_COLORS[Math.min(colorIdx, SPECTRAL_COLORS.length - 1)]!;
                 starColors.push(c.r, c.g, c.b);
+
+                // Random phase for twinkling
+                starPhases.push(Math.random() * Math.PI * 2);
             }
             
 
@@ -710,6 +762,7 @@ export function createEngine({
         starGeo.setAttribute('position', new THREE.Float32BufferAttribute(starPositions, 3));
         starGeo.setAttribute('size', new THREE.Float32BufferAttribute(starSizes, 1));
         starGeo.setAttribute('color', new THREE.Float32BufferAttribute(starColors, 3));
+        starGeo.setAttribute('phase', new THREE.Float32BufferAttribute(starPhases, 1));
 
         const starMat = createSmartMaterial({
             uniforms: { 
@@ -719,16 +772,39 @@ export function createEngine({
             vertexShaderBody: `
                 attribute float size; 
                 attribute vec3 color; 
+                attribute float phase;
                 varying vec3 vColor; 
                 uniform float pixelRatio; 
+                
+                uniform float uTime;
+                uniform float uAtmExtinction;
+                uniform float uAtmTwinkle;
+
                 void main() { 
-                    vColor = color; 
+                    vec3 nPos = normalize(position);
+                    
+                    // 1. Altitude (Y is UP)
+                    float altitude = nPos.y; 
+                    
+                    // 2. Atmospheric Extinction (Airmass approximation)
+                    float airmass = 1.0 / (max(0.02, altitude + 0.05));
+                    float extinction = exp(-uAtmExtinction * 0.1 * airmass);
+                    
+                    // Fade out stars below horizon
+                    float horizonFade = smoothstep(-0.1, 0.05, altitude);
+                    
+                    // 3. Scintillation
+                    float turbulence = 1.0 + (1.0 - smoothstep(0.0, 1.0, altitude)) * 2.0;
+                    float twinkle = sin(uTime * 3.0 + phase + position.x * 0.01) * 0.5 + 0.5; 
+                    float scintillation = mix(1.0, twinkle * 2.0, uAtmTwinkle * 0.5 * turbulence);
+
+                    vColor = color * extinction * horizonFade * scintillation;
+
                     vec4 mvPosition = modelViewMatrix * vec4(position, 1.0); 
                     gl_Position = smartProject(mvPosition); 
                     vScreenPos = gl_Position.xy / gl_Position.w; 
-                    // Stellarium Scaling: Base Size * Zoom * DistanceAttenuation
-                    // We increase base size to compensate for shader softness
-                    gl_PointSize = (size * 1.5) * uScale * pixelRatio * (2000.0 / -mvPosition.z); 
+                    
+                    gl_PointSize = (size * 1.5) * uScale * pixelRatio * (2000.0 / -mvPosition.z) * horizonFade; 
                 }
             `,
             fragmentShader: `
@@ -742,15 +818,13 @@ export function createEngine({
                     if (alphaMask < 0.01) discard; 
                     
                     float dd = d * d;
-                    // Stellarium Profile: Sharp Core, Soft Halo
+                    // Stellarium Profile
                     float core = exp(-20.0 * dd);
                     float halo = exp(-4.0 * dd);
                     
-                    // Core is white hot (1.5 brightness), Halo is colored
                     vec3 cCore = vec3(1.0) * core * 1.5;
                     vec3 cHalo = vColor * halo * 0.6;
                     
-                    // Additive blend output
                     gl_FragColor = vec4((cCore + cHalo) * alphaMask, 1.0); 
                 }
             `,
@@ -1463,6 +1537,8 @@ export function createEngine({
     function tick() {
         if (!running) return;
         raf = requestAnimationFrame(tick);
+        
+        globalUniforms.uTime.value = performance.now() / 1000.0;
         
         let panX = 0; let panY = 0;
 

@@ -17,7 +17,16 @@ export type SmartMaterialParams = {
 export const globalUniforms = {
     uScale: { value: 1.0 },
     uAspect: { value: 1.0 },
-    uBlend: { value: 0.0 }
+    uBlend: { value: 0.0 },
+    uTime: { value: 0.0 },
+    
+    // Atmosphere Settings
+    uAtmGlow: { value: 1.0 },
+    uAtmDark: { value: 0.6 },
+    uAtmExtinction: { value: 4.0 },
+    uAtmTwinkle: { value: 0.8 },
+    uColorHorizon: { value: new THREE.Color(0x2a3e5c) },
+    uColorZenith: { value: new THREE.Color(0x020408) }
 };
 
 export function createSmartMaterial(params: SmartMaterialParams): THREE.ShaderMaterial {
