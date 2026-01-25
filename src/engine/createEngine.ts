@@ -909,11 +909,11 @@ export function createEngine({
 
                         // 2. Create Label
                         const labelText = `${g.name} (${g.start}-${g.end})`;
-                        const texRes = createTextTexture(labelText, "#f59e0b"); // Amber 500
+                        const texRes = createTextTexture(labelText, "#4fa4fa80"); // Requested bright green
                         
                         if (texRes) {
-                            // Scale: 0.05 (Between Book and Chapter)
-                            const baseScale = 0.05;
+                            // Scale: 0.036 (approx 90% of Book Label scale 0.04)
+                            const baseScale = 0.036;
                             const size = new THREE.Vector2(baseScale * texRes.aspect, baseScale);
                             
                             const mat = createSmartMaterial({
@@ -1590,6 +1590,8 @@ export function createEngine({
         camera.up.lerp(idealUp, ENGINE_CONFIG.horizonLockStrength);
         camera.up.normalize();
         camera.lookAt(target);
+        camera.updateMatrixWorld();
+        camera.matrixWorldInverse.copy(camera.matrixWorld).invert();
         updateUniforms(); 
         
         constellationLayer.update(state.fov, currentConfig?.showConstellationArt ?? false);
@@ -1668,8 +1670,8 @@ export function createEngine({
                 continue;
             }
 
-            // Optimization: If Level 3 (Chapters) and not zoomed in, cull immediately
-            if (level === 3 && !showChapters && item.node.id !== state.draggedNodeId) {
+            // Optimization: If Level 3 (Chapters) or Level 2.5 (Groups) and not zoomed in, cull immediately
+            if ((level === 3 || level === 2.5) && !showChapters && item.node.id !== state.draggedNodeId) {
                  uniforms.uAlpha.value = THREE.MathUtils.lerp(uniforms.uAlpha.value, 0, 0.2);
                  item.obj.visible = uniforms.uAlpha.value > 0.01;
                  continue;
@@ -1687,7 +1689,7 @@ export function createEngine({
             const pixelW = size.x * screenH * 0.8; 
             
             // Push to check list
-            labelsToCheck.push({ item, sX, sY, w: pixelW, h: pixelH, uniforms, level });
+            labelsToCheck.push({ item, sX, sY, w: pixelW, h: pixelH, uniforms, level, ndcX, ndcY });
         }
         
         // 2. Sort by Priority
@@ -1740,15 +1742,27 @@ export function createEngine({
                     }
                 }
             }
-            else if (l.level === 2.5) {
-                // Groups: Check overlaps with Books/Divisions?
-                // Should probably act similar to Books but lower priority?
-                target = 1.0; // For now, just show them if enabled.
-            }
-            else if (l.level === 3) {
-                // Chapters: No overlap check, just zoom check
+            else if (l.level === 2.5 || l.level === 3) {
+                // Groups & Chapters: Use showChapters threshold AND radial focus
                 if (showChapters || isSpecial) {
                     target = 1.0;
+                    
+                    if (!isSpecial) {
+                        // Radial Focus: Fade out towards periphery
+                        // ndc distance from center (0,0)
+                        // X is scaled by aspect in ndc calculation in loop? 
+                        // Wait, previous code: ndcX = pProj.x ... / aspect.
+                        // So ndcX is -1..1 (width adjusted). ndcY is -1..1.
+                        // Distance is straightforward.
+                        
+                        const dist = Math.sqrt(l.ndcX * l.ndcX + l.ndcY * l.ndcY);
+                        
+                        // Focus zone: 0.0 -> 0.4 (Full opacity)
+                        // Fade zone: 0.4 -> 0.7 (Fade out)
+                        // Hidden: > 0.7
+                        const focusFade = 1.0 - THREE.MathUtils.smoothstep(0.4, 0.7, dist);
+                        target *= focusFade;
+                    }
                 }
             }
             
