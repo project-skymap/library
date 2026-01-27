@@ -27,6 +27,13 @@ const ENGINE_CONFIG = {
     edgePanDelay: 250
 };
 
+const ORDER_REVEAL_CONFIG = {
+    globalDim: 0.85,
+    pulseAmplitude: 0.6,
+    pulseDuration: 2,
+    delayPerChapter: 0.1
+};
+
 export function createEngine({
                                  container,
                                  onSelect,
@@ -40,9 +47,22 @@ export function createEngine({
     onArrangementChange?: Handlers["onArrangementChange"];
     onFovChange?: Handlers["onFovChange"];
 }) {
-    // ... (rest of function starts)
-    // Actually I should just update the internal handlers initialization
-    // Let me find where 'handlers' is initialized in the file.
+    // ---------------------------
+    // Interaction State
+    // ---------------------------
+    let hoveredBookId: string | null = null;
+    let focusedBookId: string | null = null;
+    let orderRevealEnabled = true;
+    let activeBookIndex = -1;
+    let orderRevealStrength = 0.0; // Animated 0 -> 1
+    
+    // Cooldown management
+    const hoverCooldowns = new Map<string, number>();
+    const COOLDOWN_MS = 2000;
+    
+    // Map Book ID (string) to shader-friendly index (float)
+    const bookIdToIndex = new Map<string, number>();
+
     // ---------------------------
     // Renderer / Scene / Camera
     // ---------------------------
@@ -57,6 +77,59 @@ export function createEngine({
     const camera = new THREE.PerspectiveCamera(60, 1, 0.1, 10000); // Increased far plane to 10000
     camera.position.set(0, 0, 0);
     camera.up.set(0, 1, 0);
+    
+    // ... (Engine State) ...
+
+    // ... (Helpers, etc.) ...
+
+    // ... (bottom of file) ...
+    
+    function setHoveredBook(id: string | null) {
+        if (id === hoveredBookId) return;
+        
+        const now = performance.now();
+        
+        // If we are LEAVING a book, record timestamp
+        if (hoveredBookId) {
+            hoverCooldowns.set(hoveredBookId, now);
+        }
+        
+        // If we are ENTERING a book, check cooldown
+        // However, if we just left IT, we shouldn't trigger if < cooldown
+        if (id) {
+             const lastExit = hoverCooldowns.get(id) || 0;
+             if (now - lastExit < COOLDOWN_MS) {
+                 // Cooldown active, don't set as hovered for visual purposes yet
+                 // But we still track it internally? 
+                 // If we suppress it here, `hoveredBookId` remains null, so no effect shows.
+                 // But if the user *stays* hovered, it will never trigger because setHoveredBook won't be called again.
+                 // We need to allow it to trigger *eventually* if they stay hovered.
+                 // So we set `hoveredBookId` but use a separate logic for "visual activation"?
+                 // Or we accept that rapid re-entry is suppressed.
+                 // If the user stays hovered, `tick` will see `hoveredBookId` is set.
+                 // We need a way to say "visuals are suppressed until X".
+                 // Let's add `visualSuppressionUntil: number` to state.
+                 // Actually, simpler:
+                 // If suppressed, don't set hoveredBookId? No, then if they stay, it never shows.
+                 // We should set it, but in `tick`, check cooldown?
+             }
+        }
+        
+        hoveredBookId = id; 
+    }
+    
+    // Actually, I need to modify `tick` to respect the cooldown, because `setHoveredBook` is only called on change.
+    // If I set `hoveredBookId` immediately, but `tick` checks cooldown, `tick` runs every frame.
+    // If `tick` sees `hoveredBookId` is set, and `now < cooldownEnd`, it keeps strength at 0.
+    // Once `now > cooldownEnd`, it ramps up.
+    // This supports "hover... wait... trigger".
+    
+    // Let's revert the complex `setHoveredBook` logic and just do state tracking there,
+    // then put the check in `tick`.
+    
+    // Wait, I can't modify `tick` easily without replacing the whole function or a large chunk.
+    // Let's see `tick` again.
+
 
     // ---------------------------
     // Engine State
@@ -575,6 +648,7 @@ export function createEngine({
 
     function buildFromModel(model: SceneModel, cfg: StarMapConfig) {
         clearRoot();
+        bookIdToIndex.clear();
         scene.background = (cfg.background && cfg.background !== "transparent") ? new THREE.Color(cfg.background) : new THREE.Color(0x000000);
 
         const layoutCfg = { ...cfg.layout, radius: cfg.layout?.radius ?? 2000 };
@@ -610,6 +684,8 @@ export function createEngine({
         const starSizes: number[] = [];
         const starColors: number[] = [];
         const starPhases: number[] = [];
+        const starBookIndices: number[] = [];
+        const starChapterIndices: number[] = [];
         
         // Realistic Star Colors (High Brightness/Whiteness for Stellarium Look)
         const SPECTRAL_COLORS = [
@@ -658,6 +734,20 @@ export function createEngine({
 
                 // Random phase for twinkling
                 starPhases.push(Math.random() * Math.PI * 2);
+
+                // Book & Chapter Indices for Interaction
+                let bIdx = -1.0;
+                if (n.parent) {
+                    if (!bookIdToIndex.has(n.parent)) {
+                         bookIdToIndex.set(n.parent, bookIdToIndex.size + 1.0); 
+                    }
+                    bIdx = bookIdToIndex.get(n.parent)!;
+                }
+                starBookIndices.push(bIdx);
+                
+                let cIdx = 0;
+                if (n.meta?.chapter) cIdx = Number(n.meta.chapter);
+                starChapterIndices.push(cIdx);
             }
             
 
@@ -759,22 +849,41 @@ export function createEngine({
         starGeo.setAttribute('size', new THREE.Float32BufferAttribute(starSizes, 1));
         starGeo.setAttribute('color', new THREE.Float32BufferAttribute(starColors, 3));
         starGeo.setAttribute('phase', new THREE.Float32BufferAttribute(starPhases, 1));
+        starGeo.setAttribute('bookIndex', new THREE.Float32BufferAttribute(starBookIndices, 1));
+        starGeo.setAttribute('chapterIndex', new THREE.Float32BufferAttribute(starChapterIndices, 1));
 
         const starMat = createSmartMaterial({
             uniforms: { 
                 pixelRatio: { value: renderer.getPixelRatio() },
-                uScale: globalUniforms.uScale 
+                uScale: globalUniforms.uScale,
+                uTime: globalUniforms.uTime,
+                uActiveBookIndex: { value: -1.0 },
+                uOrderRevealStrength: { value: 0.0 },
+                uGlobalDimFactor: { value: ORDER_REVEAL_CONFIG.globalDim },
+                uPulseParams: { value: new THREE.Vector3(
+                    ORDER_REVEAL_CONFIG.pulseDuration, 
+                    ORDER_REVEAL_CONFIG.delayPerChapter, 
+                    ORDER_REVEAL_CONFIG.pulseAmplitude
+                )}
             },
             vertexShaderBody: `
                 attribute float size; 
                 attribute vec3 color; 
                 attribute float phase;
+                attribute float bookIndex;
+                attribute float chapterIndex;
+
                 varying vec3 vColor; 
                 uniform float pixelRatio; 
                 
                 uniform float uTime;
                 uniform float uAtmExtinction;
                 uniform float uAtmTwinkle;
+
+                uniform float uActiveBookIndex;
+                uniform float uOrderRevealStrength;
+                uniform float uGlobalDimFactor;
+                uniform vec3 uPulseParams;
 
                 void main() { 
                     vec3 nPos = normalize(position);
@@ -793,14 +902,33 @@ export function createEngine({
                     float turbulence = 1.0 + (1.0 - smoothstep(0.0, 1.0, altitude)) * 2.0;
                     float twinkle = sin(uTime * 3.0 + phase + position.x * 0.01) * 0.5 + 0.5; 
                     float scintillation = mix(1.0, twinkle * 2.0, uAtmTwinkle * 0.5 * turbulence);
+                    
+                    // --- Order Reveal Logic ---
+                    float isTarget = 1.0 - min(1.0, abs(bookIndex - uActiveBookIndex));
+                    
+                    // Dimming
+                    float dimFactor = mix(1.0, uGlobalDimFactor, uOrderRevealStrength * (1.0 - isTarget));
+                    
+                    // Pulse
+                    float delay = chapterIndex * uPulseParams.y;
+                    float cycleDuration = uPulseParams.x * 2.5; 
+                    float t = mod(uTime - delay, cycleDuration);
+                    
+                    float pulse = smoothstep(0.0, 0.2, t) * (1.0 - smoothstep(0.4, uPulseParams.x, t));
+                    pulse = max(0.0, pulse);
+                    
+                    float activePulse = pulse * uPulseParams.z * isTarget * uOrderRevealStrength;
 
-                    vColor = color * extinction * horizonFade * scintillation;
+                    vec3 baseColor = color * extinction * horizonFade * scintillation;
+                    vColor = baseColor * dimFactor;
+                    vColor += vec3(1.0, 0.8, 0.4) * activePulse;
 
                     vec4 mvPosition = modelViewMatrix * vec4(position, 1.0); 
                     gl_Position = smartProject(mvPosition); 
                     vScreenPos = gl_Position.xy / gl_Position.w; 
                     
-                    gl_PointSize = (size * 1.5) * uScale * pixelRatio * (2000.0 / -mvPosition.z) * horizonFade; 
+                    float sizeBoost = 1.0 + activePulse * 0.8;
+                    gl_PointSize = (size * sizeBoost * 1.5) * uScale * pixelRatio * (2000.0 / -mvPosition.z) * horizonFade; 
                 }
             `,
             fragmentShader: `
@@ -1471,6 +1599,14 @@ export function createEngine({
             if (hit) {
                 handlers.onSelect?.(hit.node);
                 constellationLayer.setFocused(hit.node.id);
+                
+                // Auto-Focus for Order Reveal
+                if (hit.node.level === 2) setFocusedBook(hit.node.id);
+                else if (hit.node.level === 3 && hit.node.parent) setFocusedBook(hit.node.parent);
+                
+            } else {
+                // Background click clears focus
+                setFocusedBook(null);
             }
         }
     }
@@ -1544,7 +1680,39 @@ export function createEngine({
         if (!running) return;
         raf = requestAnimationFrame(tick);
         
-        globalUniforms.uTime.value = performance.now() / 1000.0;
+        const now = performance.now();
+        globalUniforms.uTime.value = now / 1000.0;
+        
+        // --- Order Reveal Animation ---
+        // Hover takes precedence for preview, falling back to focus state
+        let activeId = null;
+        
+        if (focusedBookId) {
+            activeId = focusedBookId;
+        } else if (hoveredBookId) {
+            // Check Cooldown
+            const lastExit = hoverCooldowns.get(hoveredBookId) || 0;
+            // If cooldown passed, allow it
+            if (now - lastExit > COOLDOWN_MS) {
+                activeId = hoveredBookId;
+            }
+        }
+        
+        const targetStrength = (orderRevealEnabled && activeId) ? 1.0 : 0.0;
+        orderRevealStrength = mix(orderRevealStrength, targetStrength, 0.1);
+        
+        // Only update if significant
+        if (orderRevealStrength > 0.001 || targetStrength > 0.0) {
+             if (activeId && bookIdToIndex.has(activeId)) {
+                 activeBookIndex = bookIdToIndex.get(activeId)!;
+             }
+             
+             if (starPoints && starPoints.material) {
+                 const m = starPoints.material as THREE.ShaderMaterial;
+                 if (m.uniforms.uActiveBookIndex) m.uniforms.uActiveBookIndex.value = activeBookIndex;
+                 if (m.uniforms.uOrderRevealStrength) m.uniforms.uOrderRevealStrength.value = orderRevealStrength;
+             }
+        }
         
         let panX = 0; let panY = 0;
 
@@ -1783,6 +1951,19 @@ export function createEngine({
         el.removeEventListener("wheel", onWheel as any);
     }
     function dispose() { stop(); constellationLayer.dispose(); renderer.dispose(); renderer.domElement.remove(); }
+    
+    function setHoveredBook(id: string | null) { 
+        if (id === hoveredBookId) return;
+        
+        // If leaving a book, mark timestamp
+        if (hoveredBookId) {
+            hoverCooldowns.set(hoveredBookId, performance.now());
+        }
+        
+        hoveredBookId = id; 
+    }
+    function setFocusedBook(id: string | null) { focusedBookId = id; }
+    function setOrderRevealEnabled(enabled: boolean) { orderRevealEnabled = enabled; }
 
-    return { setConfig, start, stop, dispose, setHandlers, getFullArrangement };
+    return { setConfig, start, stop, dispose, setHandlers, getFullArrangement, setHoveredBook, setFocusedBook, setOrderRevealEnabled };
 }

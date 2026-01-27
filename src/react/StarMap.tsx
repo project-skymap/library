@@ -14,6 +14,9 @@ export type StarMapProps = {
 
 export type StarMapHandle = {
     getFullArrangement: () => StarArrangement | undefined;
+    setHoveredBook: (id: string | null) => void;
+    setFocusedBook: (id: string | null) => void;
+    setOrderRevealEnabled: (enabled: boolean) => void;
 };
 
 export const StarMap = forwardRef<StarMapHandle, StarMapProps>(
@@ -22,7 +25,10 @@ export const StarMap = forwardRef<StarMapHandle, StarMapProps>(
         const engineRef = useRef<any>(null);
 
         useImperativeHandle(ref, () => ({
-            getFullArrangement: () => engineRef.current?.getFullArrangement?.()
+            getFullArrangement: () => engineRef.current?.getFullArrangement?.(),
+            setHoveredBook: (id) => engineRef.current?.setHoveredBook?.(id),
+            setFocusedBook: (id) => engineRef.current?.setFocusedBook?.(id),
+            setOrderRevealEnabled: (enabled) => engineRef.current?.setOrderRevealEnabled?.(enabled),
         }));
 
         useEffect(() => {
