@@ -5,10 +5,15 @@
 - `0.2.x`  : Arrangements
 - `0.3.x`  : Planetarium
 - `0.4.x`  : Layout
+- `0.5.x`  : Constellation Art
 
 ## Releases
 <!-- @LatestFirst -->
 `🟪 epic` `🟩 story` `🟦 task` `🟥 bug`
+
+## [0.5.0]
+🟪 [Constellation Art](https://jrsmth.atlassian.net/browse/SKY-18) (27/01/2026)
+- 🟩 `#19` Paul is a player who wants constellations to have biblically inspired artwork underlays
 
 ## [0.4.0]
 🟪 [Layout](https://jrsmth.atlassian.net/browse/SKY-16) (22/01/2026)
@@ -32,3 +37,4 @@
 [0.2.0]: https://github.com/project-skymap/library/compare/v0.1.0...v0.2.0
 [0.3.0]: https://github.com/project-skymap/library/compare/v0.2.0...v0.3.0
 [0.4.0]: https://github.com/project-skymap/library/compare/v0.3.0...v0.4.0
+[0.5.0]: https://github.com/project-skymap/library/compare/v0.4.0...v0.5.0

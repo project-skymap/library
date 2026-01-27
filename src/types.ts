@@ -22,12 +22,46 @@ export type SceneModel = {
     links: SceneLink[];
 };
 
+export type ConstellationItem = {
+    id: string;
+    title: string;
+    type: "book" | "division" | "custom";
+    image: string;
+    anchors: string[];
+    center: [number, number, number] | null;
+    radius: number;
+    rotationDeg: number;
+    aspectRatio?: number;
+    opacity: number;
+    blend: "normal" | "additive" | "screen";
+    zBias: number;
+    fade: {
+        zoomInStart: number;
+        zoomInEnd: number;
+        hoverBoost: number;
+        minOpacity: number;
+        maxOpacity: number;
+    };
+};
+
+export type ConstellationConfig = {
+    version: number;
+    atlasBasePath: string;
+    constellations: ConstellationItem[];
+};
+
 export type Vector3Arr = [number, number, number];
 export type StarArrangement = Record<string, { position: Vector3Arr }>;
 
 export type VisualRule =
     | { when: Record<string, unknown>; value: string } // e.g. color rule
     | { when: Record<string, unknown>; field: keyof SceneNode; scale: [number, number] };
+
+export type GroupDef = {
+    name: string;
+    start: number;
+    end: number;
+};
 
 export type StarMapConfig = {
     background?: string;
@@ -37,13 +71,20 @@ export type StarMapConfig = {
     arrangement?: StarArrangement;
     polygons?: Record<string, Vector3Arr[]>;
     editable?: boolean;
+    constellations?: ConstellationConfig;
+    groups?: Record<string, GroupDef[]>;
 
     // Display Toggles
     showBookLabels?: boolean;
     showDivisionLabels?: boolean;
     showChapterLabels?: boolean;
+    showGroupLabels?: boolean;
     showConstellationLines?: boolean;
     showDivisionBoundaries?: boolean;
+    showConstellationArt?: boolean;
+    showBackdropStars?: boolean;
+    backdropStarsCount?: number;
+    showAtmosphere?: boolean;
 
     // Either provide nodes/links directly, or a raw dataset + adapter
     model?: SceneModel;
