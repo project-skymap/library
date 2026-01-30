@@ -56,6 +56,13 @@ export function createEngine({
     let activeBookIndex = -1;
     let orderRevealStrength = 0.0; // Animated 0 -> 1
 
+    // Fly-to animation state
+    let flyToActive = false;
+    let flyToTargetLon = 0;
+    let flyToTargetLat = 0;
+    let flyToTargetFov = ENGINE_CONFIG.minFov;
+    const FLY_TO_SPEED = 0.04; // lerp factor per frame
+
     // Hierarchy filter state
     let currentFilter: import("../types").HierarchyFilter | null = null;
     let filterStrength = 0.0; // Animated 0 -> 1
@@ -1547,6 +1554,7 @@ export function createEngine({
         }
 
         // View Mode: Camera Pan
+        flyToActive = false; // Cancel any fly-to animation
         state.dragMode = 'camera';
         state.isDragging = true;
         state.velocityX = 0; state.velocityY = 0;
@@ -1703,6 +1711,7 @@ export function createEngine({
     
     function onWheel(e: WheelEvent) {
         e.preventDefault();
+        flyToActive = false; // Cancel any fly-to animation
         const aspect = container.clientWidth / container.clientHeight;
         const rect = renderer.domElement.getBoundingClientRect();
         // Camera Rotate Logic still uses View Space matching to feel right
@@ -1844,9 +1853,31 @@ export function createEngine({
             edgeHoverStart = 0;
         }
 
+        // --- Fly-To Animation ---
+        if (flyToActive && !state.isDragging) {
+            state.lon = mix(state.lon, flyToTargetLon, FLY_TO_SPEED);
+            state.lat = mix(state.lat, flyToTargetLat, FLY_TO_SPEED);
+            state.fov = mix(state.fov, flyToTargetFov, FLY_TO_SPEED);
+            state.targetLon = state.lon;
+            state.targetLat = state.lat;
+            state.velocityX = 0;
+            state.velocityY = 0;
+            handlers.onFovChange?.(state.fov);
+
+            // Stop when close enough
+            if (Math.abs(state.lon - flyToTargetLon) < 0.0001 &&
+                Math.abs(state.lat - flyToTargetLat) < 0.0001 &&
+                Math.abs(state.fov - flyToTargetFov) < 0.05) {
+                flyToActive = false;
+                state.lon = flyToTargetLon;
+                state.lat = flyToTargetLat;
+                state.fov = flyToTargetFov;
+            }
+        }
+
         if (Math.abs(panX) > 0 || Math.abs(panY) > 0) {
             state.lon += panX; state.lat += panY; state.targetLon = state.lon; state.targetLat = state.lat;
-        } else if (!state.isDragging) {
+        } else if (!state.isDragging && !flyToActive) {
              state.lon += state.velocityX; state.lat += state.velocityY;
              state.velocityX *= ENGINE_CONFIG.inertiaDamping; state.velocityY *= ENGINE_CONFIG.inertiaDamping;
              if (Math.abs(state.velocityX) < 0.000001) state.velocityX = 0;
@@ -2073,6 +2104,19 @@ export function createEngine({
     function setFocusedBook(id: string | null) { focusedBookId = id; }
     function setOrderRevealEnabled(enabled: boolean) { orderRevealEnabled = enabled; }
 
+    function flyTo(nodeId: string, targetFov?: number) {
+        const node = nodeById.get(nodeId);
+        if (!node) return;
+        const pos = getPosition(node).normalize();
+        flyToTargetLat = Math.asin(Math.max(-0.999, Math.min(0.999, pos.y)));
+        flyToTargetLon = Math.atan2(pos.x, -pos.z);
+        flyToTargetFov = targetFov ?? ENGINE_CONFIG.minFov;
+        flyToActive = true;
+        // Cancel any user drag inertia
+        state.velocityX = 0;
+        state.velocityY = 0;
+    }
+
     function setHierarchyFilter(filter: import("../types").HierarchyFilter | null) {
         currentFilter = filter;
         if (filter) {
@@ -2089,5 +2133,5 @@ export function createEngine({
         }
     }
 
-    return { setConfig, start, stop, dispose, setHandlers, getFullArrangement, setHoveredBook, setFocusedBook, setOrderRevealEnabled, setHierarchyFilter };
+    return { setConfig, start, stop, dispose, setHandlers, getFullArrangement, setHoveredBook, setFocusedBook, setOrderRevealEnabled, setHierarchyFilter, flyTo };
 }

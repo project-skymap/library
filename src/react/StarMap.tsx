@@ -18,6 +18,7 @@ export type StarMapHandle = {
     setFocusedBook: (id: string | null) => void;
     setOrderRevealEnabled: (enabled: boolean) => void;
     setHierarchyFilter: (filter: HierarchyFilter | null) => void;
+    flyTo: (nodeId: string, targetFov?: number) => void;
 };
 
 export const StarMap = forwardRef<StarMapHandle, StarMapProps>(
@@ -31,6 +32,7 @@ export const StarMap = forwardRef<StarMapHandle, StarMapProps>(
             setFocusedBook: (id) => engineRef.current?.setFocusedBook?.(id),
             setOrderRevealEnabled: (enabled) => engineRef.current?.setOrderRevealEnabled?.(enabled),
             setHierarchyFilter: (filter) => engineRef.current?.setHierarchyFilter?.(filter),
+            flyTo: (nodeId, targetFov) => engineRef.current?.flyTo?.(nodeId, targetFov),
         }));
 
         useEffect(() => {
