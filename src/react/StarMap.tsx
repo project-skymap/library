@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useEffect, useRef, useImperativeHandle, forwardRef } from "react";
-import type { StarMapConfig, SceneNode, StarArrangement } from "../types";
+import type { StarMapConfig, SceneNode, StarArrangement, HierarchyFilter } from "../types";
 
 export type StarMapProps = {
     config: StarMapConfig;
@@ -17,6 +17,7 @@ export type StarMapHandle = {
     setHoveredBook: (id: string | null) => void;
     setFocusedBook: (id: string | null) => void;
     setOrderRevealEnabled: (enabled: boolean) => void;
+    setHierarchyFilter: (filter: HierarchyFilter | null) => void;
 };
 
 export const StarMap = forwardRef<StarMapHandle, StarMapProps>(
@@ -29,6 +30,7 @@ export const StarMap = forwardRef<StarMapHandle, StarMapProps>(
             setHoveredBook: (id) => engineRef.current?.setHoveredBook?.(id),
             setFocusedBook: (id) => engineRef.current?.setFocusedBook?.(id),
             setOrderRevealEnabled: (enabled) => engineRef.current?.setOrderRevealEnabled?.(enabled),
+            setHierarchyFilter: (filter) => engineRef.current?.setHierarchyFilter?.(filter),
         }));
 
         useEffect(() => {

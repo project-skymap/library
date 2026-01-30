@@ -55,6 +55,13 @@ export function createEngine({
     let orderRevealEnabled = true;
     let activeBookIndex = -1;
     let orderRevealStrength = 0.0; // Animated 0 -> 1
+
+    // Hierarchy filter state
+    let currentFilter: import("../types").HierarchyFilter | null = null;
+    let filterStrength = 0.0; // Animated 0 -> 1
+    let filterTestamentIndex = -1.0;
+    let filterDivisionIndex = -1.0;
+    let filterBookIndex = -1.0;
     
     // Cooldown management
     const hoverCooldowns = new Map<string, number>();
@@ -62,6 +69,8 @@ export function createEngine({
     
     // Map Book ID (string) to shader-friendly index (float)
     const bookIdToIndex = new Map<string, number>();
+    const testamentToIndex = new Map<string, number>();
+    const divisionToIndex = new Map<string, number>();
 
     // ---------------------------
     // Renderer / Scene / Camera
@@ -649,6 +658,8 @@ export function createEngine({
     function buildFromModel(model: SceneModel, cfg: StarMapConfig) {
         clearRoot();
         bookIdToIndex.clear();
+        testamentToIndex.clear();
+        divisionToIndex.clear();
         scene.background = (cfg.background && cfg.background !== "transparent") ? new THREE.Color(cfg.background) : new THREE.Color(0x000000);
 
         const layoutCfg = { ...cfg.layout, radius: cfg.layout?.radius ?? 2000 };
@@ -686,6 +697,8 @@ export function createEngine({
         const starPhases: number[] = [];
         const starBookIndices: number[] = [];
         const starChapterIndices: number[] = [];
+        const starTestamentIndices: number[] = [];
+        const starDivisionIndices: number[] = [];
         
         // Realistic Star Colors (High Brightness/Whiteness for Stellarium Look)
         const SPECTRAL_COLORS = [
@@ -748,6 +761,27 @@ export function createEngine({
                 let cIdx = 0;
                 if (n.meta?.chapter) cIdx = Number(n.meta.chapter);
                 starChapterIndices.push(cIdx);
+
+                // Testament & Division indices for hierarchy filtering
+                let tIdx = -1.0;
+                if (n.meta?.testament) {
+                    const tName = n.meta.testament as string;
+                    if (!testamentToIndex.has(tName)) {
+                        testamentToIndex.set(tName, testamentToIndex.size + 1.0);
+                    }
+                    tIdx = testamentToIndex.get(tName)!;
+                }
+                starTestamentIndices.push(tIdx);
+
+                let dIdx = -1.0;
+                if (n.meta?.division) {
+                    const dName = n.meta.division as string;
+                    if (!divisionToIndex.has(dName)) {
+                        divisionToIndex.set(dName, divisionToIndex.size + 1.0);
+                    }
+                    dIdx = divisionToIndex.get(dName)!;
+                }
+                starDivisionIndices.push(dIdx);
             }
             
 
@@ -851,6 +885,8 @@ export function createEngine({
         starGeo.setAttribute('phase', new THREE.Float32BufferAttribute(starPhases, 1));
         starGeo.setAttribute('bookIndex', new THREE.Float32BufferAttribute(starBookIndices, 1));
         starGeo.setAttribute('chapterIndex', new THREE.Float32BufferAttribute(starChapterIndices, 1));
+        starGeo.setAttribute('testamentIndex', new THREE.Float32BufferAttribute(starTestamentIndices, 1));
+        starGeo.setAttribute('divisionIndex', new THREE.Float32BufferAttribute(starDivisionIndices, 1));
 
         const starMat = createSmartMaterial({
             uniforms: { 
@@ -861,10 +897,15 @@ export function createEngine({
                 uOrderRevealStrength: { value: 0.0 },
                 uGlobalDimFactor: { value: ORDER_REVEAL_CONFIG.globalDim },
                 uPulseParams: { value: new THREE.Vector3(
-                    ORDER_REVEAL_CONFIG.pulseDuration, 
-                    ORDER_REVEAL_CONFIG.delayPerChapter, 
+                    ORDER_REVEAL_CONFIG.pulseDuration,
+                    ORDER_REVEAL_CONFIG.delayPerChapter,
                     ORDER_REVEAL_CONFIG.pulseAmplitude
-                )}
+                )},
+                uFilterTestamentIndex: { value: -1.0 },
+                uFilterDivisionIndex: { value: -1.0 },
+                uFilterBookIndex: { value: -1.0 },
+                uFilterStrength: { value: 0.0 },
+                uFilterDimFactor: { value: 0.08 }
             },
             vertexShaderBody: `
                 attribute float size; 
@@ -872,10 +913,12 @@ export function createEngine({
                 attribute float phase;
                 attribute float bookIndex;
                 attribute float chapterIndex;
+                attribute float testamentIndex;
+                attribute float divisionIndex;
 
-                varying vec3 vColor; 
-                uniform float pixelRatio; 
-                
+                varying vec3 vColor;
+                uniform float pixelRatio;
+
                 uniform float uTime;
                 uniform float uAtmExtinction;
                 uniform float uAtmTwinkle;
@@ -884,6 +927,12 @@ export function createEngine({
                 uniform float uOrderRevealStrength;
                 uniform float uGlobalDimFactor;
                 uniform vec3 uPulseParams;
+
+                uniform float uFilterTestamentIndex;
+                uniform float uFilterDivisionIndex;
+                uniform float uFilterBookIndex;
+                uniform float uFilterStrength;
+                uniform float uFilterDimFactor;
 
                 void main() { 
                     vec3 nPos = normalize(position);
@@ -919,8 +968,21 @@ export function createEngine({
                     
                     float activePulse = pulse * uPulseParams.z * isTarget * uOrderRevealStrength;
 
+                    // --- Hierarchy Filter ---
+                    float filtered = 0.0;
+                    if (uFilterTestamentIndex >= 0.0) {
+                        filtered = 1.0 - step(0.5, 1.0 - abs(testamentIndex - uFilterTestamentIndex));
+                    }
+                    if (uFilterDivisionIndex >= 0.0 && filtered < 0.5) {
+                        filtered = 1.0 - step(0.5, 1.0 - abs(divisionIndex - uFilterDivisionIndex));
+                    }
+                    if (uFilterBookIndex >= 0.0 && filtered < 0.5) {
+                        filtered = 1.0 - step(0.5, 1.0 - abs(bookIndex - uFilterBookIndex));
+                    }
+                    float filterDim = mix(1.0, uFilterDimFactor, uFilterStrength * filtered);
+
                     vec3 baseColor = color * extinction * horizonFade * scintillation;
-                    vColor = baseColor * dimFactor;
+                    vColor = baseColor * dimFactor * filterDim;
                     vColor += vec3(1.0, 0.8, 0.4) * activePulse;
 
                     vec4 mvPosition = modelViewMatrix * vec4(position, 1.0); 
@@ -1297,6 +1359,16 @@ export function createEngine({
         return arr;
     }
 
+    function isNodeFiltered(node: SceneNode): boolean {
+        if (!currentFilter) return false;
+        const meta = node.meta as Record<string, unknown> | undefined;
+        if (!meta) return false;
+        if (currentFilter.testament && meta.testament !== currentFilter.testament) return true;
+        if (currentFilter.division && meta.division !== currentFilter.division) return true;
+        if (currentFilter.bookKey && meta.bookKey !== currentFilter.bookKey) return true;
+        return false;
+    }
+
     function pick(ev: MouseEvent) {
         const rect = renderer.domElement.getBoundingClientRect();
         const mX = ev.clientX - rect.left;
@@ -1317,7 +1389,8 @@ export function createEngine({
 
         for (const item of dynamicLabels) {
             if (!item.obj.visible) continue;
-            
+            if (isNodeFiltered(item.node)) continue;
+
             const pWorld = item.obj.position;
             const pProj = smartProjectJS(pWorld);
             
@@ -1421,7 +1494,7 @@ export function createEngine({
                 const id = starIndexToId[pointHit.index];
                 if (id) {
                     const node = nodeById.get(id);
-                    if (node) return { type: 'star', node, index: pointHit.index, point: pointHit.point, object: undefined };
+                    if (node && !isNodeFiltered(node)) return { type: 'star', node, index: pointHit.index, point: pointHit.point, object: undefined };
                 }
             }
         }
@@ -1585,6 +1658,10 @@ export function createEngine({
     }
 
     function onMouseUp(e: MouseEvent) {
+        const dx = e.clientX - state.lastMouseX;
+        const dy = e.clientY - state.lastMouseY;
+        const movedDist = Math.sqrt(dx * dx + dy * dy);
+
         if (state.dragMode === 'node') {
             const fullArr = getFullArrangement();
             handlers.onArrangementChange?.(fullArr);
@@ -1594,16 +1671,29 @@ export function createEngine({
         } else if (state.dragMode === 'camera') {
             state.isDragging = false; state.dragMode = 'none';
             document.body.style.cursor = 'default';
+
+            // If barely moved, treat as a click and attempt selection
+            if (movedDist < 5) {
+                const hit = pick(e);
+                if (hit) {
+                    handlers.onSelect?.(hit.node);
+                    constellationLayer.setFocused(hit.node.id);
+                    if (hit.node.level === 2) setFocusedBook(hit.node.id);
+                    else if (hit.node.level === 3 && hit.node.parent) setFocusedBook(hit.node.parent);
+                } else {
+                    setFocusedBook(null);
+                }
+            }
         } else {
             const hit = pick(e);
             if (hit) {
                 handlers.onSelect?.(hit.node);
                 constellationLayer.setFocused(hit.node.id);
-                
+
                 // Auto-Focus for Order Reveal
                 if (hit.node.level === 2) setFocusedBook(hit.node.id);
                 else if (hit.node.level === 3 && hit.node.parent) setFocusedBook(hit.node.parent);
-                
+
             } else {
                 // Background click clears focus
                 setFocusedBook(null);
@@ -1713,7 +1803,20 @@ export function createEngine({
                  if (m.uniforms.uOrderRevealStrength) m.uniforms.uOrderRevealStrength.value = orderRevealStrength;
              }
         }
-        
+
+        // --- Hierarchy Filter Animation ---
+        const filterTarget = currentFilter ? 1.0 : 0.0;
+        filterStrength = mix(filterStrength, filterTarget, 0.1);
+        if (filterStrength > 0.001 || filterTarget > 0.0) {
+            if (starPoints && starPoints.material) {
+                const m = starPoints.material as THREE.ShaderMaterial;
+                if (m.uniforms.uFilterTestamentIndex) m.uniforms.uFilterTestamentIndex.value = filterTestamentIndex;
+                if (m.uniforms.uFilterDivisionIndex) m.uniforms.uFilterDivisionIndex.value = filterDivisionIndex;
+                if (m.uniforms.uFilterBookIndex) m.uniforms.uFilterBookIndex.value = filterBookIndex;
+                if (m.uniforms.uFilterStrength) m.uniforms.uFilterStrength.value = filterStrength;
+            }
+        }
+
         let panX = 0; let panY = 0;
 
         // Edge Pan Logic (Disable in Edit Mode)
@@ -1934,6 +2037,11 @@ export function createEngine({
                 }
             }
             
+            // Apply hierarchy filter dimming
+            if (target > 0 && isNodeFiltered(l.item.node)) {
+                target *= 0.08;
+            }
+
             l.uniforms.uAlpha.value = THREE.MathUtils.lerp(l.uniforms.uAlpha.value, target, 0.1);
             l.item.obj.visible = l.uniforms.uAlpha.value > 0.01;
         }
@@ -1965,5 +2073,21 @@ export function createEngine({
     function setFocusedBook(id: string | null) { focusedBookId = id; }
     function setOrderRevealEnabled(enabled: boolean) { orderRevealEnabled = enabled; }
 
-    return { setConfig, start, stop, dispose, setHandlers, getFullArrangement, setHoveredBook, setFocusedBook, setOrderRevealEnabled };
+    function setHierarchyFilter(filter: import("../types").HierarchyFilter | null) {
+        currentFilter = filter;
+        if (filter) {
+            filterTestamentIndex = filter.testament && testamentToIndex.has(filter.testament)
+                ? testamentToIndex.get(filter.testament)! : -1.0;
+            filterDivisionIndex = filter.division && divisionToIndex.has(filter.division)
+                ? divisionToIndex.get(filter.division)! : -1.0;
+            filterBookIndex = filter.bookKey && bookIdToIndex.has(`B:${filter.bookKey}`)
+                ? bookIdToIndex.get(`B:${filter.bookKey}`)! : -1.0;
+        } else {
+            filterTestamentIndex = -1.0;
+            filterDivisionIndex = -1.0;
+            filterBookIndex = -1.0;
+        }
+    }
+
+    return { setConfig, start, stop, dispose, setHandlers, getFullArrangement, setHoveredBook, setFocusedBook, setOrderRevealEnabled, setHierarchyFilter };
 }

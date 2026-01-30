@@ -6,10 +6,15 @@
 - `0.3.x`  : Planetarium
 - `0.4.x`  : Layout
 - `0.5.x`  : Constellation Art
+- `0.6.x`  : Selection Filtering
 
 ## Releases
 <!-- @LatestFirst -->
 `🟪 epic` `🟩 story` `🟦 task` `🟥 bug`
+
+## [0.6.0]
+🟪 [Selection Filtering](https://jrsmth.atlassian.net/browse/SKY-20) (??)
+- 🟩 `#21` Paul is a player who wants guesses to narrow down the available answers
 
 ## [0.5.0]
 🟪 [Constellation Art](https://jrsmth.atlassian.net/browse/SKY-18) (27/01/2026)
@@ -38,3 +43,4 @@
 [0.3.0]: https://github.com/project-skymap/library/compare/v0.2.0...v0.3.0
 [0.4.0]: https://github.com/project-skymap/library/compare/v0.3.0...v0.4.0
 [0.5.0]: https://github.com/project-skymap/library/compare/v0.4.0...v0.5.0
+[0.6.0]: https://github.com/project-skymap/library/compare/v0.5.0...v0.6.0

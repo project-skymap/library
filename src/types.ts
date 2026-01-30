@@ -63,6 +63,13 @@ export type GroupDef = {
     end: number;
 };
 
+/** Which hierarchy levels have been confirmed as matching the answer */
+export type HierarchyFilter = {
+    testament?: string;
+    division?: string;
+    bookKey?: string;
+};
+
 export type StarMapConfig = {
     background?: string;
     camera?: { fov?: number; z?: number; lon?: number; lat?: number };
