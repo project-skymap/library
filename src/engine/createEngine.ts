@@ -1509,6 +1509,8 @@ export function createEngine({
         return undefined;
     }
     
+    function onWindowBlur() { isMouseInWindow = false; edgeHoverStart = 0; }
+
     function onMouseDown(e: MouseEvent) {
         state.lastMouseX = e.clientX;
         state.lastMouseY = e.clientY;
@@ -1771,7 +1773,8 @@ export function createEngine({
         window.addEventListener("mouseup", onMouseUp);
         el.addEventListener("wheel", onWheel, { passive: false });
         el.addEventListener("mouseenter", () => { isMouseInWindow = true; });
-        el.addEventListener("mouseleave", () => { isMouseInWindow = false; });
+        el.addEventListener("mouseleave", onWindowBlur);
+        window.addEventListener("blur", onWindowBlur);
         raf = requestAnimationFrame(tick);
     }
     
@@ -2088,6 +2091,8 @@ export function createEngine({
         window.removeEventListener("mousemove", onMouseMove);
         window.removeEventListener("mouseup", onMouseUp);
         el.removeEventListener("wheel", onWheel as any);
+        el.removeEventListener("mouseleave", onWindowBlur);
+        window.removeEventListener("blur", onWindowBlur);
     }
     function dispose() { stop(); constellationLayer.dispose(); renderer.dispose(); renderer.domElement.remove(); }
     
