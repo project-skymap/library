@@ -796,7 +796,10 @@ export function createEngine({
             if (n.level === 1 || n.level === 2 || n.level === 3) {
                 let color = "#ffffff";
                 if (n.level === 1) color = "#38bdf8"; // Divisions: Sky Blue
-                else if (n.level === 2) color = "#cbd5e1"; // Books: Slate 300
+                else if (n.level === 2) {
+                    const bookKey = n.meta?.bookKey as string | undefined;
+                    color = (bookKey && cfg.labelColors?.[bookKey]) || "#cbd5e1";
+                }
                 else if (n.level === 3) color = "#94a3b8"; // Chapters: Slate 400 (Grey)
                 
                 let labelText = n.label;

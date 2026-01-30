@@ -108,6 +108,9 @@ export type StarMapConfig = {
         animate?: boolean;
     };
 
+    /** Per-node color overrides for labels, keyed by bookKey */
+    labelColors?: Record<string, string>;
+
     layout?: {
         mode?: "radial" | "grid" | "force" | "spherical" | "manual";
         radius?: number; // radial
