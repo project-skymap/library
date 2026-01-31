@@ -1819,6 +1819,24 @@ export function createEngine({
         const vAfter = getMouseViewVector(state.fov, aspect);
         
         const quaternion = new THREE.Quaternion().setFromUnitVectors(vAfter, vBefore);
+
+        // --- FOV-based Spin Damping ---
+        const dampStartFov = 40;
+        const dampEndFov = 120;
+        let spinAmount = 1.0;
+
+        if (state.fov > dampStartFov) {
+            const t = Math.max(0, Math.min(1, (state.fov - dampStartFov) / (dampEndFov - dampStartFov)));
+            // At fov=40, t=0, spin=1. At fov=120, t=1, spin=0.2
+            spinAmount = 1.0 - Math.pow(t, 1.5) * 0.8; // Use pow for a smoother falloff
+        }
+
+        // Slerp towards identity quaternion to reduce the rotation amount
+        if (spinAmount < 0.999) {
+            const identityQuat = new THREE.Quaternion();
+            quaternion.slerp(identityQuat, 1 - spinAmount);
+        }
+        
         const y = Math.sin(state.lat); const r = Math.cos(state.lat);
         const x = r * Math.sin(state.lon); const z = -r * Math.cos(state.lon);
         const currentLook = new THREE.Vector3(x, y, z);
