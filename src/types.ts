@@ -73,6 +73,7 @@ export type HierarchyFilter = {
 export type StarMapConfig = {
     background?: string;
     camera?: { fov?: number; z?: number; lon?: number; lat?: number };
+    projection?: "perspective" | "stereographic" | "blended";
 
     // Arrangement overrides
     arrangement?: StarArrangement;

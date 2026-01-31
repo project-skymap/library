@@ -19,6 +19,7 @@ export type StarMapHandle = {
     setOrderRevealEnabled: (enabled: boolean) => void;
     setHierarchyFilter: (filter: HierarchyFilter | null) => void;
     flyTo: (nodeId: string, targetFov?: number) => void;
+    setProjection: (id: "perspective" | "stereographic" | "blended") => void;
 };
 
 export const StarMap = forwardRef<StarMapHandle, StarMapProps>(
@@ -33,6 +34,7 @@ export const StarMap = forwardRef<StarMapHandle, StarMapProps>(
             setOrderRevealEnabled: (enabled) => engineRef.current?.setOrderRevealEnabled?.(enabled),
             setHierarchyFilter: (filter) => engineRef.current?.setHierarchyFilter?.(filter),
             flyTo: (nodeId, targetFov) => engineRef.current?.flyTo?.(nodeId, targetFov),
+            setProjection: (id) => engineRef.current?.setProjection?.(id),
         }));
 
         useEffect(() => {

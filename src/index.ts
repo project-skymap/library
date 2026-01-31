@@ -9,3 +9,6 @@ export { default as defaultStars } from "./assets/default-stars.json";
 
 export { generateArrangement, defaultGenerateOptions } from "./generateArrangement";
 export type { GenerateOptions } from "./generateArrangement";
+
+export { PROJECTIONS } from "./engine/projections";
+export type { Projection, ProjectionId } from "./engine/projections";
