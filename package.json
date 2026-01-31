@@ -1,6 +1,6 @@
 {
   "name": "@project-skymap/library",
-  "version": "0.5.1-SNAPSHOT",
+  "version": "0.6.0-SNAPSHOT",
   "description": "ThreeJS-based React StarMap component",
   "scripts": {
     "build": "tsup",
@@ -35,6 +35,7 @@
     "@types/react-dom": "^18.0.0",
     "@types/seedrandom": "^3.0.8",
     "@types/three": "^0.182.0",
+    "baseline-browser-mapping": "^2.9.19",
     "d3": "^7.9.0",
     "d3-voronoi-treemap": "^1.1.2",
     "seedrandom": "^3.0.5",

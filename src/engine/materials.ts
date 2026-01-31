@@ -18,6 +18,7 @@ export const globalUniforms = {
     uScale: { value: 1.0 },
     uAspect: { value: 1.0 },
     uBlend: { value: 0.0 },
+    uProjectionType: { value: 2 }, // 0=perspective, 1=stereographic, 2=blended
     uTime: { value: 0.0 },
     
     // Atmosphere Settings
@@ -25,7 +26,7 @@ export const globalUniforms = {
     uAtmDark: { value: 0.6 },
     uAtmExtinction: { value: 4.0 },
     uAtmTwinkle: { value: 0.8 },
-    uColorHorizon: { value: new THREE.Color(0x2a3e5c) },
+    uColorHorizon: { value: new THREE.Color(0x3a5e8c) },
     uColorZenith: { value: new THREE.Color(0x020408) }
 };
 

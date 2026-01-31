@@ -63,9 +63,17 @@ export type GroupDef = {
     end: number;
 };
 
+/** Which hierarchy levels have been confirmed as matching the answer */
+export type HierarchyFilter = {
+    testament?: string;
+    division?: string;
+    bookKey?: string;
+};
+
 export type StarMapConfig = {
     background?: string;
     camera?: { fov?: number; z?: number; lon?: number; lat?: number };
+    projection?: "perspective" | "stereographic" | "blended";
 
     // Arrangement overrides
     arrangement?: StarArrangement;
@@ -100,6 +108,9 @@ export type StarMapConfig = {
         nodeId?: string;
         animate?: boolean;
     };
+
+    /** Per-node color overrides for labels, keyed by bookKey */
+    labelColors?: Record<string, string>;
 
     layout?: {
         mode?: "radial" | "grid" | "force" | "spherical" | "manual";
