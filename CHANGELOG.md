@@ -13,7 +13,7 @@
 `🟪 epic` `🟩 story` `🟦 task` `🟥 bug`
 
 ## [0.6.0]
-🟪 [Selection Filtering](https://jrsmth.atlassian.net/browse/SKY-20) (??)
+🟪 [Selection Filtering](https://jrsmth.atlassian.net/browse/SKY-20) (31/01/2026)
 - 🟩 `#21` Paul is a player who wants guesses to narrow down the available answers
 
 ## [0.5.0]

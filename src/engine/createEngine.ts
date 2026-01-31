@@ -2183,8 +2183,16 @@ export function createEngine({
             }
             
             // Apply hierarchy filter dimming
-            if (target > 0 && isNodeFiltered(l.item.node)) {
-                target *= 0.08;
+            if (target > 0 && currentFilter && filterStrength > 0.01) {
+                const node = l.item.node;
+                if (node.level === 3) { // Chapter
+                    target = 0.0;
+                } else if (node.level === 2 || node.level === 2.5) { // Book or Group
+                    const nodeToCheck = (node.level === 2.5 && node.parent) ? nodeById.get(node.parent) : node;
+                    if (nodeToCheck && isNodeFiltered(nodeToCheck)) {
+                        target = 0.0;
+                    }
+                }
             }
 
             l.uniforms.uAlpha.value = THREE.MathUtils.lerp(l.uniforms.uAlpha.value, target, 0.1);
