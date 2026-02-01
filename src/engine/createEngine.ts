@@ -16,13 +16,13 @@ type Handlers = {
 
 const ENGINE_CONFIG = {
     minFov: 10,
-    maxFov: 165,
-    defaultFov: 80,
+    maxFov: 135,
+    defaultFov: 50,
     dragSpeed: 0.00125,
     inertiaDamping: 0.92,
-    blendStart: 40,
-    blendEnd: 100,
-    zenithStartFov: 90,
+    blendStart: 35,
+    blendEnd: 83,
+    zenithStartFov: 75,
     zenithStrength: 0.15,
     horizonLockStrength: 0.05,
     edgePanThreshold: 0.15,
@@ -211,8 +211,17 @@ export function createEngine({
     function updateUniforms() {
         syncProjectionState();
         const fovRad = state.fov * Math.PI / 180.0;
-        globalUniforms.uScale.value = currentProjection.getScale(fovRad);
-        globalUniforms.uAspect.value = camera.aspect;
+        let scale = currentProjection.getScale(fovRad);
+        const aspect = camera.aspect;
+
+        if (currentConfig?.fitProjection) {
+            if (aspect > 1.0) { // landscape
+                scale /= aspect;
+            }
+        }
+
+        globalUniforms.uScale.value = scale;
+        globalUniforms.uAspect.value = aspect;
 
         camera.fov = Math.min(state.fov, ENGINE_CONFIG.defaultFov);
         camera.updateProjectionMatrix();
@@ -2066,8 +2075,8 @@ export function createEngine({
         
         // FOV thresholds
         // showDivisions already calculated above
-        const showBooks = state.fov < 120;
-        const showChapters = state.fov < 70;
+        const showBooks = true;
+        const showChapters = state.fov < 45;
 
         for (const item of dynamicLabels) {
             const uniforms = (item.obj.material as THREE.ShaderMaterial).uniforms as any;
