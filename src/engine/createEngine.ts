@@ -3,6 +3,9 @@ import type { StarMapConfig, SceneModel, SceneNode, StarArrangement } from "../t
 import { computeLayoutPositions } from "./layout";
 import { createSmartMaterial, globalUniforms } from "./materials";
 import { ConstellationArtworkLayer } from "./ConstellationArtworkLayer";
+import { PROJECTIONS, BlendedProjection } from "./projections";
+import type { Projection, ProjectionId } from "./projections";
+import { Fader } from "./fader";
 
 type Handlers = {
     onSelect?: (node: SceneNode) => void;
@@ -13,14 +16,14 @@ type Handlers = {
 
 const ENGINE_CONFIG = {
     minFov: 10,
-    maxFov: 165,
-    defaultFov: 80,
+    maxFov: 135,
+    defaultFov: 50,
     dragSpeed: 0.00125,
     inertiaDamping: 0.92,
-    blendStart: 60,
-    blendEnd: 165,
-    zenithStartFov: 110,
-    zenithStrength: 0.02,
+    blendStart: 35,
+    blendEnd: 83,
+    zenithStartFov: 75,
+    zenithStrength: 0.15,
     horizonLockStrength: 0.05,
     edgePanThreshold: 0.15,
     edgePanMaxSpeed: 0.02,
@@ -55,6 +58,20 @@ export function createEngine({
     let orderRevealEnabled = true;
     let activeBookIndex = -1;
     let orderRevealStrength = 0.0; // Animated 0 -> 1
+
+    // Fly-to animation state
+    let flyToActive = false;
+    let flyToTargetLon = 0;
+    let flyToTargetLat = 0;
+    let flyToTargetFov = ENGINE_CONFIG.minFov;
+    const FLY_TO_SPEED = 0.04; // lerp factor per frame
+
+    // Hierarchy filter state
+    let currentFilter: import("../types").HierarchyFilter | null = null;
+    let filterStrength = 0.0; // Animated 0 -> 1
+    let filterTestamentIndex = -1.0;
+    let filterDivisionIndex = -1.0;
+    let filterBookIndex = -1.0;
     
     // Cooldown management
     const hoverCooldowns = new Map<string, number>();
@@ -62,6 +79,8 @@ export function createEngine({
     
     // Map Book ID (string) to shader-friendly index (float)
     const bookIdToIndex = new Map<string, number>();
+    const testamentToIndex = new Map<string, number>();
+    const divisionToIndex = new Map<string, number>();
 
     // ---------------------------
     // Renderer / Scene / Camera
@@ -177,98 +196,63 @@ export function createEngine({
     // Helpers
     // ---------------------------
     function mix(a: number, b: number, t: number) { return a * (1 - t) + b * t; }
-    
-    function getBlendFactor(fov: number) {
-        if (fov <= ENGINE_CONFIG.blendStart) return 0.0;
-        if (fov >= ENGINE_CONFIG.blendEnd) return 1.0;
-        let t = (fov - ENGINE_CONFIG.blendStart) / (ENGINE_CONFIG.blendEnd - ENGINE_CONFIG.blendStart);
-        return t * t * (3.0 - 2.0 * t);
+
+    // --- Projection system ---
+    let currentProjection: Projection = PROJECTIONS.blended();
+
+    function syncProjectionState() {
+        if (currentProjection instanceof BlendedProjection) {
+            currentProjection.setFov(state.fov);
+            globalUniforms.uBlend.value = currentProjection.getBlend();
+        }
+        globalUniforms.uProjectionType.value = currentProjection.glslProjectionType;
     }
 
     function updateUniforms() {
-        const blend = getBlendFactor(state.fov);
-        globalUniforms.uBlend.value = blend;
-        
+        syncProjectionState();
         const fovRad = state.fov * Math.PI / 180.0;
-        const scaleLinear = 1.0 / Math.tan(fovRad / 2.0);
-        const scaleStereo = 1.0 / (2.0 * Math.tan(fovRad / 4.0));
-        
-        globalUniforms.uScale.value = mix(scaleLinear, scaleStereo, blend);
-        globalUniforms.uAspect.value = camera.aspect;
-        
-        camera.fov = Math.min(state.fov, ENGINE_CONFIG.defaultFov); 
+        let scale = currentProjection.getScale(fovRad);
+        const aspect = camera.aspect;
+
+        if (currentConfig?.fitProjection) {
+            if (aspect > 1.0) { // landscape
+                scale /= aspect;
+            }
+        }
+
+        globalUniforms.uScale.value = scale;
+        globalUniforms.uAspect.value = aspect;
+
+        camera.fov = Math.min(state.fov, ENGINE_CONFIG.defaultFov);
         camera.updateProjectionMatrix();
     }
 
     function getMouseViewVector(fovDeg: number, aspectRatio: number) {
-        const blend = getBlendFactor(fovDeg);
+        syncProjectionState();
         const fovRad = fovDeg * Math.PI / 180;
         const uvX = mouseNDC.x * aspectRatio;
         const uvY = mouseNDC.y;
-        const r_uv = Math.sqrt(uvX * uvX + uvY * uvY);
-        
-        const halfHeightLinear = Math.tan(fovRad / 2);
-        const theta_lin = Math.atan(r_uv * halfHeightLinear);
-        
-        const halfHeightStereo = 2 * Math.tan(fovRad / 4);
-        const theta_str = 2 * Math.atan((r_uv * halfHeightStereo) / 2);
-        
-        const theta = mix(theta_lin, theta_str, blend);
-        const phi = Math.atan2(uvY, uvX);
-        const sinTheta = Math.sin(theta);
-        const cosTheta = Math.cos(theta);
-        
-        return new THREE.Vector3(sinTheta * Math.cos(phi), sinTheta * Math.sin(phi), -cosTheta).normalize();
+        const v = currentProjection.inverse(uvX, uvY, fovRad);
+        return new THREE.Vector3(v.x, v.y, v.z).normalize();
     }
 
-    // Helper: Screen Pixel -> World Direction
     function getMouseWorldVector(pixelX: number, pixelY: number, width: number, height: number) {
-        // Reuse view vector logic logic (but need to recalculate NDC since getMouseViewVector uses global state)
-        // Actually, let's just manually calc ndc here to be safe and use getMouseViewVector logic if possible
-        // But getMouseViewVector uses global `mouseNDC`.
-        // Let's copy the logic or refactor.
-        // Refactor: make getMouseViewVector take NDC input.
-        
-        // For now, simpler to just inline logic or use getMouseViewVector if we set mouseNDC first.
-        // But getMouseWorldVector is called with specific pixel coords.
         const aspect = width / height;
         const ndcX = (pixelX / width) * 2 - 1;
         const ndcY = -(pixelY / height) * 2 + 1;
-        
-        // Temporary View Vector calculation
-        const blend = getBlendFactor(state.fov);
+        syncProjectionState();
         const fovRad = state.fov * Math.PI / 180;
-        const uvX = ndcX * aspect;
-        const uvY = ndcY;
-        const r_uv = Math.sqrt(uvX * uvX + uvY * uvY);
-        const halfHeightLinear = Math.tan(fovRad / 2);
-        const theta_lin = Math.atan(r_uv * halfHeightLinear);
-        const halfHeightStereo = 2 * Math.tan(fovRad / 4);
-        const theta_str = 2 * Math.atan((r_uv * halfHeightStereo) / 2);
-        const theta = mix(theta_lin, theta_str, blend);
-        const phi = Math.atan2(uvY, uvX);
-        const sinTheta = Math.sin(theta);
-        const cosTheta = Math.cos(theta);
-        
-        const vView = new THREE.Vector3(sinTheta * Math.cos(phi), sinTheta * Math.sin(phi), -cosTheta).normalize();
+        const v = currentProjection.inverse(ndcX * aspect, ndcY, fovRad);
+        const vView = new THREE.Vector3(v.x, v.y, v.z).normalize();
         return vView.applyQuaternion(camera.quaternion);
     }
 
-    // Helper: World Position -> Projected Screen Coords (for Labels)
     function smartProjectJS(worldPos: THREE.Vector3) {
-        // 1. Transform World -> View
         const viewPos = worldPos.clone().applyMatrix4(camera.matrixWorldInverse);
-        
-        // 2. Apply Custom Projection Math
         const dir = viewPos.clone().normalize();
-        const zLinear = Math.max(0.01, -dir.z);
-        const kStereo = 2.0 / (1.0 - dir.z);
-        const kLinear = 1.0 / zLinear;
-        const blend = globalUniforms.uBlend.value;
-        const k = mix(kLinear, kStereo, blend);
-        
-        // Raw projected coords
-        return { x: k * dir.x, y: k * dir.y, z: dir.z };
+        const result = currentProjection.forward(dir);
+        if (!result) return { x: 0, y: 0, z: dir.z };
+        return result;
     }
 
     // ---------------------------
@@ -284,9 +268,9 @@ export function createEngine({
         const geometry = new THREE.SphereGeometry(radius, 128, 64, 0, Math.PI * 2, Math.PI / 2 - 0.15, Math.PI / 2 + 0.15);
         
         const material = createSmartMaterial({
-            uniforms: { 
-                color: { value: new THREE.Color(0x020203) }, // Very dark almost black
-                fogColor: { value: new THREE.Color(0x051024) } // Matches atmosphere bot color
+            uniforms: {
+                color: { value: new THREE.Color(0x010102) },
+                fogColor: { value: new THREE.Color(0x0a1e3a) }
             },
             vertexShaderBody: `
                 varying vec3 vPos; 
@@ -312,24 +296,30 @@ export function createEngine({
                     // Procedural Horizon (Mountains)
                     float angle = atan(vPos.z, vPos.x);
                     
-                    // Simple FBM-like terrain
+                    // FBM-like terrain with increased amplitude
                     float h = 0.0;
-                    h += sin(angle * 6.0) * 20.0;
-                    h += sin(angle * 13.0 + 1.0) * 10.0;
-                    h += sin(angle * 29.0 + 2.0) * 5.0;
-                    h += sin(angle * 63.0 + 4.0) * 2.0;
-                    
-                    // Base horizon offset (lift slightly)
-                    float terrainHeight = h + 10.0;
-                    
+                    h += sin(angle * 6.0) * 35.0;
+                    h += sin(angle * 13.0 + 1.0) * 18.0;
+                    h += sin(angle * 29.0 + 2.0) * 8.0;
+                    h += sin(angle * 63.0 + 4.0) * 3.0;
+                    h += sin(angle * 97.0 + 5.0) * 1.5;
+
+                    float terrainHeight = h + 12.0;
+
                     if (vPos.y > terrainHeight) discard;
-                    
-                    // Atmospheric Haze / Fog on the ground
-                    // Mix ground color with fog color based on vertical height (fade into horizon)
-                    // Closer to horizon (higher y) -> more fog
-                    float fogFactor = smoothstep(-100.0, terrainHeight, vPos.y);
-                    vec3 finalCol = mix(color, fogColor, fogFactor * 0.5);
-                    
+
+                    // Atmospheric rim glow just below terrain peaks
+                    float rimDist = terrainHeight - vPos.y;
+                    float rim = exp(-rimDist * 0.15) * 0.4;
+                    vec3 rimColor = fogColor * 1.5;
+
+                    // Atmospheric haze — stronger near horizon
+                    float fogFactor = smoothstep(-120.0, terrainHeight, vPos.y);
+                    vec3 finalCol = mix(color, fogColor, fogFactor * 0.6);
+
+                    // Add rim glow near terrain peaks
+                    finalCol += rimColor * rim;
+
                     gl_FragColor = vec4(finalCol, 1.0); 
                 }
             `,
@@ -371,18 +361,24 @@ export function createEngine({
 
                     // Altitude angle (Y is up)
                     float h = normalize(vWorldNormal).y;
-                    
-                    // Gradient Logic
-                    // 1. Base gradient from Horizon to Zenith
-                    float t = smoothstep(-0.1, 0.5, h);
-                    
+
+                    // 1. Base gradient from Horizon to Zenith (wider range)
+                    float t = smoothstep(-0.15, 0.7, h);
+
                     // Non-linear mix for realistic sky falloff
-                    // Zenith darkness adjustment
                     vec3 skyColor = mix(uColorHorizon * uAtmGlow, uColorZenith * (1.0 - uAtmDark), pow(t, 0.6));
-                    
-                    // 2. Horizon Glow Band (Simulate scattering/haze layer)
-                    float horizonBand = exp(-15.0 * abs(h - 0.02)); // Sharp peak near 0
+
+                    // 2. Teal tint at mid-altitudes (subtle colour variation)
+                    float midBand = exp(-6.0 * pow(h - 0.3, 2.0));
+                    skyColor += vec3(0.05, 0.12, 0.15) * midBand * uAtmGlow;
+
+                    // 3. Primary horizon glow band (wider than before)
+                    float horizonBand = exp(-10.0 * abs(h - 0.02));
                     skyColor += uColorHorizon * horizonBand * 0.5 * uAtmGlow;
+
+                    // 4. Warm secondary glow (light pollution / sodium scatter)
+                    float warmGlow = exp(-8.0 * abs(h));
+                    skyColor += vec3(0.4, 0.25, 0.15) * warmGlow * 0.3 * uAtmGlow;
 
                     gl_FragColor = vec4(skyColor, 1.0);
                 }
@@ -420,19 +416,33 @@ export function createEngine({
             const v = Math.random();
             const theta = 2 * Math.PI * u;
             const phi = Math.acos(2 * v - 1);
-            
+
             const x = r * Math.sin(phi) * Math.cos(theta);
             const y = r * Math.cos(phi);
             const z = r * Math.sin(phi) * Math.sin(theta);
-            
+
             positions.push(x, y, z);
-            
+
             // Log-normal distribution for size variation
             const size = 1.0 + (-Math.log(Math.random()) * 0.8) * 1.5;
             sizes.push(size);
-            
-            // Pure White for high visibility/contrast
-            colors.push(1.0, 1.0, 1.0);
+
+            // Spectral colour from random temperature (Stellarium B-V inspired)
+            const temp = Math.random();
+            let cr, cg, cb;
+            if (temp < 0.15) {
+                // Hot stars: blue-white (O/B type)
+                cr = 0.7 + temp * 2; cg = 0.8 + temp; cb = 1.0;
+            } else if (temp < 0.6) {
+                // Mid stars: white to yellow-white (A/F/G type)
+                const t = (temp - 0.15) / 0.45;
+                cr = 1.0; cg = 1.0 - t * 0.1; cb = 1.0 - t * 0.3;
+            } else {
+                // Cool stars: orange to red (K/M type)
+                const t = (temp - 0.6) / 0.4;
+                cr = 1.0; cg = 0.85 - t * 0.35; cb = 0.7 - t * 0.35;
+            }
+            colors.push(cr, cg, cb);
         }
         
         geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
@@ -440,53 +450,62 @@ export function createEngine({
         geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
 
         const material = createSmartMaterial({
-            uniforms: { 
+            uniforms: {
                 pixelRatio: { value: renderer.getPixelRatio() },
-                uScale: globalUniforms.uScale 
+                uScale: globalUniforms.uScale,
+                uTime: globalUniforms.uTime
             },
             vertexShaderBody: `
-                attribute float size; 
-                attribute vec3 color; 
-                varying vec3 vColor; 
-                uniform float pixelRatio; 
-                
-                uniform float uAtmExtinction;
+                attribute float size;
+                attribute vec3 color;
+                varying vec3 vColor;
+                uniform float pixelRatio;
 
-                void main() { 
+                uniform float uAtmExtinction;
+                uniform float uAtmTwinkle;
+                uniform float uTime;
+
+                void main() {
                     vec3 nPos = normalize(position);
                     float altitude = nPos.y;
-                    
-                    // Simple Extinction & Horizon Fade
+
+                    // Extinction & Horizon Fade
                     float horizonFade = smoothstep(-0.1, 0.1, altitude);
                     float airmass = 1.0 / (max(0.05, altitude + 0.05));
                     float extinction = exp(-uAtmExtinction * 0.15 * airmass);
 
-                    // Boost intensity significantly (3.0x)
-                    vColor = color * 3.0 * extinction * horizonFade;
+                    // Scintillation (twinkling) — stronger near horizon
+                    float turbulence = 1.0 + (1.0 - smoothstep(0.0, 1.0, altitude)) * 2.0;
+                    float twinkle = sin(uTime * 3.0 + position.x * 0.05 + position.z * 0.03) * 0.5 + 0.5;
+                    float scintillation = mix(1.0, twinkle * 2.0, uAtmTwinkle * 0.4 * turbulence);
 
-                    vec4 mvPosition = modelViewMatrix * vec4(position, 1.0); 
-                    gl_Position = smartProject(mvPosition); 
-                    vScreenPos = gl_Position.xy / gl_Position.w; 
-                    
-                    // Non-linear scale with zoom to keep stars looking like points
-                    // pow(uScale, 0.5) prevents them from getting too large at low FOV
-                    float zoomScale = pow(uScale, 0.5); 
-                    
-                    gl_PointSize = size * zoomScale * 0.5 * pixelRatio * (800.0 / -mvPosition.z) * horizonFade; 
+                    vColor = color * 3.0 * extinction * horizonFade * scintillation;
+
+                    vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+                    gl_Position = smartProject(mvPosition);
+                    vScreenPos = gl_Position.xy / gl_Position.w;
+
+                    float zoomScale = pow(uScale, 0.5);
+                    float perceptualSize = pow(size, 0.55);
+                    gl_PointSize = clamp(perceptualSize * zoomScale * 0.5 * pixelRatio * (800.0 / -mvPosition.z) * horizonFade, 0.5, 20.0);
                 }
             `,
             fragmentShader: `
-                varying vec3 vColor; 
-                void main() { 
-                    vec2 coord = gl_PointCoord - vec2(0.5); 
-                    float dist = length(coord) * 2.0; 
-                    if (dist > 1.0) discard; 
-                    float alphaMask = getMaskAlpha(); 
-                    if (alphaMask < 0.01) discard; 
-                    
-                    // Sharp falloff for intense point look
-                    float alpha = exp(-4.0 * dist * dist);
-                    gl_FragColor = vec4(vColor, alpha * alphaMask); 
+                varying vec3 vColor;
+                void main() {
+                    vec2 coord = gl_PointCoord - vec2(0.5);
+                    float d = length(coord) * 2.0;
+                    if (d > 1.0) discard;
+                    float alphaMask = getMaskAlpha();
+                    if (alphaMask < 0.01) discard;
+
+                    // Stellarium-style: sharp core + soft glow
+                    float core = smoothstep(0.8, 0.4, d);
+                    float glow = smoothstep(1.0, 0.0, d) * 0.08;
+                    float k = core + glow;
+
+                    vec3 finalColor = mix(vColor, vec3(1.0), core * 0.5);
+                    gl_FragColor = vec4(finalColor * k * alphaMask, 1.0);
                 }
             `,
             transparent: true, 
@@ -567,9 +586,14 @@ export function createEngine({
     root.add(hoverLabelMesh);
     let currentHoverNodeId: string | null = null;
 
-    let constellationLines: THREE.LineSegments | null = null;
+    let constellationLines: THREE.Mesh | THREE.LineSegments | null = null;
     let boundaryLines: THREE.LineSegments | null = null;
     let starPoints: THREE.Points | null = null;
+
+    // Faders for smooth visibility transitions (Stellarium-style)
+    const linesFader = new Fader(0.4);
+    const artFader = new Fader(0.5);
+    let lastTickTime = 0;
 
     function clearRoot() {
         for (const child of [...root.children]) {
@@ -649,6 +673,8 @@ export function createEngine({
     function buildFromModel(model: SceneModel, cfg: StarMapConfig) {
         clearRoot();
         bookIdToIndex.clear();
+        testamentToIndex.clear();
+        divisionToIndex.clear();
         scene.background = (cfg.background && cfg.background !== "transparent") ? new THREE.Color(cfg.background) : new THREE.Color(0x000000);
 
         const layoutCfg = { ...cfg.layout, radius: cfg.layout?.radius ?? 2000 };
@@ -686,6 +712,8 @@ export function createEngine({
         const starPhases: number[] = [];
         const starBookIndices: number[] = [];
         const starChapterIndices: number[] = [];
+        const starTestamentIndices: number[] = [];
+        const starDivisionIndices: number[] = [];
         
         // Realistic Star Colors (High Brightness/Whiteness for Stellarium Look)
         const SPECTRAL_COLORS = [
@@ -748,6 +776,27 @@ export function createEngine({
                 let cIdx = 0;
                 if (n.meta?.chapter) cIdx = Number(n.meta.chapter);
                 starChapterIndices.push(cIdx);
+
+                // Testament & Division indices for hierarchy filtering
+                let tIdx = -1.0;
+                if (n.meta?.testament) {
+                    const tName = n.meta.testament as string;
+                    if (!testamentToIndex.has(tName)) {
+                        testamentToIndex.set(tName, testamentToIndex.size + 1.0);
+                    }
+                    tIdx = testamentToIndex.get(tName)!;
+                }
+                starTestamentIndices.push(tIdx);
+
+                let dIdx = -1.0;
+                if (n.meta?.division) {
+                    const dName = n.meta.division as string;
+                    if (!divisionToIndex.has(dName)) {
+                        divisionToIndex.set(dName, divisionToIndex.size + 1.0);
+                    }
+                    dIdx = divisionToIndex.get(dName)!;
+                }
+                starDivisionIndices.push(dIdx);
             }
             
 
@@ -755,7 +804,10 @@ export function createEngine({
             if (n.level === 1 || n.level === 2 || n.level === 3) {
                 let color = "#ffffff";
                 if (n.level === 1) color = "#38bdf8"; // Divisions: Sky Blue
-                else if (n.level === 2) color = "#cbd5e1"; // Books: Slate 300
+                else if (n.level === 2) {
+                    const bookKey = n.meta?.bookKey as string | undefined;
+                    color = (bookKey && cfg.labelColors?.[bookKey]) || "#cbd5e1";
+                }
                 else if (n.level === 3) color = "#94a3b8"; // Chapters: Slate 400 (Grey)
                 
                 let labelText = n.label;
@@ -851,6 +903,8 @@ export function createEngine({
         starGeo.setAttribute('phase', new THREE.Float32BufferAttribute(starPhases, 1));
         starGeo.setAttribute('bookIndex', new THREE.Float32BufferAttribute(starBookIndices, 1));
         starGeo.setAttribute('chapterIndex', new THREE.Float32BufferAttribute(starChapterIndices, 1));
+        starGeo.setAttribute('testamentIndex', new THREE.Float32BufferAttribute(starTestamentIndices, 1));
+        starGeo.setAttribute('divisionIndex', new THREE.Float32BufferAttribute(starDivisionIndices, 1));
 
         const starMat = createSmartMaterial({
             uniforms: { 
@@ -861,10 +915,15 @@ export function createEngine({
                 uOrderRevealStrength: { value: 0.0 },
                 uGlobalDimFactor: { value: ORDER_REVEAL_CONFIG.globalDim },
                 uPulseParams: { value: new THREE.Vector3(
-                    ORDER_REVEAL_CONFIG.pulseDuration, 
-                    ORDER_REVEAL_CONFIG.delayPerChapter, 
+                    ORDER_REVEAL_CONFIG.pulseDuration,
+                    ORDER_REVEAL_CONFIG.delayPerChapter,
                     ORDER_REVEAL_CONFIG.pulseAmplitude
-                )}
+                )},
+                uFilterTestamentIndex: { value: -1.0 },
+                uFilterDivisionIndex: { value: -1.0 },
+                uFilterBookIndex: { value: -1.0 },
+                uFilterStrength: { value: 0.0 },
+                uFilterDimFactor: { value: 0.08 }
             },
             vertexShaderBody: `
                 attribute float size; 
@@ -872,10 +931,12 @@ export function createEngine({
                 attribute float phase;
                 attribute float bookIndex;
                 attribute float chapterIndex;
+                attribute float testamentIndex;
+                attribute float divisionIndex;
 
-                varying vec3 vColor; 
-                uniform float pixelRatio; 
-                
+                varying vec3 vColor;
+                uniform float pixelRatio;
+
                 uniform float uTime;
                 uniform float uAtmExtinction;
                 uniform float uAtmTwinkle;
@@ -884,6 +945,12 @@ export function createEngine({
                 uniform float uOrderRevealStrength;
                 uniform float uGlobalDimFactor;
                 uniform vec3 uPulseParams;
+
+                uniform float uFilterTestamentIndex;
+                uniform float uFilterDivisionIndex;
+                uniform float uFilterBookIndex;
+                uniform float uFilterStrength;
+                uniform float uFilterDimFactor;
 
                 void main() { 
                     vec3 nPos = normalize(position);
@@ -919,8 +986,21 @@ export function createEngine({
                     
                     float activePulse = pulse * uPulseParams.z * isTarget * uOrderRevealStrength;
 
+                    // --- Hierarchy Filter ---
+                    float filtered = 0.0;
+                    if (uFilterTestamentIndex >= 0.0) {
+                        filtered = 1.0 - step(0.5, 1.0 - abs(testamentIndex - uFilterTestamentIndex));
+                    }
+                    if (uFilterDivisionIndex >= 0.0 && filtered < 0.5) {
+                        filtered = 1.0 - step(0.5, 1.0 - abs(divisionIndex - uFilterDivisionIndex));
+                    }
+                    if (uFilterBookIndex >= 0.0 && filtered < 0.5) {
+                        filtered = 1.0 - step(0.5, 1.0 - abs(bookIndex - uFilterBookIndex));
+                    }
+                    float filterDim = mix(1.0, uFilterDimFactor, uFilterStrength * filtered);
+
                     vec3 baseColor = color * extinction * horizonFade * scintillation;
-                    vColor = baseColor * dimFactor;
+                    vColor = baseColor * dimFactor * filterDim;
                     vColor += vec3(1.0, 0.8, 0.4) * activePulse;
 
                     vec4 mvPosition = modelViewMatrix * vec4(position, 1.0); 
@@ -928,7 +1008,8 @@ export function createEngine({
                     vScreenPos = gl_Position.xy / gl_Position.w; 
                     
                     float sizeBoost = 1.0 + activePulse * 0.8;
-                    gl_PointSize = (size * sizeBoost * 1.5) * uScale * pixelRatio * (2000.0 / -mvPosition.z) * horizonFade; 
+                    float perceptualSize = pow(size, 0.55);
+                    gl_PointSize = clamp((perceptualSize * sizeBoost * 1.5) * uScale * pixelRatio * (2000.0 / -mvPosition.z) * horizonFade, 1.0, 40.0); 
                 }
             `,
             fragmentShader: `
@@ -941,15 +1022,14 @@ export function createEngine({
                     float alphaMask = getMaskAlpha(); 
                     if (alphaMask < 0.01) discard; 
                     
-                    float dd = d * d;
-                    // Stellarium Profile
-                    float core = exp(-20.0 * dd);
-                    float halo = exp(-4.0 * dd);
-                    
-                    vec3 cCore = vec3(1.0) * core * 1.5;
-                    vec3 cHalo = vColor * halo * 0.6;
-                    
-                    gl_FragColor = vec4((cCore + cHalo) * alphaMask, 1.0); 
+                    // Stellarium-style dual-layer: sharp core + soft glow
+                    float core = smoothstep(0.8, 0.4, d);
+                    float glow = smoothstep(1.0, 0.0, d) * 0.08;
+                    float k = core + glow;
+
+                    // White-hot core blending into coloured halo
+                    vec3 finalColor = mix(vColor, vec3(1.0), core * 0.7);
+                    gl_FragColor = vec4(finalColor * k * alphaMask, 1.0); 
                 }
             `,
             transparent: true,
@@ -982,15 +1062,89 @@ export function createEngine({
             }
         }
         if (linePoints.length > 0) {
+            // Build quad-strip mesh for glowing lines (Stellarium-style)
+            const quadPositions: number[] = [];
+            const quadUvs: number[] = [];
+            const quadIndices: number[] = [];
+            const lineWidth = 8.0; // world-space half-width for glow region
+
+            for (let i = 0; i < linePoints.length; i += 6) {
+                const ax = linePoints[i], ay = linePoints[i+1], az = linePoints[i+2];
+                const bx = linePoints[i+3], by = linePoints[i+4], bz = linePoints[i+5];
+
+                // Direction and perpendicular in 3D
+                const dx = bx - ax, dy = by - ay, dz = bz - az;
+                const len = Math.sqrt(dx*dx + dy*dy + dz*dz);
+                if (len < 0.001) continue;
+
+                // Cross with up vector to get perpendicular
+                let px = dy * 0 - dz * 1, py = dz * 0 - dx * 0, pz = dx * 1 - dy * 0;
+                // If nearly parallel to up, use right vector
+                const pLen = Math.sqrt(px*px + py*py + pz*pz);
+                if (pLen < 0.001) { px = 1; py = 0; pz = 0; }
+                else { px /= pLen; py /= pLen; pz /= pLen; }
+
+                const hw = lineWidth;
+                const baseIdx = quadPositions.length / 3;
+
+                // 4 vertices: A-left, A-right, B-left, B-right
+                quadPositions.push(ax - px*hw, ay - py*hw, az - pz*hw); quadUvs.push(0, -1);
+                quadPositions.push(ax + px*hw, ay + py*hw, az + pz*hw); quadUvs.push(0, 1);
+                quadPositions.push(bx - px*hw, by - py*hw, bz - pz*hw); quadUvs.push(1, -1);
+                quadPositions.push(bx + px*hw, by + py*hw, bz + pz*hw); quadUvs.push(1, 1);
+
+                quadIndices.push(baseIdx, baseIdx+1, baseIdx+2, baseIdx+1, baseIdx+3, baseIdx+2);
+            }
+
             const lineGeo = new THREE.BufferGeometry();
-            lineGeo.setAttribute('position', new THREE.Float32BufferAttribute(linePoints, 3));
+            lineGeo.setAttribute('position', new THREE.Float32BufferAttribute(quadPositions, 3));
+            lineGeo.setAttribute('lineUv', new THREE.Float32BufferAttribute(quadUvs, 2));
+            lineGeo.setIndex(quadIndices);
+
             const lineMat = createSmartMaterial({
-                uniforms: { color: { value: new THREE.Color(0xaaccff) } },
-                vertexShaderBody: `uniform vec3 color; varying vec3 vColor; void main() { vColor = color; vec4 mvPosition = modelViewMatrix * vec4(position, 1.0); gl_Position = smartProject(mvPosition); vScreenPos = gl_Position.xy / gl_Position.w; }`,
-                fragmentShader: `varying vec3 vColor; void main() { float alphaMask = getMaskAlpha(); if (alphaMask < 0.01) discard; gl_FragColor = vec4(vColor, 0.4 * alphaMask); }`,
-                transparent: true, depthWrite: false, blending: THREE.AdditiveBlending
+                uniforms: {
+                    color: { value: new THREE.Color(0xaaccff) },
+                    uLineWidth: { value: 1.5 },
+                    uGlowIntensity: { value: 0.3 }
+                },
+                vertexShaderBody: `
+                    attribute vec2 lineUv;
+                    varying vec2 vLineUv;
+                    void main() {
+                        vLineUv = lineUv;
+                        vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+                        gl_Position = smartProject(mvPosition);
+                        vScreenPos = gl_Position.xy / gl_Position.w;
+                    }
+                `,
+                fragmentShader: `
+                    uniform vec3 color;
+                    uniform float uLineWidth;
+                    uniform float uGlowIntensity;
+                    varying vec2 vLineUv;
+                    void main() {
+                        float alphaMask = getMaskAlpha();
+                        if (alphaMask < 0.01) discard;
+
+                        float dist = abs(vLineUv.y);
+
+                        // Anti-aliased core line
+                        float hw = uLineWidth * 0.05;
+                        float base = smoothstep(hw + 0.08, hw - 0.08, dist);
+
+                        // Soft glow extending outward
+                        float glow = (1.0 - dist) * uGlowIntensity;
+
+                        float alpha = max(glow, base);
+                        if (alpha < 0.005) discard;
+
+                        gl_FragColor = vec4(color, alpha * alphaMask);
+                    }
+                `,
+                transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
+                side: THREE.DoubleSide
             });
-            constellationLines = new THREE.LineSegments(lineGeo, lineMat);
+            constellationLines = new THREE.Mesh(lineGeo, lineMat);
             constellationLines.frustumCulled = false;
             root.add(constellationLines);
         }
@@ -1196,9 +1350,19 @@ export function createEngine({
     let lastAppliedLat: number | undefined = undefined;
     let lastBackdropCount: number | undefined = undefined;
 
+    function setProjection(id: ProjectionId | string) {
+        const factory = PROJECTIONS[id as ProjectionId];
+        if (!factory) return;
+        currentProjection = factory();
+        updateUniforms();
+    }
+
     function setConfig(cfg: StarMapConfig) {
         currentConfig = cfg;
-        
+
+        // Update projection if provided
+        if (cfg.projection) setProjection(cfg.projection);
+
         // Update Camera Orientation if provided and changed
         if (typeof cfg.camera?.lon === 'number' && cfg.camera.lon !== lastAppliedLon) {
              state.lon = cfg.camera.lon;
@@ -1297,6 +1461,16 @@ export function createEngine({
         return arr;
     }
 
+    function isNodeFiltered(node: SceneNode): boolean {
+        if (!currentFilter) return false;
+        const meta = node.meta as Record<string, unknown> | undefined;
+        if (!meta) return false;
+        if (currentFilter.testament && meta.testament !== currentFilter.testament) return true;
+        if (currentFilter.division && meta.division !== currentFilter.division) return true;
+        if (currentFilter.bookKey && meta.bookKey !== currentFilter.bookKey) return true;
+        return false;
+    }
+
     function pick(ev: MouseEvent) {
         const rect = renderer.domElement.getBoundingClientRect();
         const mX = ev.clientX - rect.left;
@@ -1317,13 +1491,13 @@ export function createEngine({
 
         for (const item of dynamicLabels) {
             if (!item.obj.visible) continue;
-            
+            if (isNodeFiltered(item.node)) continue;
+
             const pWorld = item.obj.position;
             const pProj = smartProjectJS(pWorld);
             
             // Back-face cull check
-            const isBehind = (globalUniforms.uBlend.value > 0.5 && pProj.z > 0.4) || (globalUniforms.uBlend.value < 0.1 && pProj.z > -0.1);
-            if (isBehind) continue;
+            if (currentProjection.isClipped(pProj.z)) continue;
 
             const xNDC = pProj.x * uScale / uAspect;
             const yNDC = pProj.y * uScale;
@@ -1354,8 +1528,7 @@ export function createEngine({
             const pWorld = item.mesh.position;
             const pProj = smartProjectJS(pWorld);
             
-            const isBehind = (globalUniforms.uBlend.value > 0.5 && pProj.z > 0.4) || (globalUniforms.uBlend.value < 0.1 && pProj.z > -0.1);
-            if (isBehind) continue;
+            if (currentProjection.isClipped(pProj.z)) continue;
 
             // Material Uniforms should exist if created by ConstellationArtworkLayer
             const uniforms = item.material.uniforms;
@@ -1421,7 +1594,7 @@ export function createEngine({
                 const id = starIndexToId[pointHit.index];
                 if (id) {
                     const node = nodeById.get(id);
-                    if (node) return { type: 'star', node, index: pointHit.index, point: pointHit.point, object: undefined };
+                    if (node && !isNodeFiltered(node)) return { type: 'star', node, index: pointHit.index, point: pointHit.point, object: undefined };
                 }
             }
         }
@@ -1429,6 +1602,8 @@ export function createEngine({
         return undefined;
     }
     
+    function onWindowBlur() { isMouseInWindow = false; edgeHoverStart = 0; }
+
     function onMouseDown(e: MouseEvent) {
         state.lastMouseX = e.clientX;
         state.lastMouseY = e.clientY;
@@ -1474,6 +1649,7 @@ export function createEngine({
         }
 
         // View Mode: Camera Pan
+        flyToActive = false; // Cancel any fly-to animation
         state.dragMode = 'camera';
         state.isDragging = true;
         state.velocityX = 0; state.velocityY = 0;
@@ -1541,12 +1717,18 @@ export function createEngine({
             const deltaY = e.clientY - state.lastMouseY;
             state.lastMouseX = e.clientX; state.lastMouseY = e.clientY;
                         const speedScale = state.fov / ENGINE_CONFIG.defaultFov;
-                        
+
+                        // At wide FOV, transition from pan (lon+lat) to pure rotation
+                        // (lon only). This spins the dome around the zenith axis instead
+                        // of tilting the view off-axis.
+                        const rotLock = Math.max(0, Math.min(1, (state.fov - 100) / (ENGINE_CONFIG.maxFov - 100)));
+                        const latFactor = 1.0 - rotLock * rotLock; // lat sensitivity fades out
+
                         state.targetLon += deltaX * ENGINE_CONFIG.dragSpeed * speedScale;
-            state.targetLat += deltaY * ENGINE_CONFIG.dragSpeed * speedScale;
+            state.targetLat += deltaY * ENGINE_CONFIG.dragSpeed * speedScale * latFactor;
             state.targetLat = Math.max(-Math.PI / 2 + 0.01, Math.min(Math.PI / 2 - 0.01, state.targetLat));
             state.velocityX = deltaX * ENGINE_CONFIG.dragSpeed * speedScale;
-            state.velocityY = deltaY * ENGINE_CONFIG.dragSpeed * speedScale;
+            state.velocityY = deltaY * ENGINE_CONFIG.dragSpeed * speedScale * latFactor;
             state.lon = state.targetLon; state.lat = state.targetLat;
         } else {
             const hit = pick(e);
@@ -1585,6 +1767,10 @@ export function createEngine({
     }
 
     function onMouseUp(e: MouseEvent) {
+        const dx = e.clientX - state.lastMouseX;
+        const dy = e.clientY - state.lastMouseY;
+        const movedDist = Math.sqrt(dx * dx + dy * dy);
+
         if (state.dragMode === 'node') {
             const fullArr = getFullArrangement();
             handlers.onArrangementChange?.(fullArr);
@@ -1594,16 +1780,29 @@ export function createEngine({
         } else if (state.dragMode === 'camera') {
             state.isDragging = false; state.dragMode = 'none';
             document.body.style.cursor = 'default';
+
+            // If barely moved, treat as a click and attempt selection
+            if (movedDist < 5) {
+                const hit = pick(e);
+                if (hit) {
+                    handlers.onSelect?.(hit.node);
+                    constellationLayer.setFocused(hit.node.id);
+                    if (hit.node.level === 2) setFocusedBook(hit.node.id);
+                    else if (hit.node.level === 3 && hit.node.parent) setFocusedBook(hit.node.parent);
+                } else {
+                    setFocusedBook(null);
+                }
+            }
         } else {
             const hit = pick(e);
             if (hit) {
                 handlers.onSelect?.(hit.node);
                 constellationLayer.setFocused(hit.node.id);
-                
+
                 // Auto-Focus for Order Reveal
                 if (hit.node.level === 2) setFocusedBook(hit.node.id);
                 else if (hit.node.level === 3 && hit.node.parent) setFocusedBook(hit.node.parent);
-                
+
             } else {
                 // Background click clears focus
                 setFocusedBook(null);
@@ -1613,6 +1812,7 @@ export function createEngine({
     
     function onWheel(e: WheelEvent) {
         e.preventDefault();
+        flyToActive = false; // Cancel any fly-to animation
         const aspect = container.clientWidth / container.clientHeight;
         const rect = renderer.domElement.getBoundingClientRect();
         // Camera Rotate Logic still uses View Space matching to feel right
@@ -1628,6 +1828,24 @@ export function createEngine({
         const vAfter = getMouseViewVector(state.fov, aspect);
         
         const quaternion = new THREE.Quaternion().setFromUnitVectors(vAfter, vBefore);
+
+        // --- FOV-based Spin Damping ---
+        const dampStartFov = 40;
+        const dampEndFov = 120;
+        let spinAmount = 1.0;
+
+        if (state.fov > dampStartFov) {
+            const t = Math.max(0, Math.min(1, (state.fov - dampStartFov) / (dampEndFov - dampStartFov)));
+            // At fov=40, t=0, spin=1. At fov=120, t=1, spin=0.2
+            spinAmount = 1.0 - Math.pow(t, 1.5) * 0.8; // Use pow for a smoother falloff
+        }
+
+        // Slerp towards identity quaternion to reduce the rotation amount
+        if (spinAmount < 0.999) {
+            const identityQuat = new THREE.Quaternion();
+            quaternion.slerp(identityQuat, 1 - spinAmount);
+        }
+        
         const y = Math.sin(state.lat); const r = Math.cos(state.lat);
         const x = r * Math.sin(state.lon); const z = -r * Math.cos(state.lon);
         const currentLook = new THREE.Vector3(x, y, z);
@@ -1672,7 +1890,8 @@ export function createEngine({
         window.addEventListener("mouseup", onMouseUp);
         el.addEventListener("wheel", onWheel, { passive: false });
         el.addEventListener("mouseenter", () => { isMouseInWindow = true; });
-        el.addEventListener("mouseleave", () => { isMouseInWindow = false; });
+        el.addEventListener("mouseleave", onWindowBlur);
+        window.addEventListener("blur", onWindowBlur);
         raf = requestAnimationFrame(tick);
     }
     
@@ -1713,7 +1932,20 @@ export function createEngine({
                  if (m.uniforms.uOrderRevealStrength) m.uniforms.uOrderRevealStrength.value = orderRevealStrength;
              }
         }
-        
+
+        // --- Hierarchy Filter Animation ---
+        const filterTarget = currentFilter ? 1.0 : 0.0;
+        filterStrength = mix(filterStrength, filterTarget, 0.1);
+        if (filterStrength > 0.001 || filterTarget > 0.0) {
+            if (starPoints && starPoints.material) {
+                const m = starPoints.material as THREE.ShaderMaterial;
+                if (m.uniforms.uFilterTestamentIndex) m.uniforms.uFilterTestamentIndex.value = filterTestamentIndex;
+                if (m.uniforms.uFilterDivisionIndex) m.uniforms.uFilterDivisionIndex.value = filterDivisionIndex;
+                if (m.uniforms.uFilterBookIndex) m.uniforms.uFilterBookIndex.value = filterBookIndex;
+                if (m.uniforms.uFilterStrength) m.uniforms.uFilterStrength.value = filterStrength;
+            }
+        }
+
         let panX = 0; let panY = 0;
 
         // Edge Pan Logic (Disable in Edit Mode)
@@ -1741,10 +1973,33 @@ export function createEngine({
             edgeHoverStart = 0;
         }
 
+        // --- Fly-To Animation ---
+        if (flyToActive && !state.isDragging) {
+            state.lon = mix(state.lon, flyToTargetLon, FLY_TO_SPEED);
+            state.lat = mix(state.lat, flyToTargetLat, FLY_TO_SPEED);
+            state.fov = mix(state.fov, flyToTargetFov, FLY_TO_SPEED);
+            state.targetLon = state.lon;
+            state.targetLat = state.lat;
+            state.velocityX = 0;
+            state.velocityY = 0;
+            handlers.onFovChange?.(state.fov);
+
+            // Stop when close enough
+            if (Math.abs(state.lon - flyToTargetLon) < 0.0001 &&
+                Math.abs(state.lat - flyToTargetLat) < 0.0001 &&
+                Math.abs(state.fov - flyToTargetFov) < 0.05) {
+                flyToActive = false;
+                state.lon = flyToTargetLon;
+                state.lat = flyToTargetLat;
+                state.fov = flyToTargetFov;
+            }
+        }
+
         if (Math.abs(panX) > 0 || Math.abs(panY) > 0) {
             state.lon += panX; state.lat += panY; state.targetLon = state.lon; state.targetLat = state.lat;
-        } else if (!state.isDragging) {
-             state.lon += state.velocityX; state.lat += state.velocityY;
+        } else if (!state.isDragging && !flyToActive) {
+             state.lon += state.velocityX;
+             state.lat += state.velocityY;
              state.velocityX *= ENGINE_CONFIG.inertiaDamping; state.velocityY *= ENGINE_CONFIG.inertiaDamping;
              if (Math.abs(state.velocityX) < 0.000001) state.velocityX = 0;
              if (Math.abs(state.velocityY) < 0.000001) state.velocityY = 0;
@@ -1762,16 +2017,36 @@ export function createEngine({
         camera.matrixWorldInverse.copy(camera.matrixWorld).invert();
         updateUniforms(); 
         
-        constellationLayer.update(state.fov, currentConfig?.showConstellationArt ?? false);
+        // --- Fader Updates ---
+        const nowSec = now / 1000;
+        const dt = lastTickTime > 0 ? Math.min(nowSec - lastTickTime, 0.1) : 0.016;
+        lastTickTime = nowSec;
+
+        linesFader.target = currentConfig?.showConstellationLines ?? false;
+        linesFader.update(dt);
+        artFader.target = currentConfig?.showConstellationArt ?? false;
+        artFader.update(dt);
+
+        constellationLayer.update(state.fov, artFader.eased > 0.01);
+        if (artFader.eased < 1.0) {
+            constellationLayer.setGlobalOpacity?.(artFader.eased);
+        }
         backdropGroup.visible = currentConfig?.showBackdropStars ?? true;
         if (atmosphereMesh) atmosphereMesh.visible = currentConfig?.showAtmosphere ?? false;
 
         const DIVISION_THRESHOLD = 60;
         const showDivisions = state.fov > DIVISION_THRESHOLD;
 
-        // --- Constellation Lines Visibility ---
+        // --- Constellation Lines Visibility (faded) ---
         if (constellationLines) {
-            constellationLines.visible = currentConfig?.showConstellationLines ?? false;
+            constellationLines.visible = linesFader.eased > 0.01;
+            if (constellationLines.visible && (constellationLines as THREE.Mesh).material) {
+                const mat = (constellationLines as THREE.Mesh).material as THREE.ShaderMaterial;
+                if (mat.uniforms?.color) {
+                    mat.uniforms.color.value.setHex(0xaaccff);
+                    mat.opacity = linesFader.eased;
+                }
+            }
         }
         if (boundaryLines) {
             boundaryLines.visible = currentConfig?.showDivisionBoundaries ?? false;
@@ -1800,8 +2075,8 @@ export function createEngine({
         
         // FOV thresholds
         // showDivisions already calculated above
-        const showBooks = state.fov < 120;
-        const showChapters = state.fov < 70;
+        const showBooks = true;
+        const showChapters = state.fov < 45;
 
         for (const item of dynamicLabels) {
             const uniforms = (item.obj.material as THREE.ShaderMaterial).uniforms as any;
@@ -1884,8 +2159,8 @@ export function createEngine({
             // Rotation Logic for Divisions (Level 1)
             if (l.level === 1) {
                 let rot = 0;
-                const blend = globalUniforms.uBlend.value;
-                if (blend > 0.5) {
+                const isWideAngle = currentProjection.id !== "perspective";
+                if (isWideAngle) {
                     const dx = l.sX - screenW / 2;
                     const dy = l.sY - screenH / 2;
                     rot = Math.atan2(-dy, -dx) - Math.PI / 2;
@@ -1934,6 +2209,19 @@ export function createEngine({
                 }
             }
             
+            // Apply hierarchy filter dimming
+            if (target > 0 && currentFilter && filterStrength > 0.01) {
+                const node = l.item.node;
+                if (node.level === 3) { // Chapter
+                    target = 0.0;
+                } else if (node.level === 2 || node.level === 2.5) { // Book or Group
+                    const nodeToCheck = (node.level === 2.5 && node.parent) ? nodeById.get(node.parent) : node;
+                    if (nodeToCheck && isNodeFiltered(nodeToCheck)) {
+                        target = 0.0;
+                    }
+                }
+            }
+
             l.uniforms.uAlpha.value = THREE.MathUtils.lerp(l.uniforms.uAlpha.value, target, 0.1);
             l.item.obj.visible = l.uniforms.uAlpha.value > 0.01;
         }
@@ -1949,6 +2237,8 @@ export function createEngine({
         window.removeEventListener("mousemove", onMouseMove);
         window.removeEventListener("mouseup", onMouseUp);
         el.removeEventListener("wheel", onWheel as any);
+        el.removeEventListener("mouseleave", onWindowBlur);
+        window.removeEventListener("blur", onWindowBlur);
     }
     function dispose() { stop(); constellationLayer.dispose(); renderer.dispose(); renderer.domElement.remove(); }
     
@@ -1965,5 +2255,34 @@ export function createEngine({
     function setFocusedBook(id: string | null) { focusedBookId = id; }
     function setOrderRevealEnabled(enabled: boolean) { orderRevealEnabled = enabled; }
 
-    return { setConfig, start, stop, dispose, setHandlers, getFullArrangement, setHoveredBook, setFocusedBook, setOrderRevealEnabled };
+    function flyTo(nodeId: string, targetFov?: number) {
+        const node = nodeById.get(nodeId);
+        if (!node) return;
+        const pos = getPosition(node).normalize();
+        flyToTargetLat = Math.asin(Math.max(-0.999, Math.min(0.999, pos.y)));
+        flyToTargetLon = Math.atan2(pos.x, -pos.z);
+        flyToTargetFov = targetFov ?? ENGINE_CONFIG.minFov;
+        flyToActive = true;
+        // Cancel any user drag inertia
+        state.velocityX = 0;
+        state.velocityY = 0;
+    }
+
+    function setHierarchyFilter(filter: import("../types").HierarchyFilter | null) {
+        currentFilter = filter;
+        if (filter) {
+            filterTestamentIndex = filter.testament && testamentToIndex.has(filter.testament)
+                ? testamentToIndex.get(filter.testament)! : -1.0;
+            filterDivisionIndex = filter.division && divisionToIndex.has(filter.division)
+                ? divisionToIndex.get(filter.division)! : -1.0;
+            filterBookIndex = filter.bookKey && bookIdToIndex.has(`B:${filter.bookKey}`)
+                ? bookIdToIndex.get(`B:${filter.bookKey}`)! : -1.0;
+        } else {
+            filterTestamentIndex = -1.0;
+            filterDivisionIndex = -1.0;
+            filterBookIndex = -1.0;
+        }
+    }
+
+    return { setConfig, start, stop, dispose, setHandlers, getFullArrangement, setHoveredBook, setFocusedBook, setOrderRevealEnabled, setHierarchyFilter, flyTo, setProjection };
 }

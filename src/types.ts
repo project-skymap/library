@@ -1,109 +1,126 @@
+import type { Vec3 } from "./engine/projections";
+
+export type StarId = string;
+export type ConstellationId = string;
+export type NodeId = StarId | ConstellationId;
+
+export type StarRecord = {
+    id: StarId;
+    ra: number;
+    dec: number;
+    vmag: number;
+    proper?: string;
+};
+
+export type ConstellationRecord = {
+    id: ConstellationId;
+    name: string;
+    centerRa: number;
+    centerDec: number;
+    lines: [StarId, StarId][];
+};
+
 export type SceneNode = {
     id: string;
     label: string;
-    level: number; // 0=testament, 1=division, 2=book, 3=chapter, etc.
+    level: number; // 0: root, 1: testament, 2: book, 3: chapter
     parent?: string;
-
-    weight?: number;
+    children?: string[];
+    weight?: number; // e.g., number of verses
     icon?: string;
-
-    // computed visuals (optional)
-    color?: string;
-    size?: number;
-
-    meta?: Record<string, unknown>;
+    meta?: Record<string, unknown>; // ra, dec, book, chapter, etc.
 };
-
-export type SceneLink = { source: string; target: string };
 
 export type SceneModel = {
-    meta?: Record<string, unknown>;
     nodes: SceneNode[];
-    links: SceneLink[];
+    links?: SceneLink[];
+    meta?: Record<string, unknown>;
 };
 
-export type ConstellationItem = {
-    id: string;
-    title: string;
-    type: "book" | "division" | "custom";
-    image: string;
-    anchors: string[];
-    center: [number, number, number] | null;
-    radius: number;
-    rotationDeg: number;
-    aspectRatio?: number;
-    opacity: number;
-    blend: "normal" | "additive" | "screen";
-    zBias: number;
-    fade: {
-        zoomInStart: number;
-        zoomInEnd: number;
-        hoverBoost: number;
-        minOpacity: number;
-        maxOpacity: number;
-    };
+export type LayoutAlgorithm = "phyllotaxis" | "voronoi";
+
+export type LayoutConfig = {
+    algorithm: LayoutAlgorithm;
+    radius?: number;
+    // Voronoi specific
+    voronoi?: {
+        width: number;
+        height: number;
+    }
+};
+
+export type StarArrangement = {
+    [id: string]: {
+        position: [number, number, number];
+    }
+};
+
+export type StarMapConfig = {
+    // Data
+    data?: any;
+    adapter?: (data: any) => SceneModel;
+    model?: SceneModel;
+    
+    // Layout & Arrangement
+    layout: LayoutConfig;
+    arrangement?: StarArrangement;
+    polygons?: Record<string, [number, number][]>;
+
+    // Visuals
+    background?: string; // "transparent" or hex color
+    labelColors?: Record<string, string>; // key: book id (e.g. "GEN"), value: hex color
+    constellations?: any; // constellation data
+    showConstellationArt?: boolean;
+    showConstellationLines?: boolean;
+    showDivisionBoundaries?: boolean;
+    showBackdropStars?: boolean;
+    backdropStarsCount?: number;
+    showAtmosphere?: boolean;
+    showBookLabels?: boolean;
+    showChapterLabels?: boolean;
+    showDivisionLabels?: boolean;
+    showGroupLabels?: boolean;
+    groups?: Record<string, { name: string, start: number, end: number }[]>;
+
+    // Interaction & Camera
+    editable?: boolean;
+    projection?: "perspective" | "stereographic" | "blended";
+    camera?: { lon?: number, lat?: number };
+    fitProjection?: boolean;
+};
+
+export type SceneLink = {
+    source: string;
+    target: string;
 };
 
 export type ConstellationConfig = {
     version: number;
     atlasBasePath: string;
-    constellations: ConstellationItem[];
+    constellations: {
+        id: string;
+        title: string;
+        type: string;
+        image: string;
+        anchors: string[];
+        center: null | [number, number];
+        radius: number;
+        rotationDeg: number;
+        opacity: number;
+        blend: string;
+        zBias: number;
+        fade: {
+            zoomInStart: number;
+            zoomInEnd: number;
+            hoverBoost: number;
+            minOpacity: number;
+            maxOpacity: number;
+        }
+    }[];
 };
 
-export type Vector3Arr = [number, number, number];
-export type StarArrangement = Record<string, { position: Vector3Arr }>;
-
-export type VisualRule =
-    | { when: Record<string, unknown>; value: string } // e.g. color rule
-    | { when: Record<string, unknown>; field: keyof SceneNode; scale: [number, number] };
-
-export type GroupDef = {
-    name: string;
-    start: number;
-    end: number;
-};
-
-export type StarMapConfig = {
-    background?: string;
-    camera?: { fov?: number; z?: number; lon?: number; lat?: number };
-
-    // Arrangement overrides
-    arrangement?: StarArrangement;
-    polygons?: Record<string, Vector3Arr[]>;
-    editable?: boolean;
-    constellations?: ConstellationConfig;
-    groups?: Record<string, GroupDef[]>;
-
-    // Display Toggles
-    showBookLabels?: boolean;
-    showDivisionLabels?: boolean;
-    showChapterLabels?: boolean;
-    showGroupLabels?: boolean;
-    showConstellationLines?: boolean;
-    showDivisionBoundaries?: boolean;
-    showConstellationArt?: boolean;
-    showBackdropStars?: boolean;
-    backdropStarsCount?: number;
-    showAtmosphere?: boolean;
-
-    // Either provide nodes/links directly, or a raw dataset + adapter
-    model?: SceneModel;
-    data?: any;
-    adapter?: (data: any) => SceneModel;
-
-    visuals?: {
-        colorBy?: Array<{ when: Record<string, unknown>; value: string }>;
-        sizeBy?: Array<{ when: Record<string, unknown>; field: "weight"; scale: [number, number] }>;
-    };
-
-    focus?: {
-        nodeId?: string;
-        animate?: boolean;
-    };
-
-    layout?: {
-        mode?: "radial" | "grid" | "force" | "spherical" | "manual";
-        radius?: number; // radial
-        chapterRingSpacing?: number;
-    };
+export type HierarchyFilter = {
+    testament?: string;
+    division?: string;
+    bookKey?: string;
 };
