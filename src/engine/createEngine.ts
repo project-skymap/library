@@ -15,7 +15,7 @@ type Handlers = {
 };
 
 const ENGINE_CONFIG = {
-    minFov: 10,
+    minFov: 1,
     maxFov: 135,
     defaultFov: 50,
     dragSpeed: 0.00125,
@@ -198,7 +198,7 @@ export function createEngine({
     function mix(a: number, b: number, t: number) { return a * (1 - t) + b * t; }
 
     // --- Projection system ---
-    let currentProjection: Projection = PROJECTIONS.blended();
+    let currentProjection: Projection = new BlendedProjection(ENGINE_CONFIG.blendStart, ENGINE_CONFIG.blendEnd);
 
     function syncProjectionState() {
         if (currentProjection instanceof BlendedProjection) {
@@ -1351,9 +1351,13 @@ export function createEngine({
     let lastBackdropCount: number | undefined = undefined;
 
     function setProjection(id: ProjectionId | string) {
-        const factory = PROJECTIONS[id as ProjectionId];
-        if (!factory) return;
-        currentProjection = factory();
+        if (id === 'blended') {
+            currentProjection = new BlendedProjection(ENGINE_CONFIG.blendStart, ENGINE_CONFIG.blendEnd);
+        } else {
+            const factory = PROJECTIONS[id as ProjectionId];
+            if (!factory) return;
+            currentProjection = factory();
+        }
         updateUniforms();
     }
 

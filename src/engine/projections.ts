@@ -136,11 +136,16 @@ export class BlendedProjection implements Projection {
     readonly glslProjectionType = 2;
 
     /** FOV thresholds for blend transition (degrees) */
-    private blendStart = 40;
-    private blendEnd = 100;
+    private blendStart: number;
+    private blendEnd: number;
 
     /** Current blend factor, updated via setFov() */
     private blend = 0;
+
+    constructor(blendStart: number = 40, blendEnd: number = 100) {
+        this.blendStart = blendStart;
+        this.blendEnd = blendEnd;
+    }
 
     /** Call this each frame / when FOV changes so forward/inverse stay in sync */
     setFov(fovDeg: number) {
@@ -200,10 +205,9 @@ export class BlendedProjection implements Projection {
 // Registry
 // ---------------------------------------------------------------------------
 
-export type ProjectionId = "perspective" | "stereographic" | "blended";
+export type ProjectionId = "perspective" | "stereographic";
 
 export const PROJECTIONS: Record<ProjectionId, () => Projection> = {
     perspective: () => new PerspectiveProjection(),
     stereographic: () => new StereographicProjection(),
-    blended: () => new BlendedProjection(),
 };
