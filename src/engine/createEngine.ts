@@ -27,7 +27,12 @@ const ENGINE_CONFIG = {
     horizonLockStrength: 0.05,
     edgePanThreshold: 0.15,
     edgePanMaxSpeed: 0.02,
-    edgePanDelay: 250
+    edgePanDelay: 250,
+
+    // Touch-specific
+    touchInertiaDamping: 0.85,   // Snappier than mouse (0.92)
+    tapMaxDuration: 300,         // ms
+    tapMaxDistance: 10,          // px
 };
 
 const ORDER_REVEAL_CONFIG = {
@@ -177,11 +182,23 @@ export function createEngine({
             labelInitialPos: THREE.Vector3,
             children: { index: number, initialPos: THREE.Vector3 }[]
         },
-        tempArrangement: {} as StarArrangement
+        tempArrangement: {} as StarArrangement,
+
+        // Touch state
+        touchCount: 0,
+        touchStartTime: 0,
+        touchStartX: 0,
+        touchStartY: 0,
+        touchMoved: false,
+        pinchStartDistance: 0,
+        pinchStartFov: ENGINE_CONFIG.defaultFov,
+        pinchCenterX: 0,
+        pinchCenterY: 0,
     };
 
     const mouseNDC = new THREE.Vector2();
     let isMouseInWindow = false;
+    let isTouchDevice = false;  // Set true on first touch
     let edgeHoverStart = 0;
 
     let handlers: Handlers = { onSelect, onHover, onArrangementChange, onFovChange };
@@ -1491,7 +1508,8 @@ export function createEngine({
 
         // 1. Pick Labels (Highest Priority - Foreground UI)
         let closestLabel = null;
-        let minLabelDist = 40; // Pixel threshold
+        const LABEL_THRESHOLD = isTouchDevice ? 48 : 40;
+        let minLabelDist = LABEL_THRESHOLD; // Pixel threshold
 
         for (const item of dynamicLabels) {
             if (!item.obj.visible) continue;
@@ -1875,6 +1893,183 @@ export function createEngine({
         state.targetLat = state.lat; state.targetLon = state.lon;
     }
 
+    // ---------------------------
+    // Touch Handlers
+    // ---------------------------
+    function getTouchDistance(t1: Touch, t2: Touch): number {
+        const dx = t1.clientX - t2.clientX;
+        const dy = t1.clientY - t2.clientY;
+        return Math.sqrt(dx * dx + dy * dy);
+    }
+
+    function getTouchCenter(t1: Touch, t2: Touch): { x: number, y: number } {
+        return {
+            x: (t1.clientX + t2.clientX) / 2,
+            y: (t1.clientY + t2.clientY) / 2
+        };
+    }
+
+    function onTouchStart(e: TouchEvent) {
+        e.preventDefault();
+        isTouchDevice = true;
+
+        const touches = e.touches;
+        state.touchCount = touches.length;
+
+        if (touches.length === 1) {
+            // Single finger - start drag
+            const touch = touches[0]!;
+            state.touchStartTime = performance.now();
+            state.touchStartX = touch.clientX;
+            state.touchStartY = touch.clientY;
+            state.touchMoved = false;
+            state.lastMouseX = touch.clientX;
+            state.lastMouseY = touch.clientY;
+
+            flyToActive = false;
+            state.dragMode = 'camera';
+            state.isDragging = true;
+            state.velocityX = 0;
+            state.velocityY = 0;
+        } else if (touches.length === 2) {
+            // Two fingers - start pinch
+            const t0 = touches[0]!;
+            const t1 = touches[1]!;
+            state.pinchStartDistance = getTouchDistance(t0, t1);
+            state.pinchStartFov = state.fov;
+            const center = getTouchCenter(t0, t1);
+            state.pinchCenterX = center.x;
+            state.pinchCenterY = center.y;
+            state.lastMouseX = center.x;
+            state.lastMouseY = center.y;
+
+            // Mark as moved to prevent tap selection
+            state.touchMoved = true;
+        }
+    }
+
+    function onTouchMove(e: TouchEvent) {
+        e.preventDefault();
+
+        const touches = e.touches;
+
+        if (touches.length === 1 && state.dragMode === 'camera') {
+            // Single finger drag - camera rotation
+            const touch = touches[0]!;
+            const deltaX = touch.clientX - state.lastMouseX;
+            const deltaY = touch.clientY - state.lastMouseY;
+            state.lastMouseX = touch.clientX;
+            state.lastMouseY = touch.clientY;
+
+            // Check if we've moved enough to count as a drag
+            const totalDx = touch.clientX - state.touchStartX;
+            const totalDy = touch.clientY - state.touchStartY;
+            if (Math.sqrt(totalDx * totalDx + totalDy * totalDy) > ENGINE_CONFIG.tapMaxDistance) {
+                state.touchMoved = true;
+            }
+
+            const speedScale = state.fov / ENGINE_CONFIG.defaultFov;
+            const rotLock = Math.max(0, Math.min(1, (state.fov - 100) / (ENGINE_CONFIG.maxFov - 100)));
+            const latFactor = 1.0 - rotLock * rotLock;
+
+            state.targetLon += deltaX * ENGINE_CONFIG.dragSpeed * speedScale;
+            state.targetLat += deltaY * ENGINE_CONFIG.dragSpeed * speedScale * latFactor;
+            state.targetLat = Math.max(-Math.PI / 2 + 0.01, Math.min(Math.PI / 2 - 0.01, state.targetLat));
+            state.velocityX = deltaX * ENGINE_CONFIG.dragSpeed * speedScale;
+            state.velocityY = deltaY * ENGINE_CONFIG.dragSpeed * speedScale * latFactor;
+            state.lon = state.targetLon;
+            state.lat = state.targetLat;
+        } else if (touches.length === 2) {
+            // Two finger pinch - zoom
+            const t0 = touches[0]!;
+            const t1 = touches[1]!;
+            const newDistance = getTouchDistance(t0, t1);
+            const scale = newDistance / state.pinchStartDistance;
+            state.fov = state.pinchStartFov / scale;
+            state.fov = Math.max(ENGINE_CONFIG.minFov, Math.min(ENGINE_CONFIG.maxFov, state.fov));
+            handlers.onFovChange?.(state.fov);
+
+            // Also handle pan with pinch center
+            const center = getTouchCenter(t0, t1);
+            const deltaX = center.x - state.lastMouseX;
+            const deltaY = center.y - state.lastMouseY;
+            state.lastMouseX = center.x;
+            state.lastMouseY = center.y;
+
+            const speedScale = state.fov / ENGINE_CONFIG.defaultFov;
+            state.targetLon += deltaX * ENGINE_CONFIG.dragSpeed * speedScale * 0.5;
+            state.targetLat += deltaY * ENGINE_CONFIG.dragSpeed * speedScale * 0.5;
+            state.targetLat = Math.max(-Math.PI / 2 + 0.01, Math.min(Math.PI / 2 - 0.01, state.targetLat));
+            state.lon = state.targetLon;
+            state.lat = state.targetLat;
+        }
+    }
+
+    function onTouchEnd(e: TouchEvent) {
+        e.preventDefault();
+
+        const remainingTouches = e.touches.length;
+
+        if (remainingTouches === 0) {
+            // All fingers lifted
+            const duration = performance.now() - state.touchStartTime;
+            const wasTap = !state.touchMoved && duration < ENGINE_CONFIG.tapMaxDuration;
+
+            if (wasTap) {
+                // Simulate a pick at the touch location
+                const rect = renderer.domElement.getBoundingClientRect();
+                const mX = state.touchStartX - rect.left;
+                const mY = state.touchStartY - rect.top;
+
+                mouseNDC.x = (mX / rect.width) * 2 - 1;
+                mouseNDC.y = -(mY / rect.height) * 2 + 1;
+
+                // Create a synthetic mouse event for pick()
+                const syntheticEvent = {
+                    clientX: state.touchStartX,
+                    clientY: state.touchStartY
+                } as MouseEvent;
+
+                const hit = pick(syntheticEvent);
+                if (hit) {
+                    handlers.onSelect?.(hit.node);
+                    constellationLayer.setFocused(hit.node.id);
+                    if (hit.node.level === 2) setFocusedBook(hit.node.id);
+                    else if (hit.node.level === 3 && hit.node.parent) setFocusedBook(hit.node.parent);
+                } else {
+                    setFocusedBook(null);
+                }
+            }
+
+            state.isDragging = false;
+            state.dragMode = 'none';
+            state.touchCount = 0;
+        } else if (remainingTouches === 1) {
+            // Went from 2 fingers to 1 - restart single-finger drag
+            const touch = e.touches[0]!;
+            state.lastMouseX = touch.clientX;
+            state.lastMouseY = touch.clientY;
+            state.touchCount = 1;
+            state.dragMode = 'camera';
+            state.isDragging = true;
+            state.velocityX = 0;
+            state.velocityY = 0;
+        }
+    }
+
+    function onTouchCancel(e: TouchEvent) {
+        e.preventDefault();
+        state.isDragging = false;
+        state.dragMode = 'none';
+        state.touchCount = 0;
+        state.velocityX = 0;
+        state.velocityY = 0;
+    }
+
+    function onGesturePrevent(e: Event) {
+        e.preventDefault();
+    }
+
     function resize() {
         const w = container.clientWidth || 1;
         const h = container.clientHeight || 1;
@@ -1890,12 +2085,24 @@ export function createEngine({
         window.addEventListener("resize", resize);
         const el = renderer.domElement;
         el.addEventListener("mousedown", onMouseDown);
-        window.addEventListener("mousemove", onMouseMove); 
+        window.addEventListener("mousemove", onMouseMove);
         window.addEventListener("mouseup", onMouseUp);
         el.addEventListener("wheel", onWheel, { passive: false });
         el.addEventListener("mouseenter", () => { isMouseInWindow = true; });
         el.addEventListener("mouseleave", onWindowBlur);
         window.addEventListener("blur", onWindowBlur);
+
+        // Touch events
+        el.addEventListener("touchstart", onTouchStart, { passive: false });
+        el.addEventListener("touchmove", onTouchMove, { passive: false });
+        el.addEventListener("touchend", onTouchEnd, { passive: false });
+        el.addEventListener("touchcancel", onTouchCancel, { passive: false });
+
+        // Safari gesture prevention
+        el.addEventListener("gesturestart", onGesturePrevent, { passive: false });
+        el.addEventListener("gesturechange", onGesturePrevent, { passive: false });
+        el.addEventListener("gestureend", onGesturePrevent, { passive: false });
+
         raf = requestAnimationFrame(tick);
     }
     
@@ -1952,8 +2159,8 @@ export function createEngine({
 
         let panX = 0; let panY = 0;
 
-        // Edge Pan Logic (Disable in Edit Mode)
-        if (!state.isDragging && isMouseInWindow && !currentConfig?.editable) {
+        // Edge Pan Logic (Disable in Edit Mode and on Touch Devices)
+        if (!state.isDragging && isMouseInWindow && !currentConfig?.editable && !isTouchDevice) {
             const t = ENGINE_CONFIG.edgePanThreshold;
             const inZoneX = mouseNDC.x < -1 + t || mouseNDC.x > 1 - t;
             const inZoneY = mouseNDC.y < -1 + t || mouseNDC.y > 1 - t;
@@ -2004,7 +2211,9 @@ export function createEngine({
         } else if (!state.isDragging && !flyToActive) {
              state.lon += state.velocityX;
              state.lat += state.velocityY;
-             state.velocityX *= ENGINE_CONFIG.inertiaDamping; state.velocityY *= ENGINE_CONFIG.inertiaDamping;
+             const damping = isTouchDevice ? ENGINE_CONFIG.touchInertiaDamping : ENGINE_CONFIG.inertiaDamping;
+             state.velocityX *= damping;
+             state.velocityY *= damping;
              if (Math.abs(state.velocityX) < 0.000001) state.velocityX = 0;
              if (Math.abs(state.velocityY) < 0.000001) state.velocityY = 0;
         }
@@ -2243,6 +2452,17 @@ export function createEngine({
         el.removeEventListener("wheel", onWheel as any);
         el.removeEventListener("mouseleave", onWindowBlur);
         window.removeEventListener("blur", onWindowBlur);
+
+        // Touch events
+        el.removeEventListener("touchstart", onTouchStart);
+        el.removeEventListener("touchmove", onTouchMove);
+        el.removeEventListener("touchend", onTouchEnd);
+        el.removeEventListener("touchcancel", onTouchCancel);
+
+        // Safari gesture events
+        el.removeEventListener("gesturestart", onGesturePrevent);
+        el.removeEventListener("gesturechange", onGesturePrevent);
+        el.removeEventListener("gestureend", onGesturePrevent);
     }
     function dispose() { stop(); constellationLayer.dispose(); renderer.dispose(); renderer.domElement.remove(); }
     
