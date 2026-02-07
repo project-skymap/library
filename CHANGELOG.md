@@ -13,6 +13,10 @@
 <!-- @LatestFirst -->
 `🟪 epic` `🟩 story` `🟦 task` `🟥 bug`
 
+## [0.7.1]
+🟪 [Mobile](https://jrsmth.atlassian.net/browse/SKY-22) (07/02/2026)
+- 🟦 `#25` Enhance mobile gestures
+
 ## [0.7.0]
 🟪 [Mobile](https://jrsmth.atlassian.net/browse/SKY-22) (06/02/2026)
 - 🟦 `#24` Implement touch support on mobile browsers
@@ -49,4 +53,5 @@
 [0.4.0]: https://github.com/project-skymap/library/compare/v0.3.0...v0.4.0
 [0.5.0]: https://github.com/project-skymap/library/compare/v0.4.0...v0.5.0
 [0.6.0]: https://github.com/project-skymap/library/compare/v0.5.0...v0.6.0
-[0.6.0]: https://github.com/project-skymap/library/compare/v0.6.0...v0.7.0
+[0.7.0]: https://github.com/project-skymap/library/compare/v0.6.0...v0.7.0
+[0.7.1]: https://github.com/project-skymap/library/compare/v0.7.0...v0.7.1
