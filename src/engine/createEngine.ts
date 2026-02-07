@@ -12,6 +12,7 @@ type Handlers = {
     onHover?: (node?: SceneNode) => void;
     onArrangementChange?: (arrangement: StarArrangement) => void;
     onFovChange?: (fov: number) => void;
+    onLongPress?: (node: SceneNode | null, x: number, y: number) => void;
 };
 
 const ENGINE_CONFIG = {
@@ -33,6 +34,9 @@ const ENGINE_CONFIG = {
     touchInertiaDamping: 0.85,   // Snappier than mouse (0.92)
     tapMaxDuration: 300,         // ms
     tapMaxDistance: 10,          // px
+    doubleTapMaxDelay: 300,      // ms between taps
+    doubleTapMaxDistance: 30,    // px between tap locations
+    longPressDelay: 500,         // ms to trigger long-press
 };
 
 const ORDER_REVEAL_CONFIG = {
@@ -48,12 +52,14 @@ export function createEngine({
                                  onHover,
                                  onArrangementChange,
                                  onFovChange,
+                                 onLongPress,
                              }: {
     container: HTMLDivElement;
     onSelect?: Handlers["onSelect"];
     onHover?: Handlers["onHover"];
     onArrangementChange?: Handlers["onArrangementChange"];
     onFovChange?: Handlers["onFovChange"];
+    onLongPress?: Handlers["onLongPress"];
 }) {
     // ---------------------------
     // Interaction State
@@ -194,6 +200,15 @@ export function createEngine({
         pinchStartFov: ENGINE_CONFIG.defaultFov,
         pinchCenterX: 0,
         pinchCenterY: 0,
+
+        // Double-tap detection
+        lastTapTime: 0,
+        lastTapX: 0,
+        lastTapY: 0,
+
+        // Long-press detection
+        longPressTimer: null as ReturnType<typeof setTimeout> | null,
+        longPressTriggered: false,
     };
 
     const mouseNDC = new THREE.Vector2();
@@ -201,7 +216,7 @@ export function createEngine({
     let isTouchDevice = false;  // Set true on first touch
     let edgeHoverStart = 0;
 
-    let handlers: Handlers = { onSelect, onHover, onArrangementChange, onFovChange };
+    let handlers: Handlers = { onSelect, onHover, onArrangementChange, onFovChange, onLongPress };
     let currentConfig: StarMapConfig | undefined;
     
     // ---------------------------
@@ -1913,6 +1928,13 @@ export function createEngine({
         e.preventDefault();
         isTouchDevice = true;
 
+        // Clear any pending long-press timer
+        if (state.longPressTimer) {
+            clearTimeout(state.longPressTimer);
+            state.longPressTimer = null;
+        }
+        state.longPressTriggered = false;
+
         const touches = e.touches;
         state.touchCount = touches.length;
 
@@ -1931,6 +1953,25 @@ export function createEngine({
             state.isDragging = true;
             state.velocityX = 0;
             state.velocityY = 0;
+
+            // Start long-press timer
+            state.longPressTimer = setTimeout(() => {
+                if (!state.touchMoved && state.touchCount === 1) {
+                    state.longPressTriggered = true;
+                    // Get the node under the touch point
+                    const rect = renderer.domElement.getBoundingClientRect();
+                    const mX = state.touchStartX - rect.left;
+                    const mY = state.touchStartY - rect.top;
+                    mouseNDC.x = (mX / rect.width) * 2 - 1;
+                    mouseNDC.y = -(mY / rect.height) * 2 + 1;
+                    const syntheticEvent = {
+                        clientX: state.touchStartX,
+                        clientY: state.touchStartY
+                    } as MouseEvent;
+                    const hit = pick(syntheticEvent);
+                    handlers.onLongPress?.(hit?.node ?? null, state.touchStartX, state.touchStartY);
+                }
+            }, ENGINE_CONFIG.longPressDelay);
         } else if (touches.length === 2) {
             // Two fingers - start pinch
             const t0 = touches[0]!;
@@ -1966,6 +2007,11 @@ export function createEngine({
             const totalDy = touch.clientY - state.touchStartY;
             if (Math.sqrt(totalDx * totalDx + totalDy * totalDy) > ENGINE_CONFIG.tapMaxDistance) {
                 state.touchMoved = true;
+                // Cancel long-press if moved
+                if (state.longPressTimer) {
+                    clearTimeout(state.longPressTimer);
+                    state.longPressTimer = null;
+                }
             }
 
             const speedScale = state.fov / ENGINE_CONFIG.defaultFov;
@@ -2008,14 +2054,30 @@ export function createEngine({
     function onTouchEnd(e: TouchEvent) {
         e.preventDefault();
 
+        // Clear long-press timer
+        if (state.longPressTimer) {
+            clearTimeout(state.longPressTimer);
+            state.longPressTimer = null;
+        }
+
         const remainingTouches = e.touches.length;
 
         if (remainingTouches === 0) {
             // All fingers lifted
-            const duration = performance.now() - state.touchStartTime;
-            const wasTap = !state.touchMoved && duration < ENGINE_CONFIG.tapMaxDuration;
+            const now = performance.now();
+            const duration = now - state.touchStartTime;
+            const wasTap = !state.touchMoved && duration < ENGINE_CONFIG.tapMaxDuration && !state.longPressTriggered;
 
             if (wasTap) {
+                // Check for double-tap
+                const timeSinceLastTap = now - state.lastTapTime;
+                const distFromLastTap = Math.sqrt(
+                    Math.pow(state.touchStartX - state.lastTapX, 2) +
+                    Math.pow(state.touchStartY - state.lastTapY, 2)
+                );
+                const isDoubleTap = timeSinceLastTap < ENGINE_CONFIG.doubleTapMaxDelay &&
+                                    distFromLastTap < ENGINE_CONFIG.doubleTapMaxDistance;
+
                 // Simulate a pick at the touch location
                 const rect = renderer.domElement.getBoundingClientRect();
                 const mX = state.touchStartX - rect.left;
@@ -2031,13 +2093,31 @@ export function createEngine({
                 } as MouseEvent;
 
                 const hit = pick(syntheticEvent);
-                if (hit) {
-                    handlers.onSelect?.(hit.node);
-                    constellationLayer.setFocused(hit.node.id);
-                    if (hit.node.level === 2) setFocusedBook(hit.node.id);
-                    else if (hit.node.level === 3 && hit.node.parent) setFocusedBook(hit.node.parent);
+
+                if (isDoubleTap) {
+                    // Double-tap: fly to the picked node
+                    if (hit) {
+                        flyTo(hit.node.id, ENGINE_CONFIG.minFov);
+                        handlers.onSelect?.(hit.node);
+                    }
+                    // Reset last tap to prevent triple-tap
+                    state.lastTapTime = 0;
+                    state.lastTapX = 0;
+                    state.lastTapY = 0;
                 } else {
-                    setFocusedBook(null);
+                    // Single tap: select
+                    if (hit) {
+                        handlers.onSelect?.(hit.node);
+                        constellationLayer.setFocused(hit.node.id);
+                        if (hit.node.level === 2) setFocusedBook(hit.node.id);
+                        else if (hit.node.level === 3 && hit.node.parent) setFocusedBook(hit.node.parent);
+                    } else {
+                        setFocusedBook(null);
+                    }
+                    // Record this tap for double-tap detection
+                    state.lastTapTime = now;
+                    state.lastTapX = state.touchStartX;
+                    state.lastTapY = state.touchStartY;
                 }
             }
 
@@ -2059,6 +2139,11 @@ export function createEngine({
 
     function onTouchCancel(e: TouchEvent) {
         e.preventDefault();
+        // Clear long-press timer
+        if (state.longPressTimer) {
+            clearTimeout(state.longPressTimer);
+            state.longPressTimer = null;
+        }
         state.isDragging = false;
         state.dragMode = 'none';
         state.touchCount = 0;

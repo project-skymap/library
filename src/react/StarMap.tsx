@@ -10,6 +10,7 @@ export type StarMapProps = {
     onHover?: (node?: SceneNode) => void;
     onArrangementChange?: (arrangement: StarArrangement) => void;
     onFovChange?: (fov: number) => void;
+    onLongPress?: (node: SceneNode | null, x: number, y: number) => void;
 };
 
 export type StarMapHandle = {
@@ -23,7 +24,7 @@ export type StarMapHandle = {
 };
 
 export const StarMap = forwardRef<StarMapHandle, StarMapProps>(
-    ({ config, className, onSelect, onHover, onArrangementChange, onFovChange }, ref) => {
+    ({ config, className, onSelect, onHover, onArrangementChange, onFovChange, onLongPress }, ref) => {
         const containerRef = useRef<HTMLDivElement | null>(null);
         const engineRef = useRef<any>(null);
 
@@ -50,7 +51,8 @@ export const StarMap = forwardRef<StarMapHandle, StarMapProps>(
                 onSelect,
                 onHover,
                 onArrangementChange,
-                onFovChange
+                onFovChange,
+                onLongPress
             });
 
             engineRef.current.setConfig(config);
@@ -71,8 +73,8 @@ export const StarMap = forwardRef<StarMapHandle, StarMapProps>(
     }, [config]);
 
     useEffect(() => {
-        engineRef.current?.setHandlers?.({ onSelect, onHover, onArrangementChange, onFovChange });
-    }, [onSelect, onHover, onArrangementChange, onFovChange]);
+        engineRef.current?.setHandlers?.({ onSelect, onHover, onArrangementChange, onFovChange, onLongPress });
+    }, [onSelect, onHover, onArrangementChange, onFovChange, onLongPress]);
 
     return <div ref={containerRef} className={className} style={{ width: "100%", height: "100%" }} />;
     }
