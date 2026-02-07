@@ -7,6 +7,14 @@ import { PROJECTIONS, BlendedProjection } from "./projections";
 import type { Projection, ProjectionId } from "./projections";
 import { Fader } from "./fader";
 
+// Haptic feedback helper
+function triggerHaptic(style: 'light' | 'medium' | 'heavy' = 'light') {
+    if (typeof navigator !== 'undefined' && 'vibrate' in navigator) {
+        const durations = { light: 10, medium: 25, heavy: 50 };
+        navigator.vibrate(durations[style]);
+    }
+}
+
 type Handlers = {
     onSelect?: (node: SceneNode) => void;
     onHover?: (node?: SceneNode) => void;
@@ -1969,6 +1977,7 @@ export function createEngine({
                         clientY: state.touchStartY
                     } as MouseEvent;
                     const hit = pick(syntheticEvent);
+                    triggerHaptic('heavy');
                     handlers.onLongPress?.(hit?.node ?? null, state.touchStartX, state.touchStartY);
                 }
             }, ENGINE_CONFIG.longPressDelay);
@@ -2097,6 +2106,7 @@ export function createEngine({
                 if (isDoubleTap) {
                     // Double-tap: fly to the picked node
                     if (hit) {
+                        triggerHaptic('medium');
                         flyTo(hit.node.id, ENGINE_CONFIG.minFov);
                         handlers.onSelect?.(hit.node);
                     }
@@ -2107,6 +2117,7 @@ export function createEngine({
                 } else {
                     // Single tap: select
                     if (hit) {
+                        triggerHaptic('light');
                         handlers.onSelect?.(hit.node);
                         constellationLayer.setFocused(hit.node.id);
                         if (hit.node.level === 2) setFocusedBook(hit.node.id);
