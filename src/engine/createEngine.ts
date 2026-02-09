@@ -2040,9 +2040,21 @@ export function createEngine({
             const t1 = touches[1]!;
             const newDistance = getTouchDistance(t0, t1);
             const scale = newDistance / state.pinchStartDistance;
+            const prevFov = state.fov;
             state.fov = state.pinchStartFov / scale;
             state.fov = Math.max(ENGINE_CONFIG.minFov, Math.min(ENGINE_CONFIG.maxFov, state.fov));
             handlers.onFovChange?.(state.fov);
+
+            // Zenith pull-up when zooming out (FOV increasing)
+            if (state.fov > prevFov && state.fov > ENGINE_CONFIG.zenithStartFov) {
+                const range = ENGINE_CONFIG.maxFov - ENGINE_CONFIG.zenithStartFov;
+                let t = (state.fov - ENGINE_CONFIG.zenithStartFov) / range;
+                t = Math.max(0, Math.min(1, t));
+                const bias = ENGINE_CONFIG.zenithStrength * t;
+                const zenithLat = Math.PI / 2 - 0.001;
+                state.lat = state.lat * (1 - bias) + zenithLat * bias;
+                state.targetLat = state.lat;
+            }
 
             // Also handle pan with pinch center
             const center = getTouchCenter(t0, t1);
