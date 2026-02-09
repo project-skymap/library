@@ -255,8 +255,12 @@ export function createEngine({
         const aspect = camera.aspect;
 
         if (currentConfig?.fitProjection) {
-            if (aspect > 1.0) { // landscape
+            if (aspect > 1.0) { // landscape - scale by width
                 scale /= aspect;
+            } else { // portrait - use the narrower dimension to maximize sky coverage
+                // In portrait, we want to see more sky, so we scale down
+                // to fit the projection into the narrow width
+                scale *= aspect;
             }
         }
 
