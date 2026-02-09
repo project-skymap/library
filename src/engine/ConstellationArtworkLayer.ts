@@ -33,6 +33,7 @@ export class ConstellationArtworkLayer {
 
     load(config: ConstellationConfig, getPosition: (id: string) => THREE.Vector3 | null) {
         this.clear();
+        console.log(`[Constellation] Loading ${config.constellations.length} constellations from ${config.atlasBasePath}`);
         // Remove trailing slash if present
         const basePath = config.atlasBasePath.replace(/\/$/, ""); 
 
@@ -255,10 +256,13 @@ export class ConstellationArtworkLayer {
                         const natAspect = tex.image.width / tex.image.height;
                         material.uniforms.uImgAspect.value = natAspect;
                     }
+                    console.log(`[Constellation] Loaded: ${c.id} (${tex.image.width}x${tex.image.height})`);
                 },
-                undefined,
+                (progress) => {
+                    // Progress callback
+                },
                 (err) => {
-                    console.warn(`Failed to load constellation texture: ${texPath}`, err);
+                    console.error(`[Constellation] Failed to load: ${texPath}`, err);
                 }
             );
             
@@ -290,7 +294,9 @@ export class ConstellationArtworkLayer {
 
     update(fov: number, showArt: boolean) {
         this.root.visible = showArt;
-        if (!showArt) return;
+        if (!showArt) {
+            return;
+        }
 
         for (const item of this.items) {
             const { fade } = item.config;
