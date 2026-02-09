@@ -255,12 +255,15 @@ export function createEngine({
         const aspect = camera.aspect;
 
         if (currentConfig?.fitProjection) {
-            if (aspect > 1.0) { // landscape - scale by width
+            // The shader does: projected.x /= uAspect
+            // - Landscape (aspect > 1): x is shrunk by shader, y is limiting → divide by aspect
+            // - Portrait (aspect < 1): x is EXPANDED by shader (divide by <1), x is limiting
+            //   Need extra shrink to compensate: multiply by aspect²
+            //   (aspect cancels the shader's 1/aspect, then aspect again to fit width)
+            if (aspect >= 1.0) {
                 scale /= aspect;
-            } else { // portrait - use the narrower dimension to maximize sky coverage
-                // In portrait, we want to see more sky, so we scale down
-                // to fit the projection into the narrow width
-                scale *= aspect;
+            } else {
+                scale *= aspect * aspect;
             }
         }
 
