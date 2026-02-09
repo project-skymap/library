@@ -10,11 +10,13 @@ export class ConstellationArtworkLayer {
         material: THREE.ShaderMaterial;
         baseOpacity: number;
     }[] = [];
-    private textureLoader = new THREE.TextureLoader();
+    private textureLoader: THREE.TextureLoader;
     private hoveredId: string | null = null;
     private focusedId: string | null = null;
 
     constructor(root: THREE.Group) {
+        this.textureLoader = new THREE.TextureLoader();
+        this.textureLoader.crossOrigin = 'anonymous';
         this.root = new THREE.Group();
         this.root.renderOrder = -1; // Render early, but zBias handles depth
         root.add(this.root);
@@ -156,12 +158,16 @@ export class ConstellationArtworkLayer {
                     // uScale, uAspect (screen) are injected by createSmartMaterial/globalUniforms
                 },
                 vertexShaderBody: `
+                    #ifdef GL_ES
+                    precision highp float;
+                    #endif
+
                     uniform float uSize;
                     uniform float uImgRotation;
                     uniform float uImgAspect;
-                    
+
                     varying vec2 vUv;
-                    
+
                     void main() {
                         vUv = uv;
                         
@@ -215,6 +221,9 @@ export class ConstellationArtworkLayer {
                     }
                 `,
                 fragmentShader: `
+                    #ifdef GL_ES
+                    precision highp float;
+                    #endif
                     uniform sampler2D uMap;
                     uniform float uOpacity;
                     varying vec2 vUv;
@@ -233,12 +242,25 @@ export class ConstellationArtworkLayer {
             });
 
             // Load Texture & Update Aspect Ratio
-            material.uniforms.uMap.value = this.textureLoader.load(texPath, (tex) => {
-                 if (c.aspectRatio === undefined && tex.image.width && tex.image.height) {
-                     const natAspect = tex.image.width / tex.image.height;
-                     material.uniforms.uImgAspect.value = natAspect;
-                 }
-            });
+            material.uniforms.uMap.value = this.textureLoader.load(
+                texPath,
+                (tex) => {
+                    // Ensure texture settings are mobile-friendly
+                    tex.minFilter = THREE.LinearFilter;
+                    tex.magFilter = THREE.LinearFilter;
+                    tex.generateMipmaps = false;
+                    tex.needsUpdate = true;
+
+                    if (c.aspectRatio === undefined && tex.image.width && tex.image.height) {
+                        const natAspect = tex.image.width / tex.image.height;
+                        material.uniforms.uImgAspect.value = natAspect;
+                    }
+                },
+                undefined,
+                (err) => {
+                    console.warn(`Failed to load constellation texture: ${texPath}`, err);
+                }
+            );
             
             if (c.zBias) {
                 material.polygonOffset = true;

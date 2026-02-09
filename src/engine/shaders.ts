@@ -11,6 +11,10 @@
  */
 
 export const BLEND_CHUNK = `
+#ifdef GL_ES
+precision highp float;
+#endif
+
 uniform float uScale;
 uniform float uAspect;
 uniform float uBlend;
@@ -56,6 +60,10 @@ vec4 smartProject(vec4 viewPos) {
 `;
 
 export const MASK_CHUNK = `
+#ifdef GL_ES
+precision highp float;
+#endif
+
 uniform float uAspect;
 uniform float uBlend;
 uniform int uProjectionType;
