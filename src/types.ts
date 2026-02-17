@@ -106,6 +106,7 @@ export type ConstellationConfig = {
         center: null | [number, number];
         radius: number;
         rotationDeg: number;
+        aspectRatio?: number;
         opacity: number;
         blend: string;
         zBias: number;
@@ -118,6 +119,8 @@ export type ConstellationConfig = {
         }
     }[];
 };
+
+export type ConstellationItem = ConstellationConfig['constellations'][number];
 
 export type HierarchyFilter = {
     testament?: string;

@@ -2,6 +2,89 @@ import * as THREE from "three";
 import { ConstellationConfig, ConstellationItem } from "../types";
 import { createSmartMaterial } from "./materials";
 
+function buildSphereQuad(
+    center: THREE.Vector3,
+    rightDir: THREE.Vector3,
+    upDir: THREE.Vector3,
+    halfWidth: number,
+    halfHeight: number,
+    domeRadius: number,
+    subdivisions: number = 8
+): THREE.BufferGeometry {
+    const vertsPerSide = subdivisions + 1;
+    const vertCount = vertsPerSide * vertsPerSide;
+    const positions = new Float32Array(vertCount * 3);
+    const uvs = new Float32Array(vertCount * 2);
+
+    const centerNorm = center.clone().normalize();
+    const temp = new THREE.Vector3();
+    const tangent = new THREE.Vector3();
+    const q = new THREE.Quaternion();
+
+    // Compute angular half-extents (Stellarium-style: uniform angular spacing)
+    const halfAngleX = Math.atan2(halfWidth, domeRadius);
+    const halfAngleY = Math.atan2(halfHeight, domeRadius);
+
+    for (let iy = 0; iy < vertsPerSide; iy++) {
+        for (let ix = 0; ix < vertsPerSide; ix++) {
+            const idx = iy * vertsPerSide + ix;
+            const u = ix / subdivisions;
+            const v = iy / subdivisions;
+
+            // Angular offsets from center (uniform in angle, not tangent-plane)
+            const angX = (u - 0.5) * 2 * halfAngleX;
+            const angY = (v - 0.5) * 2 * halfAngleY;
+
+            // Exponential map: rotate centerNorm by the combined angular offset
+            // tangent vector in the tangent plane at center
+            tangent.copy(rightDir).multiplyScalar(angX)
+                .addScaledVector(upDir, angY);
+            const angle = tangent.length();
+
+            if (angle > 0.00001) {
+                tangent.normalize();
+                q.setFromAxisAngle(tangent, angle);
+                temp.copy(centerNorm).applyQuaternion(q).multiplyScalar(domeRadius);
+            } else {
+                temp.copy(center);
+            }
+
+            positions[idx * 3 + 0] = temp.x;
+            positions[idx * 3 + 1] = temp.y;
+            positions[idx * 3 + 2] = temp.z;
+
+            // UV: Y flipped to match THREE.js PlaneGeometry convention (bottom-left origin)
+            uvs[idx * 2 + 0] = u;
+            uvs[idx * 2 + 1] = 1 - v;
+        }
+    }
+
+    // Triangle indices: 2 triangles per grid cell
+    const indexCount = subdivisions * subdivisions * 6;
+    const indices = new Uint16Array(indexCount);
+    let ii = 0;
+    for (let iy = 0; iy < subdivisions; iy++) {
+        for (let ix = 0; ix < subdivisions; ix++) {
+            const a = iy * vertsPerSide + ix;
+            const b = a + 1;
+            const c = a + vertsPerSide;
+            const d = c + 1;
+            indices[ii++] = a;
+            indices[ii++] = c;
+            indices[ii++] = b;
+            indices[ii++] = b;
+            indices[ii++] = c;
+            indices[ii++] = d;
+        }
+    }
+
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    geometry.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
+    geometry.setIndex(new THREE.BufferAttribute(indices, 1));
+    return geometry;
+}
+
 export class ConstellationArtworkLayer {
     private root: THREE.Group;
     private items: {
@@ -9,6 +92,11 @@ export class ConstellationArtworkLayer {
         mesh: THREE.Mesh;
         material: THREE.ShaderMaterial;
         baseOpacity: number;
+        center: THREE.Vector3;
+        rightDir: THREE.Vector3;
+        upDir: THREE.Vector3;
+        halfHeight: number;
+        domeRadius: number;
     }[] = [];
     private textureLoader: THREE.TextureLoader;
     private hoveredId: string | null = null;
@@ -24,18 +112,11 @@ export class ConstellationArtworkLayer {
 
     getItems() { return this.items; }
 
-    setPosition(id: string, pos: THREE.Vector3) {
-        const item = this.items.find(i => i.config.id === id);
-        if (item) {
-            item.mesh.position.copy(pos);
-        }
-    }
-
     load(config: ConstellationConfig, getPosition: (id: string) => THREE.Vector3 | null) {
         this.clear();
         console.log(`[Constellation] Loading ${config.constellations.length} constellations from ${config.atlasBasePath}`);
         // Remove trailing slash if present
-        const basePath = config.atlasBasePath.replace(/\/$/, ""); 
+        const basePath = config.atlasBasePath.replace(/\/$/, "");
 
         config.constellations.forEach(c => {
             // 1. Calculate Center
@@ -48,10 +129,7 @@ export class ConstellationArtworkLayer {
             if (arrPos) {
                 center.copy(arrPos);
                 valid = true;
-                // If we have an explicit position, we still need a radius for sizing.
-                // If anchors exist, use them for radius? Or default?
                 if (c.anchors.length > 0) {
-                     // Try to guess radius from anchors even if position is overridden
                      const points: THREE.Vector3[] = [];
                      for (const anchorId of c.anchors) {
                         const p = getPosition(anchorId);
@@ -63,7 +141,7 @@ export class ConstellationArtworkLayer {
                 }
             }
             else if (c.center) {
-                center.set(c.center[0], c.center[1], c.center[2]);
+                center.set(c.center[0], c.center[1], 0);
                 valid = true;
             } else if (c.anchors.length > 0) {
                 const points: THREE.Vector3[] = [];
@@ -71,17 +149,13 @@ export class ConstellationArtworkLayer {
                     const p = getPosition(anchorId);
                     if (p) points.push(p);
                 }
-                
+
                 if (points.length > 0) {
-                    // Centroid
                     for (const p of points) center.add(p);
                     center.divideScalar(points.length);
-                    
-                    // Normalize to dome radius
+
                     const len = center.length();
                     if (len > 0.001) {
-                        // Infer radius from anchor points if possible, or use constant
-                        // We use the length of the first anchor as "dome radius"
                         radius = points[0].length();
                         center.normalize().multiplyScalar(radius);
                     }
@@ -91,133 +165,80 @@ export class ConstellationArtworkLayer {
 
             if (!valid) return;
 
-            // 2. Orientation
-            // Normal (Z for the plane) should face 0,0,0 (Camera)
-            // So Normal = -center.normalized()
-            const normal = center.clone().normalize().negate();
-            const upVec = center.clone().normalize(); // This is "Up" in world space (away from center)
+            // 2. Orientation — derive tangent-plane frame at center
+            const centerNorm = center.clone().normalize();
 
-            // Calculate "Right" and "Top" for the image plane
-            let right = new THREE.Vector3(1, 0, 0); 
-            
+            let rightDir = new THREE.Vector3();
+            let upDir = new THREE.Vector3();
+
             if (c.anchors.length >= 2) {
-                 const p0 = getPosition(c.anchors[0]);
-                 const p1 = getPosition(c.anchors[1]);
-                 if (p0 && p1) {
-                     const diff = new THREE.Vector3().subVectors(p1, p0);
-                     // Project diff onto the plane tangent to 'upVec'
-                     // right = diff - (diff . upVec) * upVec
-                     right.copy(diff).sub(upVec.clone().multiplyScalar(diff.dot(upVec))).normalize();
-                 }
+                const p0 = getPosition(c.anchors[0]);
+                const p1 = getPosition(c.anchors[1]);
+                if (p0 && p1 && p0.distanceTo(p1) > 0.001) {
+                    const diff = new THREE.Vector3().subVectors(p1, p0);
+                    rightDir.copy(diff).sub(centerNorm.clone().multiplyScalar(diff.dot(centerNorm))).normalize();
+                    upDir.crossVectors(centerNorm, rightDir).normalize();
+                    rightDir.crossVectors(upDir, centerNorm).normalize();
+                } else {
+                    this._defaultTangentFrame(centerNorm, rightDir, upDir);
+                }
             } else {
-                // Default right
-                if (Math.abs(upVec.y) > 0.9) right.set(1, 0, 0).cross(upVec).normalize();
-                else right.set(0, 1, 0).cross(upVec).normalize();
+                this._defaultTangentFrame(centerNorm, rightDir, upDir);
             }
 
-            // "Top" (Y axis of plane)
-            const top = new THREE.Vector3().crossVectors(upVec, right).normalize();
-            
-            // Re-orthogonalize Right
-            right.crossVectors(top, upVec).normalize();
+            // Apply rotationDeg by rotating rightDir/upDir around centerNorm
+            if (c.rotationDeg !== 0) {
+                const q = new THREE.Quaternion().setFromAxisAngle(centerNorm, THREE.MathUtils.degToRad(c.rotationDeg));
+                rightDir.applyQuaternion(q);
+                upDir.applyQuaternion(q);
+            }
 
-            // Construct Rotation Matrix for the Mesh
-            // Plane Geometry: X=Right, Y=Top, Z=Normal
-            // Our target basis:
-            // X axis -> right
-            // Y axis -> top
-            // Z axis -> normal (which is -upVec, pointing IN to center)
-            const basis = new THREE.Matrix4().makeBasis(right, top, normal); 
-            
-            // 3. Geometry & Mesh
-            // We use a Screen-Space Billboard technique to ensure the image remains
-            // a flat, undistorted 2D "card" regardless of camera projection or position.
-            
-            // Base Geometry: Unit Quad (1x1)
-            const geometry = new THREE.PlaneGeometry(1, 1); 
-            
-            // Size: JSON radius -> Diameter (approx)
+            // 3. Geometry
             let size = c.radius;
-            if (size <= 1.0) size *= radius; 
+            if (size <= 1.0) size *= radius;
             size *= 2; // Radius to Diameter
+
+            const aspectRatio = c.aspectRatio ?? 1.0;
+            const halfWidth = (size / 2) * aspectRatio;
+            const halfHeight = size / 2;
+
+            const geometry = buildSphereQuad(center, rightDir, upDir, halfWidth, halfHeight, radius, 8);
 
             // Texture
             const texPath = `${basePath}/${c.image}`;
-            
+
             // Blending
-            let blending = THREE.NormalBlending;
-            if (c.blend === "additive") blending = THREE.AdditiveBlending;
-            
-            // Create Material with Billboard Shader
+            const blending = c.blend === "additive" ? THREE.AdditiveBlending : THREE.NormalBlending;
+
+            // Create Material — Stellarium-aligned projection with smooth clip fade
             const material = createSmartMaterial({
                 uniforms: {
-                    uMap: { value: this.textureLoader.load(texPath) }, // Placeholder, updated below
+                    uMap: { value: this.textureLoader.load(texPath) },
                     uOpacity: { value: c.opacity },
-                    uSize: { value: size },
-                    uImgRotation: { value: THREE.MathUtils.degToRad(c.rotationDeg) },
-                    uImgAspect: { value: c.aspectRatio ?? 1.0 },
-                    // uScale, uAspect (screen) are injected by createSmartMaterial/globalUniforms
                 },
                 vertexShaderBody: `
-                    #ifdef GL_ES
-                    precision highp float;
-                    #endif
-
-                    uniform float uSize;
-                    uniform float uImgRotation;
-                    uniform float uImgAspect;
-
                     varying vec2 vUv;
-
+                    varying float vClipFade;
                     void main() {
                         vUv = uv;
-                        
-                        // 1. Project Center Point (Proven Method)
-                        vec4 mvCenter = modelViewMatrix * vec4(0.0, 0.0, 0.0, 1.0);
-                        vec4 clipCenter = smartProject(mvCenter);
-                        
-                        // 2. Project "Up" Point (World Zenith)
-                        // Transform World Up (0,1,0) to View Space
-                        vec3 viewUpDir = mat3(viewMatrix) * vec3(0.0, 1.0, 0.0);
-                        // Offset center by a significant amount (1000.0) to ensure screen delta
-                        vec4 mvUp = mvCenter + vec4(viewUpDir * 1000.0, 0.0);
-                        vec4 clipUp = smartProject(mvUp);
-                        
-                        // 3. Calculate Horizon Angle
-                        vec2 screenCenter = clipCenter.xy / clipCenter.w;
-                        vec2 screenUp = clipUp.xy / clipUp.w;
-                        vec2 screenDelta = screenUp - screenCenter;
-                        
-                        float horizonAngle = 0.0;
-                        if (length(screenDelta) > 0.001) {
-                             vec2 screenDir = normalize(screenDelta);
-                             horizonAngle = atan(screenDir.y, screenDir.x) - 1.5708; // -90 deg
+                        vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+
+                        // Compute clip-boundary fade BEFORE smartProject
+                        // (Stellarium culls entire constellations near the boundary;
+                        //  we fade per-vertex for smoother transitions)
+                        vec3 viewDir = normalize(mvPosition.xyz);
+                        float clipZ;
+                        if (uProjectionType == 0) {
+                            clipZ = -0.1;
+                        } else if (uProjectionType == 1) {
+                            clipZ = 0.1;
+                        } else {
+                            clipZ = mix(-0.1, 0.1, uBlend);
                         }
-                        
-                        // 4. Combine with User Rotation
-                        float finalAngle = uImgRotation + horizonAngle;
-                        
-                        // 5. Billboard Offset
-                        vec2 offset = position.xy;
-                        
-                        float cr = cos(finalAngle);
-                        float sr = sin(finalAngle);
-                        vec2 rotated = vec2(
-                            offset.x * cr - offset.y * sr,
-                            offset.x * sr + offset.y * cr
-                        );
-                        
-                        rotated.x *= uImgAspect;
-                        
-                        float dist = length(mvCenter.xyz);
-                        float scale = (uSize / dist) * uScale;
-                        
-                        rotated *= scale;
-                        rotated.x /= uAspect;
-                        
-                        gl_Position = clipCenter;
-                        gl_Position.xy += rotated * clipCenter.w;
-                        
+                        // Smooth fade over 0.3 radians before the clip threshold
+                        vClipFade = smoothstep(clipZ, clipZ - 0.3, viewDir.z);
+
+                        gl_Position = smartProject(mvPosition);
                         vScreenPos = gl_Position.xy / gl_Position.w;
                     }
                 `,
@@ -228,11 +249,18 @@ export class ConstellationArtworkLayer {
                     uniform sampler2D uMap;
                     uniform float uOpacity;
                     varying vec2 vUv;
+                    varying float vClipFade;
                     void main() {
                         float mask = getMaskAlpha();
                         if (mask < 0.01) discard;
                         vec4 tex = texture2D(uMap, vUv);
-                        gl_FragColor = vec4(tex.rgb, tex.a * uOpacity * mask);
+
+                        // Apply a slight blue tinge to the artwork
+                        vec3 color = tex.rgb * vec3(0.8, 0.9, 1.0);
+
+                        // vClipFade smoothly hides vertices near the projection
+                        // clip boundary, preventing mesh distortion from escape positions
+                        gl_FragColor = vec4(color, tex.a * uOpacity * mask * vClipFade);
                     }
                 `,
                 transparent: true,
@@ -246,7 +274,6 @@ export class ConstellationArtworkLayer {
             material.uniforms.uMap.value = this.textureLoader.load(
                 texPath,
                 (tex) => {
-                    // Ensure texture settings are mobile-friendly
                     tex.minFilter = THREE.LinearFilter;
                     tex.magFilter = THREE.LinearFilter;
                     tex.generateMipmaps = false;
@@ -254,7 +281,13 @@ export class ConstellationArtworkLayer {
 
                     if (c.aspectRatio === undefined && tex.image.width && tex.image.height) {
                         const natAspect = tex.image.width / tex.image.height;
-                        material.uniforms.uImgAspect.value = natAspect;
+                        const newHalfWidth = (size / 2) * natAspect;
+                        const newGeometry = buildSphereQuad(center, rightDir, upDir, newHalfWidth, halfHeight, radius, 8);
+                        const item = this.items.find(i => i.config.id === c.id);
+                        if (item) {
+                            item.mesh.geometry.dispose();
+                            item.mesh.geometry = newGeometry;
+                        }
                     }
                     console.log(`[Constellation] Loaded: ${c.id} (${tex.image.width}x${tex.image.height})`);
                 },
@@ -265,37 +298,62 @@ export class ConstellationArtworkLayer {
                     console.error(`[Constellation] Failed to load: ${texPath}`, err);
                 }
             );
-            
+
             if (c.zBias) {
                 material.polygonOffset = true;
-                material.polygonOffsetFactor = -c.zBias; 
+                material.polygonOffsetFactor = -c.zBias;
             }
 
             const mesh = new THREE.Mesh(geometry, material);
-            mesh.frustumCulled = false; // Important: Custom vertex shader displaces geometry, so we must disable frustum culling.
+            mesh.frustumCulled = false;
             mesh.userData = { id: c.id, type: 'constellation' };
-            
-            mesh.position.copy(center);
-            // We DO NOT rotate the mesh geometry base. 
-            // The orientation is handled in the shader via uImgRotation (Z-roll).
-            // But we might want the mesh's coordinate system to face the center?
-            // No, the billboard shader ignores mesh orientation (it uses mvCenter).
-            // So mesh rotation is irrelevant, except maybe for 'up' if we used it.
-            // But we just project (0,0,0). So Mesh Rotation is ignored.
-            
+
             this.root.add(mesh);
-            this.items.push({ config: c, mesh, material, baseOpacity: c.opacity });
+            this.items.push({
+                config: c,
+                mesh,
+                material,
+                baseOpacity: c.opacity,
+                center: center.clone(),
+                rightDir: rightDir.clone(),
+                upDir: upDir.clone(),
+                halfHeight,
+                domeRadius: radius,
+            });
         });
+    }
+
+    private _defaultTangentFrame(centerNorm: THREE.Vector3, rightDir: THREE.Vector3, upDir: THREE.Vector3) {
+        const worldUp = new THREE.Vector3(0, 1, 0);
+        if (Math.abs(centerNorm.dot(worldUp)) > 0.99) {
+            rightDir.crossVectors(new THREE.Vector3(1, 0, 0), centerNorm).normalize();
+        } else {
+            rightDir.crossVectors(worldUp, centerNorm).normalize();
+        }
+        upDir.crossVectors(centerNorm, rightDir).normalize();
+        rightDir.crossVectors(upDir, centerNorm).normalize();
     }
 
     private _globalOpacity = 1.0;
 
     setGlobalOpacity(v: number) { this._globalOpacity = v; }
 
-    update(fov: number, showArt: boolean) {
+    /**
+     * Update visibility and opacity.
+     * Accepts an optional camera for Stellarium-style visibility culling:
+     * constellations whose center is near or past the projection clip
+     * boundary are hidden to prevent mesh distortion from escape positions.
+     */
+    update(fov: number, showArt: boolean, camera?: THREE.Camera) {
         this.root.visible = showArt;
         if (!showArt) {
             return;
+        }
+
+        // Camera forward direction in world space (for visibility culling)
+        let cameraForward: THREE.Vector3 | null = null;
+        if (camera) {
+            cameraForward = new THREE.Vector3(0, 0, -1).applyQuaternion(camera.quaternion);
         }
 
         for (const item of this.items) {
@@ -313,13 +371,27 @@ export class ConstellationArtworkLayer {
             }
 
             opacity = Math.min(Math.max(opacity, 0), 1) * this._globalOpacity;
+
+            // Stellarium-style visibility culling: hide constellations whose
+            // center direction is > ~80° from camera forward (approaching the
+            // clip boundary). Smooth fade from 70° to 85°.
+            if (cameraForward) {
+                const centerDir = item.center.clone().normalize();
+                const dot = cameraForward.dot(centerDir);
+                // dot=1 → directly ahead, dot=0 → 90° away, dot<0 → behind
+                // cos(70°)≈0.342, cos(85°)≈0.087
+                const visFade = THREE.MathUtils.smoothstep(dot, 0.087, 0.342);
+                opacity *= visFade;
+            }
+
             item.material.uniforms.uOpacity.value = opacity;
+            item.mesh.visible = opacity > 0.001;
         }
     }
 
     setHovered(id: string | null) { this.hoveredId = id; }
     setFocused(id: string | null) { this.focusedId = id; }
-    
+
     dispose() {
         this.clear();
         this.root.removeFromParent();

@@ -1570,53 +1570,20 @@ export function createEngine({
             return { type: 'label', node: closestLabel.node, object: closestLabel.obj, point: closestLabel.obj.position.clone(), index: undefined };
         }
 
-        // 2. Pick Constellation Art (Billboards)
+        // 2. Pick Constellation Art (Sphere Quads — raycast against mesh geometry)
         let closestConst = null;
-        let minConstDist = Infinity; 
-        
+        let minConstDist = Infinity;
+
+        const artWorldDir = getMouseWorldVector(mX, mY, rect.width, rect.height);
+        raycaster.ray.origin.set(0, 0, 0);
+        raycaster.ray.direction.copy(artWorldDir);
+
         for (const item of constellationLayer.getItems()) {
             if (!item.mesh.visible) continue;
-            
-            const pWorld = item.mesh.position;
-            const pProj = smartProjectJS(pWorld);
-            
-            if (currentProjection.isClipped(pProj.z)) continue;
 
-            // Material Uniforms should exist if created by ConstellationArtworkLayer
-            const uniforms = item.material.uniforms;
-            if (!uniforms || !uniforms.uSize) continue;
-
-            const uSize = uniforms.uSize.value;
-            const uImgAspect = uniforms.uImgAspect.value;
-            const uImgRotation = uniforms.uImgRotation.value;
-            
-            const dist = pWorld.length(); 
-            // Avoid divide by zero
-            if (dist < 0.001) continue;
-
-            const scale = (uSize / dist) * uScale; 
-            
-            const halfH_px = (scale / 2) * (h / 2);
-            const halfW_px = halfH_px * uImgAspect;
-            
-            const xNDC = pProj.x * uScale / uAspect;
-            const yNDC = pProj.y * uScale;
-            const sX = (xNDC * 0.5 + 0.5) * w;
-            const sY = (-yNDC * 0.5 + 0.5) * h;
-            
-            const dx = mX - sX;
-            const dy = mY - sY; 
-            const dy_cart = -dy; 
-            
-            const cr = Math.cos(-uImgRotation);
-            const sr = Math.sin(-uImgRotation);
-            
-            const localX = dx * cr - dy_cart * sr;
-            const localY = dx * sr + dy_cart * cr;
-            
-            // Relaxed Hit Box (1.2x) to make grabbing easier
-            if (Math.abs(localX) < halfW_px * 1.2 && Math.abs(localY) < halfH_px * 1.2) {
-                const d = Math.sqrt(dx*dx + dy*dy);
+            const hits = raycaster.intersectObject(item.mesh, false);
+            if (hits.length > 0) {
+                const d = hits[0].distance;
                 if (!closestConst || d < minConstDist) {
                     minConstDist = d;
                     closestConst = item;
@@ -1629,7 +1596,7 @@ export function createEngine({
                 label: closestConst.config.title, 
                 level: -1 
             };
-            return { type: 'constellation', node: fakeNode, object: closestConst.mesh, point: closestConst.mesh.position.clone(), index: undefined };
+            return { type: 'constellation', node: fakeNode, object: closestConst.mesh, point: closestConst.center.clone(), index: undefined };
         }
 
         // 3. Pick Stars (Background)
@@ -2355,7 +2322,7 @@ export function createEngine({
         artFader.target = currentConfig?.showConstellationArt ?? false;
         artFader.update(dt);
 
-        constellationLayer.update(state.fov, artFader.eased > 0.01);
+        constellationLayer.update(state.fov, artFader.eased > 0.01, camera);
         if (artFader.eased < 1.0) {
             constellationLayer.setGlobalOpacity?.(artFader.eased);
         }
