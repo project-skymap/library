@@ -641,6 +641,7 @@ export function createEngine({
     const linesFader = new Fader(0.4);
     const artFader = new Fader(0.5);
     let lastTickTime = 0;
+    let smoothFrameMs = 16.7;
 
     function clearRoot() {
         for (const child of [...root.children]) {
@@ -2316,6 +2317,7 @@ export function createEngine({
         const nowSec = now / 1000;
         const dt = lastTickTime > 0 ? Math.min(nowSec - lastTickTime, 0.1) : 0.016;
         lastTickTime = nowSec;
+        smoothFrameMs = smoothFrameMs * 0.9 + dt * 1000 * 0.1;
 
         linesFader.target = currentConfig?.showConstellationLines ?? false;
         linesFader.update(dt);
@@ -2590,5 +2592,42 @@ export function createEngine({
         }
     }
 
-    return { setConfig, start, stop, dispose, setHandlers, getFullArrangement, setHoveredBook, setFocusedBook, setOrderRevealEnabled, setHierarchyFilter, flyTo, setProjection };
+    function getDebugState(): Record<string, unknown> {
+        const starCount = starPoints
+            ? ((starPoints.geometry.getAttribute("position")?.count as number | undefined) ?? 0)
+            : 0;
+        return {
+            engine: "legacy",
+            running,
+            fovDeg: state.fov,
+            yawRad: state.lon,
+            pitchRad: state.lat,
+            velocityX: state.velocityX,
+            velocityY: state.velocityY,
+            starCount,
+            dynamicLabelCount: dynamicLabels.length,
+            lineVisible: !!constellationLines?.visible,
+            artVisible: !!(currentConfig?.showConstellationArt && artFader.eased > 0.01),
+            smoothFrameMs,
+            linesFade: linesFader.eased,
+            artFade: artFader.eased,
+            selectedNodeId: state.draggedNodeId ?? null,
+        };
+    }
+
+    return {
+        setConfig,
+        start,
+        stop,
+        dispose,
+        setHandlers,
+        getFullArrangement,
+        setHoveredBook,
+        setFocusedBook,
+        setOrderRevealEnabled,
+        setHierarchyFilter,
+        flyTo,
+        setProjection,
+        getDebugState,
+    };
 }

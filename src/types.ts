@@ -80,13 +80,60 @@ export type StarMapConfig = {
     showChapterLabels?: boolean;
     showDivisionLabels?: boolean;
     showGroupLabels?: boolean;
+    constellationArt?: {
+        hoverEnterDelayMs?: number;
+        hoverLeaveDelayMs?: number;
+    };
+    adaptation?: {
+        enabled?: boolean;
+        minExposure?: number;
+        maxExposure?: number;
+        brighteningSpeed?: number;
+        darkeningSpeed?: number;
+    };
     groups?: Record<string, { name: string, start: number, end: number }[]>;
+
+    // Optional tile streaming source for engine-next.
+    tileStreaming?: {
+        enabled?: boolean;
+        rootTileIds: string[];
+        getTile: (tileId: string) => Promise<{
+            model: SceneModel;
+            arrangement?: StarArrangement;
+        }>;
+        getChildren?: (tileId: string) => string[];
+        getParent?: (tileId: string) => string | undefined;
+        getTileMeta?: (tileId: string) => {
+            centerYawRad: number;
+            centerPitchRad: number;
+            radiusRad: number;
+            parent?: string;
+        } | undefined;
+        selectTiles?: (state: {
+            yawRad: number;
+            pitchRad: number;
+            fovDeg: number;
+            rootTileIds: string[];
+        }) => string[];
+        selector?: {
+            enabled?: boolean;
+            maxDepth?: number;
+            maxSelectedTiles?: number;
+            refinementFovDeg?: number;
+        };
+        transitionFrames?: number;
+        maxLoadedTiles?: number;
+        maxConcurrentLoads?: number;
+    };
 
     // Interaction & Camera
     editable?: boolean;
     projection?: "perspective" | "stereographic" | "blended";
     camera?: { lon?: number, lat?: number };
     fitProjection?: boolean;
+
+    // Engine selection. Defaults to "legacy".
+    engineVariant?: "legacy" | "next";
 };
 
 export type SceneLink = {

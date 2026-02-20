@@ -1,13 +1,22 @@
 {
   "name": "@project-skymap/library",
-  "version": "0.7.6-SNAPSHOT",
+  "version": "0.8.0-SNAPSHOT",
   "description": "ThreeJS-based React StarMap component",
   "scripts": {
     "build": "tsup",
     "dev": "tsup --watch",
     "generate:layout": "tsx scripts/generate-layout.ts",
     "generate:project": "tsx scripts/project-layout.ts",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "smoke:engine-next-nav": "mkdir -p .tmp-smoke && tsc --outDir .tmp-smoke --module commonjs --moduleResolution node --target ES2022 --lib ES2022,DOM --strict scripts/engine-next-navigation-smoke.ts && node -e \"require('fs').writeFileSync('.tmp-smoke/package.json', '{\\\"type\\\":\\\"commonjs\\\"}')\" && node .tmp-smoke/scripts/engine-next-navigation-smoke.js && rm -rf .tmp-smoke",
+    "smoke:engine-next-interaction": "mkdir -p .tmp-smoke && tsc --outDir .tmp-smoke --module commonjs --moduleResolution node --target ES2022 --lib ES2022,DOM --strict scripts/engine-next-interaction-smoke.ts && node -e \"require('fs').writeFileSync('.tmp-smoke/package.json', '{\\\"type\\\":\\\"commonjs\\\"}')\" && node .tmp-smoke/scripts/engine-next-interaction-smoke.js && rm -rf .tmp-smoke",
+    "smoke:engine-next-replay": "mkdir -p .tmp-smoke && tsc --outDir .tmp-smoke --module commonjs --moduleResolution node --target ES2022 --lib ES2022,DOM --strict scripts/engine-next-replay-smoke.ts && node -e \"require('fs').writeFileSync('.tmp-smoke/package.json', '{\\\"type\\\":\\\"commonjs\\\"}')\" && node .tmp-smoke/scripts/engine-next-replay-smoke.js && rm -rf .tmp-smoke",
+    "smoke:engine-next-tiles": "mkdir -p .tmp-smoke && tsc --outDir .tmp-smoke --module commonjs --moduleResolution node --target ES2022 --lib ES2022,DOM --strict scripts/engine-next-tiles-smoke.ts && node -e \"require('fs').writeFileSync('.tmp-smoke/package.json', '{\\\"type\\\":\\\"commonjs\\\"}')\" && node .tmp-smoke/scripts/engine-next-tiles-smoke.js && rm -rf .tmp-smoke",
+    "smoke:engine-next-selector": "mkdir -p .tmp-smoke && tsc --outDir .tmp-smoke --module commonjs --moduleResolution node --target ES2022 --lib ES2022,DOM --strict scripts/engine-next-selector-smoke.ts && node -e \"require('fs').writeFileSync('.tmp-smoke/package.json', '{\\\"type\\\":\\\"commonjs\\\"}')\" && node .tmp-smoke/scripts/engine-next-selector-smoke.js && rm -rf .tmp-smoke",
+    "smoke:engine-next-tile-blend": "mkdir -p .tmp-smoke && tsc --outDir .tmp-smoke --module commonjs --moduleResolution node --target ES2022 --lib ES2022,DOM --strict scripts/engine-next-tile-blend-smoke.ts && node -e \"require('fs').writeFileSync('.tmp-smoke/package.json', '{\\\"type\\\":\\\"commonjs\\\"}')\" && node .tmp-smoke/scripts/engine-next-tile-blend-smoke.js && rm -rf .tmp-smoke",
+    "smoke:engine-next-line-blend": "mkdir -p .tmp-smoke && tsc --outDir .tmp-smoke --module commonjs --moduleResolution node --target ES2022 --lib ES2022,DOM --strict scripts/engine-next-line-blend-smoke.ts && node -e \"require('fs').writeFileSync('.tmp-smoke/package.json', '{\\\"type\\\":\\\"commonjs\\\"}')\" && node .tmp-smoke/scripts/engine-next-line-blend-smoke.js && rm -rf .tmp-smoke",
+    "smoke:engine-next-art": "mkdir -p .tmp-smoke && tsc --outDir .tmp-smoke --module commonjs --moduleResolution node --target ES2022 --lib ES2022,DOM --strict scripts/engine-next-art-smoke.ts && node -e \"require('fs').writeFileSync('.tmp-smoke/package.json', '{\\\"type\\\":\\\"commonjs\\\"}')\" && node .tmp-smoke/scripts/engine-next-art-smoke.js && rm -rf .tmp-smoke",
+    "smoke:engine-next-bible-tiles": "mkdir -p .tmp-smoke && tsc --outDir .tmp-smoke --module commonjs --moduleResolution node --target ES2022 --lib ES2022,DOM --strict scripts/engine-next-bible-tiles-smoke.ts && node -e \"require('fs').writeFileSync('.tmp-smoke/package.json', '{\\\"type\\\":\\\"commonjs\\\"}')\" && node .tmp-smoke/scripts/engine-next-bible-tiles-smoke.js && rm -rf .tmp-smoke"
   },
   "type": "module",
   "main": "./dist/index.cjs",
