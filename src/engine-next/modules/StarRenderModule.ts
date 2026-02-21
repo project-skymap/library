@@ -8,6 +8,37 @@ function clamp(v: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, v));
 }
 
+function hash01(input: string): number {
+  let h = 2166136261 >>> 0;
+  for (let i = 0; i < input.length; i++) {
+    h ^= input.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return (h >>> 0) / 0xffffffff;
+}
+
+function kelvinToRgb(kelvin: number): [number, number, number] {
+  const t = kelvin / 100;
+  let r: number;
+  let g: number;
+  let b: number;
+
+  if (t <= 66) {
+    r = 255;
+    g = 99.4708025861 * Math.log(Math.max(1, t)) - 161.1195681661;
+    b = t <= 19 ? 0 : 138.5177312231 * Math.log(t - 10) - 305.0447927307;
+  } else {
+    r = 329.698727446 * Math.pow(t - 60, -0.1332047592);
+    g = 288.1221695283 * Math.pow(t - 60, -0.0755148492);
+    b = 255;
+  }
+  return [clamp(r / 255, 0, 1), clamp(g / 255, 0, 1), clamp(b / 255, 0, 1)];
+}
+
+function magnitudeToFlux(mag: number): number {
+  return clamp(Math.pow(10, -0.4 * (mag - 2.1)), 0.08, 2.4);
+}
+
 export class StarRenderModule implements EngineModule {
   readonly id = "stars-render";
   readonly updateOrder = 100;
@@ -28,7 +59,11 @@ export class StarRenderModule implements EngineModule {
   private readonly raycaster = new THREE.Raycaster();
   private pulseT = 0;
   private magnitudes: number[] = [];
+  private baseRgb: [number, number, number][] = [];
   private tileBlendWeights: number[] = [];
+  private revealWeights: number[] = [];
+  private revealById = new Map<string, number>();
+  private revealAnimating = false;
   private adaptationSuppression = 0;
   private lastPixelRatio = -1;
   private lastViewportWidth = -1;
@@ -40,6 +75,7 @@ export class StarRenderModule implements EngineModule {
   private hierarchyFilter: HierarchyFilter | null = null;
   private orderRevealEnabled = true;
   private projectionMode: "perspective" | "stereographic" | "blended" = "perspective";
+  private static spriteTexture: THREE.Texture | null = null;
 
   constructor(opts: {
     renderer: THREE.WebGLRenderer;
@@ -158,8 +194,11 @@ export class StarRenderModule implements EngineModule {
 
     this.nodesById.clear();
     this.magnitudes = [];
+    this.baseRgb = [];
     this.tileBlendWeights = [];
+    this.revealWeights = [];
     this.labelEntries = [];
+    this.revealAnimating = false;
     const model = this.model;
     if (!model || !model.nodes.length) return;
 
@@ -175,6 +214,7 @@ export class StarRenderModule implements EngineModule {
     const positions = new Float32Array(this.chapterNodes.length * 3);
     const colors = new Float32Array(this.chapterNodes.length * 3);
 
+    const nextRevealById = new Map<string, number>();
     for (let i = 0; i < this.chapterNodes.length; i++) {
       const n = this.chapterNodes[i];
       const p = resolvePosition(n.id, n.meta, this.arrangement, radius);
@@ -185,16 +225,27 @@ export class StarRenderModule implements EngineModule {
       colors[i * 3 + 1] = 0.95;
       colors[i * 3 + 2] = 1.0;
       const rawMag = typeof n.meta?.vmag === "number" ? n.meta.vmag : 4;
-      this.magnitudes.push(clamp(rawMag, -2, 10));
+      const mag = clamp(rawMag, -2, 10);
+      this.magnitudes.push(mag);
+      const t = 2800 + hash01(`${n.id}:temp`) * 6400;
+      this.baseRgb.push(kelvinToRgb(t));
       const rawBlend = typeof n.meta?.__tileBlend === "number" ? n.meta.__tileBlend : 1;
       this.tileBlendWeights.push(clamp(rawBlend, 0, 1));
+      const prevReveal = this.revealById.get(n.id);
+      const initialReveal = prevReveal === undefined ? 0 : clamp(prevReveal, 0, 1);
+      this.revealWeights.push(initialReveal);
+      if (Math.abs((this.tileBlendWeights[i] ?? 1) - initialReveal) >= 0.001) {
+        this.revealAnimating = true;
+      }
+      nextRevealById.set(n.id, initialReveal);
       this.labelEntries.push({
         id: n.id,
         text: n.label,
         position: [p[0], p[1], p[2]],
-        blend: this.tileBlendWeights[i] ?? 1,
+        blend: (this.tileBlendWeights[i] ?? 1) * initialReveal,
       });
     }
+    this.revealById = nextRevealById;
 
     const geo = new THREE.BufferGeometry();
     geo.setAttribute("position", new THREE.BufferAttribute(positions, 3));
@@ -206,8 +257,12 @@ export class StarRenderModule implements EngineModule {
       sizeAttenuation: true,
       vertexColors: true,
       transparent: true,
-      opacity: 0.95,
+      opacity: 0.9,
       depthWrite: false,
+      blending: THREE.AdditiveBlending,
+      map: StarRenderModule.getSpriteTexture(),
+      alphaMap: StarRenderModule.getSpriteTexture(),
+      alphaTest: 0.01,
     });
 
     this.points = new THREE.Points(geo, mat);
@@ -237,6 +292,8 @@ export class StarRenderModule implements EngineModule {
 
   private refreshColors(): void {
     if (!this.colorAttr) return;
+    const fov = this.getCameraState().fovDeg;
+    const lowFovBoost = clamp((24 - fov) / 19, 0, 1);
     const n = this.chapterNodes.length;
     for (let i = 0; i < n; i++) {
       const node = this.chapterNodes[i];
@@ -251,9 +308,13 @@ export class StarRenderModule implements EngineModule {
       }
 
       const mag = this.magnitudes[i] ?? 4;
+      const flux = magnitudeToFlux(mag);
       const faintness = clamp((mag - 1.5) / 6.5, 0, 1);
-      b *= 1 - this.adaptationSuppression * 0.55 * faintness;
+      b *= 1 - this.adaptationSuppression * 0.2 * faintness;
+      b *= 0.55 + flux * 0.6;
+      b *= 1 + lowFovBoost * (0.12 + 0.12 * (1 - faintness));
       b *= this.tileBlendWeights[i] ?? 1;
+      b *= this.revealWeights[i] ?? 1;
 
       if (this.isDescendantOf(node, this.hoveredBookId)) {
         b = Math.max(b, 1.0);
@@ -268,16 +329,46 @@ export class StarRenderModule implements EngineModule {
         b = Math.max(b, 1.35 + pulse);
       }
 
-      const r = Math.min(1.0, 0.78 * b);
-      const g = Math.min(1.0, 0.85 * b);
-      const bl = Math.min(1.0, 1.0 * b);
+      b = Math.max(b, 0.2 * (this.tileBlendWeights[i] ?? 1) * (this.revealWeights[i] ?? 1));
+      if (node.id === this.selectedNodeId) {
+        b = Math.max(b, 1.08);
+      }
+
+      const base = this.baseRgb[i] ?? [0.9, 0.92, 1];
+      const r = Math.min(1.0, base[0] * b);
+      const g = Math.min(1.0, base[1] * b);
+      const bl = Math.min(1.0, base[2] * b);
       this.colorAttr.setXYZ(i, r, g, bl);
     }
     this.colorAttr.needsUpdate = true;
   }
 
   update(timing: FrameTiming): void {
-    if (!this.selectedNodeId) return;
+    let revealChanged = false;
+    if (this.revealAnimating) {
+      const dt = Math.max(0.001, Math.min(0.1, timing.dtSeconds));
+      for (let i = 0; i < this.revealWeights.length; i++) {
+        const current = this.revealWeights[i] ?? 0;
+        const target = clamp(this.tileBlendWeights[i] ?? 1, 0, 1);
+        if (Math.abs(target - current) < 0.001) {
+          this.revealWeights[i] = target;
+          continue;
+        }
+        const speed = target > current ? 9.5 : 11.5;
+        const alpha = 1 - Math.exp(-speed * dt);
+        const next = current + (target - current) * alpha;
+        this.revealWeights[i] = next;
+        const node = this.chapterNodes[i];
+        if (node) this.revealById.set(node.id, next);
+        const entry = this.labelEntries[i];
+        if (entry) entry.blend = target * next;
+        revealChanged = true;
+      }
+      if (!revealChanged) {
+        this.revealAnimating = false;
+      }
+    }
+    if (!this.selectedNodeId && !revealChanged) return;
     this.pulseT = timing.nowMs / 1000;
     this.refreshColors();
   }
@@ -296,7 +387,7 @@ export class StarRenderModule implements EngineModule {
 
     if (this.points) {
       const base = this.projectionMode === "stereographic" ? 3.5 : 3;
-      const zoomScale = clamp(Math.sqrt(50 / Math.max(1, s.fovDeg)), 0.75, 2.2);
+      const zoomScale = clamp(Math.sqrt(50 / Math.max(1, s.fovDeg)), 0.7, 2.4);
       this.points.material.size = base * zoomScale;
     }
 
@@ -322,5 +413,33 @@ export class StarRenderModule implements EngineModule {
     this.lastPixelRatio = -1;
     this.lastViewportWidth = -1;
     this.lastViewportHeight = -1;
+  }
+
+  private static getSpriteTexture(): THREE.Texture {
+    if (StarRenderModule.spriteTexture) return StarRenderModule.spriteTexture;
+    const c = document.createElement("canvas");
+    c.width = 64;
+    c.height = 64;
+    const ctx = c.getContext("2d");
+    if (!ctx) {
+      const fallback = new THREE.Texture();
+      StarRenderModule.spriteTexture = fallback;
+      return fallback;
+    }
+    const g = ctx.createRadialGradient(32, 32, 1.5, 32, 32, 31);
+    g.addColorStop(0, "rgba(255,255,255,1)");
+    g.addColorStop(0.18, "rgba(255,255,255,0.98)");
+    g.addColorStop(0.5, "rgba(255,255,255,0.34)");
+    g.addColorStop(1, "rgba(255,255,255,0)");
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, 64, 64);
+    const tex = new THREE.CanvasTexture(c);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.minFilter = THREE.LinearFilter;
+    tex.magFilter = THREE.LinearFilter;
+    tex.generateMipmaps = false;
+    tex.needsUpdate = true;
+    StarRenderModule.spriteTexture = tex;
+    return tex;
   }
 }
