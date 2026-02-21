@@ -50,8 +50,6 @@ export class ConstellationArtModule implements EngineModule {
   private dimSpeed = 9.5;
   private hoverEnterDelayMs = 45;
   private hoverLeaveDelayMs = 90;
-  private minVisibleFovDeg = 14;
-  private fullVisibleFovDeg = 60;
 
   constructor(opts: {
     scene: THREE.Scene;
@@ -62,7 +60,7 @@ export class ConstellationArtModule implements EngineModule {
     this.camera = opts.camera;
     this.getCameraState = opts.getCameraState;
     this.textureLoader.crossOrigin = "anonymous";
-    this.root.renderOrder = -30;
+    this.root.renderOrder = 85;
     this.scene.add(this.root);
   }
 
@@ -103,8 +101,6 @@ export class ConstellationArtModule implements EngineModule {
     this.raycaster.setFromCamera(new THREE.Vector2(nx, ny), this.camera);
     const hits = this.raycaster.intersectObjects(this.root.children, false);
     if (!hits.length) return undefined;
-    const mat = (hits[0].object as THREE.Mesh).material as THREE.MeshBasicMaterial | undefined;
-    if (mat && mat.opacity < 0.06) return undefined;
     const id = (hits[0].object as THREE.Mesh).userData?.id;
     return typeof id === "string" ? id : undefined;
   }
@@ -119,15 +115,6 @@ export class ConstellationArtModule implements EngineModule {
 
     const s = this.getCameraState();
     const fov = s.fovDeg;
-    const fovArtAlpha = THREE.MathUtils.smoothstep(fov, this.minVisibleFovDeg, this.fullVisibleFovDeg);
-    if (fovArtAlpha <= 0.002) {
-      for (const item of this.items) {
-        item.currentOpacity = 0;
-        item.mesh.material.opacity = 0;
-        item.mesh.visible = false;
-      }
-      return;
-    }
     const cameraForward = new THREE.Vector3(0, 0, -1).applyQuaternion(this.camera.quaternion);
 
     for (const item of this.items) {
@@ -143,18 +130,13 @@ export class ConstellationArtModule implements EngineModule {
       if (item.config.id === this.hoveredId || item.config.id === this.focusedId) {
         opacity = Math.min(1, opacity * Math.max(1, fade.hoverBoost));
       }
-      if (this.focusedId && item.config.id !== this.focusedId) {
-        opacity *= 0.2;
-      } else if (this.hoveredId && item.config.id !== this.hoveredId) {
-        opacity *= 0.55;
-      }
 
       const centerDir = item.center.clone().normalize();
       const dot = cameraForward.dot(centerDir);
-      const visFade = THREE.MathUtils.smoothstep(dot, -0.75, 0.08);
+      const visFade = THREE.MathUtils.smoothstep(dot, 0.087, 0.342);
 
-      const blend = Math.max(0.72, this.getBlendForItem(item.config));
-      const targetOpacity = clamp(opacity * visFade * item.baseOpacity * blend * fovArtAlpha, 0, 0.3);
+      const blend = this.getBlendForItem(item.config);
+      const targetOpacity = clamp(opacity * visFade * item.baseOpacity * blend, 0, 1);
       const speed = targetOpacity > item.currentOpacity ? this.brightenSpeed : this.dimSpeed;
       const alpha = 1 - Math.exp(-speed * dt);
       item.currentOpacity += (targetOpacity - item.currentOpacity) * alpha;
@@ -182,19 +164,18 @@ export class ConstellationArtModule implements EngineModule {
       if (!center) continue;
 
       const radius = center.length() || 1000;
-      const size = (c.radius <= 1 ? c.radius * radius * 2 : c.radius * 2) * 0.72;
+      const size = c.radius <= 1 ? c.radius * radius * 2 : c.radius * 2;
       const aspect = c.aspectRatio ?? 1;
 
       const geo = new THREE.PlaneGeometry(size * aspect, size, 1, 1);
       const mat = new THREE.MeshBasicMaterial({
         transparent: true,
         opacity: 0,
-        color: 0xa1b6dc,
+        color: 0xa9bce6,
         depthWrite: false,
-        depthTest: false,
+        depthTest: true,
         side: THREE.DoubleSide,
-        blending: THREE.NormalBlending,
-        alphaTest: 0.0,
+        blending: c.blend === "additive" ? THREE.AdditiveBlending : THREE.NormalBlending,
       });
 
       const texPath = `${basePath}/${c.image}`;
@@ -221,14 +202,14 @@ export class ConstellationArtModule implements EngineModule {
       if (c.rotationDeg) {
         mesh.rotateZ(THREE.MathUtils.degToRad(c.rotationDeg));
       }
-      mesh.renderOrder = -20;
+      mesh.renderOrder = 84;
       mesh.userData = { id: c.id, type: "constellation-art" };
       this.root.add(mesh);
       this.items.push({
         config: c,
         mesh,
         center: center.clone(),
-        baseOpacity: clamp(c.opacity * 1.4, 0.12, 0.3),
+        baseOpacity: clamp(c.opacity, 0, 1),
         currentOpacity: 0,
       });
     }

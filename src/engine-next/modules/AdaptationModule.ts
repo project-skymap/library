@@ -23,10 +23,10 @@ export class AdaptationModule implements EngineModule {
   private readonly stars: StarRenderModule;
 
   private enabled = true;
-  private minExposure = 0.72;
-  private maxExposure = 1.4;
-  private brighteningSpeed = 1.15;
-  private darkeningSpeed = 2.6;
+  private minExposure = 0.62;
+  private maxExposure = 1.3;
+  private brighteningSpeed = 1.8;
+  private darkeningSpeed = 3.2;
 
   private exposure = 1.05;
   private targetExposure = 1.05;
@@ -55,7 +55,7 @@ export class AdaptationModule implements EngineModule {
     }
 
     const luminance = this.stars.getEstimatedLuminance();
-    const norm = clamp((luminance - 0.1) / 1.8, 0, 1);
+    const norm = clamp((luminance - 0.08) / 1.4, 0, 1);
     this.targetExposure = this.maxExposure - (this.maxExposure - this.minExposure) * norm;
 
     const speed = this.targetExposure > this.exposure ? this.brighteningSpeed : this.darkeningSpeed;
@@ -67,3 +67,4 @@ export class AdaptationModule implements EngineModule {
     this.stars.setAdaptationSuppression(norm);
   }
 }
+

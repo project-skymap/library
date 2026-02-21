@@ -97,7 +97,6 @@ export class TileStreamingController {
   private loaded = new Map<string, LoadedTile>();
   private inFlight = new Set<string>();
   private queue: string[] = [];
-  private queueSet = new Set<string>();
   private desiredTileIds: string[] = [];
   private resolvedTileIds: string[] = [];
   private activeTileIds: string[] = [];
@@ -110,14 +109,12 @@ export class TileStreamingController {
   private revision = 0;
   private disposed = false;
   private frameIndex = 0;
-  private hasAsyncMutation = false;
 
   setConfig(config: StarMapConfig["tileStreaming"]): void {
     this.cfg = config?.enabled === false || !config ? null : config;
     this.loaded.clear();
     this.inFlight.clear();
     this.queue = [];
-    this.queueSet.clear();
     this.desiredTileIds = [];
     this.resolvedTileIds = [];
     this.activeTileIds = [];
@@ -127,15 +124,12 @@ export class TileStreamingController {
     this.transitioning = false;
     this.merged = null;
     this.lastBlendSignature = "";
-    this.hasAsyncMutation = true;
     this.revision += 1;
   }
 
   update(camera: Readonly<CameraState>, frameIndex: number): boolean {
     if (!this.cfg || this.disposed) return false;
     this.frameIndex = frameIndex;
-    const hadAsyncMutation = this.hasAsyncMutation;
-    this.hasAsyncMutation = false;
 
     const desired = this.pickDesired(camera);
     for (const root of this.cfg.rootTileIds) this.enqueueLoad(root);
@@ -149,10 +143,8 @@ export class TileStreamingController {
       this.resolvedTileIds = resolved;
     }
 
-    if (changed || hadAsyncMutation || this.transitioning) {
-      if (this.refreshMergedFromActiveWeights()) {
-        this.revision += 1;
-      }
+    if (this.refreshMergedFromActiveWeights()) {
+      this.revision += 1;
     }
 
     this.evictIfNeeded();
@@ -194,7 +186,6 @@ export class TileStreamingController {
     this.loaded.clear();
     this.inFlight.clear();
     this.queue = [];
-    this.queueSet.clear();
     this.desiredTileIds = [];
     this.resolvedTileIds = [];
     this.activeTileIds = [];
@@ -203,7 +194,6 @@ export class TileStreamingController {
     this.transitioning = false;
     this.merged = null;
     this.lastBlendSignature = "";
-    this.hasAsyncMutation = false;
   }
 
   private pickDesired(camera: Readonly<CameraState>): string[] {
@@ -270,9 +260,8 @@ export class TileStreamingController {
       return;
     }
     if (this.inFlight.has(tileId)) return;
-    if (this.queueSet.has(tileId)) return;
+    if (this.queue.includes(tileId)) return;
     this.queue.push(tileId);
-    this.queueSet.add(tileId);
   }
 
   private pumpQueue(): void {
@@ -281,7 +270,6 @@ export class TileStreamingController {
     while (this.inFlight.size < maxConcurrent && this.queue.length > 0) {
       const tileId = this.queue.shift();
       if (!tileId) break;
-      this.queueSet.delete(tileId);
       if (this.loaded.has(tileId) || this.inFlight.has(tileId)) continue;
       this.inFlight.add(tileId);
       this.cfg
@@ -295,7 +283,15 @@ export class TileStreamingController {
           });
           const children = this.cfg.getChildren?.(tileId) ?? [];
           for (const childId of children) this.enqueueLoad(childId);
-          this.hasAsyncMutation = true;
+          const resolved = this.resolveWithParentFallback(this.desiredTileIds);
+          if (!arraysEqualUnordered(resolved, this.resolvedTileIds)) {
+            this.beginTransition(resolved);
+            this.resolvedTileIds = resolved;
+          }
+          if (this.refreshMergedFromActiveWeights()) {
+            this.revision += 1;
+          }
+          this.evictIfNeeded();
         })
         .catch(() => {
           // Keep stream alive on tile failures; fallback/other tiles still render.
@@ -401,14 +397,12 @@ export class TileStreamingController {
     const frames = Math.max(1, this.cfg?.transitionFrames ?? 12);
     const p = clamp((this.frameIndex - this.transitionStartFrame) / frames, 0, 1);
 
-    const toSet = new Set(this.transitionToIds);
-    const fromSet = new Set(this.transitionFromIds);
     for (const id of this.transitionFromIds) {
-      if (toSet.has(id)) out.set(id, 1);
+      if (this.transitionToIds.includes(id)) out.set(id, 1);
       else out.set(id, 1 - p);
     }
     for (const id of this.transitionToIds) {
-      if (fromSet.has(id)) out.set(id, 1);
+      if (this.transitionFromIds.includes(id)) out.set(id, 1);
       else out.set(id, Math.max(out.get(id) ?? 0, p));
     }
 

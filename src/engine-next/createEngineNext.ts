@@ -10,7 +10,6 @@ import { ChapterLabelsModule } from "./modules/ChapterLabelsModule";
 import { AdaptationModule } from "./modules/AdaptationModule";
 import { TileStreamingController } from "./tiles/TileStreamingController";
 import { ConstellationArtModule } from "./modules/ConstellationArtModule";
-import { SkyDomeModule } from "./modules/SkyDomeModule";
 
 type Handlers = {
   onSelect?: (node: SceneNode) => void;
@@ -32,14 +31,6 @@ function shortestAngleDelta(current: number, target: number): number {
   return d;
 }
 
-const DEFAULT_FOLLOW_HZ = 16;
-const FLY_TO_CRUISE_HZ = 9.5;
-const FLY_TO_SETTLE_HZ = 20;
-const FLY_TO_DURATION_MS = 1300;
-const TILE_EVAL_INTERVAL_MS = 66;
-const TILE_ANGULAR_EPS_RAD = 0.0015;
-const TILE_FOV_EPS_DEG = 0.12;
-
 export function createEngineNext({
   container,
   onSelect,
@@ -56,7 +47,7 @@ export function createEngineNext({
   onLongPress?: Handlers["onLongPress"];
 }) {
   const runtime = new EngineNext();
-  runtime.navigation.setSmoothing(true, { followHz: DEFAULT_FOLLOW_HZ });
+  runtime.navigation.setSmoothing(true, { followHz: 16 });
   const input = new InputNormalizer();
   const renderer = new THREE.WebGLRenderer({ antialias: false, alpha: true, powerPreference: "high-performance" });
   renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -86,12 +77,6 @@ export function createEngineNext({
     getCameraState: () => runtime.navigation.getState(),
   });
   const adaptation = new AdaptationModule({ renderer, stars });
-  const skyDome = new SkyDomeModule({
-    scene,
-    camera,
-    getCameraState: () => runtime.navigation.getState(),
-    getExposure: () => renderer.toneMappingExposure,
-  });
   const tiles = new TileStreamingController();
   const labelOverlay = document.createElement("div");
   labelOverlay.style.position = "absolute";
@@ -107,7 +92,6 @@ export function createEngineNext({
     getEntries: () => stars.getLabelEntries(),
   });
   runtime.registerModule(stars);
-  runtime.registerModule(skyDome);
   runtime.registerModule(lines);
   runtime.registerModule(art);
   runtime.registerModule(adaptation);
@@ -133,21 +117,6 @@ export function createEngineNext({
   let inertiaPitchVel = 0;
   let inertiaPointer: "mouse" | "touch" | "pen" = "mouse";
   let lastPanSampleAtMs = 0;
-  let flyToActive = false;
-  let flyToSettling = false;
-  let flyToStartMs = 0;
-  let flyToDurationMs = FLY_TO_DURATION_MS;
-  let lastTileEvalAtMs = 0;
-  let lastTileEvalYaw = runtime.navigation.getState().yawRad;
-  let lastTileEvalPitch = runtime.navigation.getState().pitchRad;
-  let lastTileEvalFov = runtime.navigation.getState().fovDeg;
-
-  function cancelFlyTo(): void {
-    if (!flyToActive) return;
-    flyToActive = false;
-    flyToSettling = false;
-    runtime.navigation.setSmoothing(true, { followHz: DEFAULT_FOLLOW_HZ });
-  }
 
   function emitNavigation(): void {
     handlers.onFovChange?.(runtime.navigation.getState().fovDeg);
@@ -181,18 +150,15 @@ export function createEngineNext({
 
   function applyBackground(background: StarMapConfig["background"]): void {
     if (background === "transparent") {
-      skyDome.setEnabled(false);
       scene.background = null;
       renderer.setClearColor(0x000000, 0);
       return;
     }
     if (typeof background === "string" && background.trim().length > 0) {
-      skyDome.setEnabled(true);
       scene.background = new THREE.Color(background);
       renderer.setClearColor(new THREE.Color(background), 1);
       return;
     }
-    skyDome.setEnabled(true);
     scene.background = new THREE.Color(0x02050d);
     renderer.setClearColor(0x02050d, 1);
   }
@@ -253,7 +219,6 @@ export function createEngineNext({
   }
 
   function onPointerDown(ev: PointerEvent): void {
-    cancelFlyTo();
     activePointerIds.add(ev.pointerId);
     if (activePointerIds.size > 1) {
       inertiaYawVel = 0;
@@ -315,7 +280,6 @@ export function createEngineNext({
   }
 
   function onWheel(ev: WheelEvent): void {
-    cancelFlyTo();
     ev.preventDefault();
     const rect = container.getBoundingClientRect();
     const events = input.onWheel(ev.deltaY, ev.clientX - rect.left, ev.clientY - rect.top);
@@ -330,18 +294,6 @@ export function createEngineNext({
     lastNow = now;
 
     runtime.navigation.update(dt);
-    if (flyToActive) {
-      const p = clamp((now - flyToStartMs) / Math.max(1, flyToDurationMs), 0, 1);
-      if (!flyToSettling && p >= 0.72) {
-        flyToSettling = true;
-        runtime.navigation.setSmoothing(true, { followHz: FLY_TO_SETTLE_HZ });
-      }
-      if (p >= 1) {
-        flyToActive = false;
-        flyToSettling = false;
-        runtime.navigation.setSmoothing(true, { followHz: DEFAULT_FOLLOW_HZ });
-      }
-    }
     if (activePointerIds.size === 0) {
       const speed = Math.hypot(inertiaYawVel, inertiaPitchVel);
       if (speed > 1e-4) {
@@ -375,24 +327,12 @@ export function createEngineNext({
     maybeEmitNavigation();
 
     if (config?.tileStreaming && config.tileStreaming.enabled !== false) {
-      const navForTiles = runtime.navigation.getState();
-      const dueByTime = lastTileEvalAtMs === 0 || now - lastTileEvalAtMs >= TILE_EVAL_INTERVAL_MS;
-      const dy = Math.abs(shortestAngleDelta(lastTileEvalYaw, navForTiles.yawRad));
-      const dp = Math.abs(navForTiles.pitchRad - lastTileEvalPitch);
-      const df = Math.abs(navForTiles.fovDeg - lastTileEvalFov);
-      const dueByMotion = dy >= TILE_ANGULAR_EPS_RAD || dp >= TILE_ANGULAR_EPS_RAD || df >= TILE_FOV_EPS_DEG;
-      if (dueByTime || dueByMotion) {
-        lastTileEvalAtMs = now;
-        lastTileEvalYaw = navForTiles.yawRad;
-        lastTileEvalPitch = navForTiles.pitchRad;
-        lastTileEvalFov = navForTiles.fovDeg;
-        const frameIndex = runtime.core.getMetrics().frameIndex;
-        const changed = tiles.update(navForTiles, frameIndex);
-        const rev = tiles.getRevision();
-        if (changed || rev !== activeConfigRevision) {
-          activeConfigRevision = rev;
-          applySceneConfig(config);
-        }
+      const frameIndex = runtime.core.getMetrics().frameIndex;
+      const changed = tiles.update(runtime.navigation.getState(), frameIndex);
+      const rev = tiles.getRevision();
+      if (changed || rev !== activeConfigRevision) {
+        activeConfigRevision = rev;
+        applySceneConfig(config);
       }
     }
 
@@ -457,7 +397,6 @@ export function createEngineNext({
       stars.setProjectionMode(projectionMode);
       tiles.setConfig(next.tileStreaming);
       activeConfigRevision = tiles.getRevision();
-      lastTileEvalAtMs = 0;
       applySceneConfig(next);
       adaptation.setConfig(next.adaptation);
       labels.setVisible(next.showChapterLabels ?? true);
@@ -481,14 +420,6 @@ export function createEngineNext({
       inertiaYawVel = 0;
       inertiaPitchVel = 0;
       lastPanSampleAtMs = 0;
-      lastTileEvalAtMs = 0;
-      const nav = runtime.navigation.getState();
-      lastTileEvalYaw = nav.yawRad;
-      lastTileEvalPitch = nav.pitchRad;
-      lastTileEvalFov = nav.fovDeg;
-      flyToActive = false;
-      flyToSettling = false;
-      runtime.navigation.setSmoothing(true, { followHz: DEFAULT_FOLLOW_HZ });
       lastEmittedFov = runtime.navigation.getState().fovDeg;
       emitNavigation();
       raf = requestAnimationFrame(loop);
@@ -500,9 +431,6 @@ export function createEngineNext({
       activePointerIds.clear();
       inertiaYawVel = 0;
       inertiaPitchVel = 0;
-      flyToActive = false;
-      flyToSettling = false;
-      runtime.navigation.setSmoothing(true, { followHz: DEFAULT_FOLLOW_HZ });
       renderer.dispose();
       if (renderer.domElement.parentElement === container) {
         container.removeChild(renderer.domElement);
@@ -542,14 +470,6 @@ export function createEngineNext({
       const len = Math.hypot(p[0], p[1], p[2]) || 1;
       const dir: [number, number, number] = [p[0] / len, p[1] / len, p[2] / len];
       const angles = dirToYawPitch(dir);
-      inertiaYawVel = 0;
-      inertiaPitchVel = 0;
-      lastPanSampleAtMs = 0;
-      flyToActive = true;
-      flyToSettling = false;
-      flyToStartMs = performance.now();
-      flyToDurationMs = FLY_TO_DURATION_MS;
-      runtime.navigation.setSmoothing(true, { followHz: FLY_TO_CRUISE_HZ });
       runtime.navigation.setTargetOrientation(angles.yaw, angles.pitch);
       if (_targetFov !== undefined) {
         runtime.navigation.setTargetFov(_targetFov);
