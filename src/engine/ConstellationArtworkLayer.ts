@@ -198,9 +198,10 @@ export class ConstellationArtworkLayer {
             if (size <= 1.0) size *= radius;
             size *= 2; // Radius to Diameter
 
-            const aspectRatio = c.aspectRatio ?? 1.0;
-            const halfWidth = (size / 2) * aspectRatio;
-            const halfHeight = size / 2;
+            // Use sqrt(aspectRatio) for both axes so that area = (2r)² regardless of image shape.
+            const sqrtAspect = Math.sqrt(c.aspectRatio ?? 1.0);
+            const halfWidth = (size / 2) * sqrtAspect;
+            const halfHeight = (size / 2) / sqrtAspect;
 
             const geometry = buildSphereQuad(center, rightDir, upDir, halfWidth, halfHeight, radius, 8);
 
@@ -281,12 +282,15 @@ export class ConstellationArtworkLayer {
 
                     if (c.aspectRatio === undefined && tex.image.width && tex.image.height) {
                         const natAspect = tex.image.width / tex.image.height;
-                        const newHalfWidth = (size / 2) * natAspect;
-                        const newGeometry = buildSphereQuad(center, rightDir, upDir, newHalfWidth, halfHeight, radius, 8);
+                        const sqrtNatAspect = Math.sqrt(natAspect);
+                        const newHalfWidth = (size / 2) * sqrtNatAspect;
+                        const newHalfHeight = (size / 2) / sqrtNatAspect;
+                        const newGeometry = buildSphereQuad(center, rightDir, upDir, newHalfWidth, newHalfHeight, radius, 8);
                         const item = this.items.find(i => i.config.id === c.id);
                         if (item) {
                             item.mesh.geometry.dispose();
                             item.mesh.geometry = newGeometry;
+                            item.halfHeight = newHalfHeight;
                         }
                     }
                     console.log(`[Constellation] Loaded: ${c.id} (${tex.image.width}x${tex.image.height})`);

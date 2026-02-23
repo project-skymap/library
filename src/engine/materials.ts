@@ -25,7 +25,7 @@ export const globalUniforms = {
     uAtmGlow: { value: 1.0 },
     uAtmDark: { value: 0.6 },
     uAtmExtinction: { value: 4.0 },
-    uAtmTwinkle: { value: 0.8 },
+    uAtmTwinkle: { value: 0.0 },
     uColorHorizon: { value: new THREE.Color(0x3a5e8c) },
     uColorZenith: { value: new THREE.Color(0x020408) }
 };

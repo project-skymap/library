@@ -49,7 +49,7 @@ const ENGINE_CONFIG = {
 
 const ORDER_REVEAL_CONFIG = {
     globalDim: 0.85,
-    pulseAmplitude: 0.6,
+    pulseAmplitude: 0.12,
     pulseDuration: 2,
     delayPerChapter: 0.1
 };
@@ -440,7 +440,7 @@ export function createEngine({
     const backdropGroup = new THREE.Group();
     scene.add(backdropGroup);
     
-    function createBackdropStars(count: number = 31000) {
+    function createBackdropStars(count: number = 5000) {
         backdropGroup.clear();
         // Clear any existing children properly
         while(backdropGroup.children.length > 0){ 
@@ -795,9 +795,11 @@ export function createEngine({
                 let baseSize = 3.5;
                 if (typeof n.weight === "number") {
                     const t = (n.weight - minWeight) / (maxWeight - minWeight);
-                    // Non-linear scaling (square root) to boost smaller chapters
-                    // Range: 0.1 to 12.0
-                    baseSize = 0.1 + Math.pow(t, 0.5) * 11.9;
+                    // Aggressive power curve: large chapters dominate, small ones recede.
+                    // Exponent > 1 compresses small values and stretches large ones,
+                    // creating a dramatic Stellarium-like magnitude spread.
+                    // Range: 0.5 to 22.0
+                    baseSize = 0.5 + Math.pow(t, 2.8) * 21.5;
                 }
                 starSizes.push(baseSize);
                 
@@ -982,6 +984,7 @@ export function createEngine({
                 attribute float divisionIndex;
 
                 varying vec3 vColor;
+                varying float vSize;
                 uniform float pixelRatio;
 
                 uniform float uTime;
@@ -1054,29 +1057,46 @@ export function createEngine({
                     gl_Position = smartProject(mvPosition); 
                     vScreenPos = gl_Position.xy / gl_Position.w; 
                     
-                    float sizeBoost = 1.0 + activePulse * 0.8;
-                    float perceptualSize = pow(size, 0.55);
-                    gl_PointSize = clamp((perceptualSize * sizeBoost * 1.5) * uScale * pixelRatio * (2000.0 / -mvPosition.z) * horizonFade, 1.0, 40.0); 
+                    float sizeBoost = 1.0 + activePulse * 0.15;
+                    // pow(size, 0.7) is gentler compression than 0.55 — preserves more of
+                    // the aggressive JS curve so large stars stay visually dominant.
+                    float perceptualSize = pow(size, 0.7);
+                    gl_PointSize = clamp((perceptualSize * sizeBoost * 20.0) * uScale * pixelRatio * (2000.0 / -mvPosition.z) * horizonFade, 1.0, 600.0);
+                    vSize = gl_PointSize;
                 }
             `,
             fragmentShader: `
-                varying vec3 vColor; 
-                void main() { 
-                    vec2 coord = gl_PointCoord - vec2(0.5); 
-                    float d = length(coord) * 2.0; 
-                    if (d > 1.0) discard; 
-                    
-                    float alphaMask = getMaskAlpha(); 
-                    if (alphaMask < 0.01) discard; 
-                    
-                    // Stellarium-style dual-layer: sharp core + soft glow
-                    float core = smoothstep(0.8, 0.4, d);
-                    float glow = smoothstep(1.0, 0.0, d) * 0.08;
-                    float k = core + glow;
+                varying vec3 vColor;
+                varying float vSize;
+                void main() {
+                    vec2 coord = gl_PointCoord - vec2(0.5);
+                    float d = length(coord) * 2.0;
+                    if (d > 1.0) discard;
 
-                    // White-hot core blending into coloured halo
-                    vec3 finalColor = mix(vColor, vec3(1.0), core * 0.7);
-                    gl_FragColor = vec4(finalColor * k * alphaMask, 1.0); 
+                    float alphaMask = getMaskAlpha();
+                    if (alphaMask < 0.01) discard;
+
+                    // --- Multi-layer Gaussian star model ---
+                    // Tight white-hot core
+                    float core      = exp(-d * d * 9.0);
+                    // Broader coloured inner halo
+                    float innerGlow = exp(-d * d * 3.0) * 0.45;
+                    // Wide faint bloom that fades smoothly to the disc edge
+                    float outerBloom = max(0.0, 1.0 - d * d) * 0.10;
+
+                    float k = core + innerGlow + outerBloom;
+
+                    // White-hot centre → spectral colour at the halo
+                    vec3 finalColor = mix(vColor, vec3(1.0), core * 0.88);
+
+                    // --- Size-dependent diffraction spikes ---
+                    // Only appear on larger (brighter) stars, matching real optics.
+                    float spikeFactor = smoothstep(10.0, 24.0, vSize);
+                    float spikeH = exp(-coord.y * coord.y * 180.0) * exp(-abs(coord.x) * 6.0);
+                    float spikeV = exp(-coord.x * coord.x * 180.0) * exp(-abs(coord.y) * 6.0);
+                    float spikes = (spikeH + spikeV) * 0.18 * spikeFactor;
+
+                    gl_FragColor = vec4(finalColor * (k + spikes) * alphaMask, 1.0);
                 }
             `,
             transparent: true,
@@ -1503,7 +1523,7 @@ export function createEngine({
         
         // Add Constellations
         for (const item of constellationLayer.getItems()) {
-            arr[item.config.id] = { position: [item.mesh.position.x, item.mesh.position.y, item.mesh.position.z] };
+            arr[item.config.id] = { position: [item.center.x, item.center.y, item.center.z] };
         }
         
         // Merge temp arrangement to ensure dragged items are up to date
@@ -1658,8 +1678,8 @@ export function createEngine({
                     state.draggedGroup = { labelInitialPos: hit.object!.position.clone(), children };
                     state.draggedStarIndex = -1;
                 } else if (hit.type === 'constellation') {
-                    // Constellation Drag
-                    state.draggedGroup = null;
+                    // Constellation Drag — store initial center so onMouseMove can compute rotation
+                    state.draggedGroup = { labelInitialPos: hit.point.clone(), children: [] };
                     state.draggedStarIndex = -1;
                 }
             }
@@ -1706,7 +1726,10 @@ export function createEngine({
                  else if (state.draggedNodeId) {
                      const cItem = constellationLayer.getItems().find(c => c.config.id === state.draggedNodeId);
                      if (cItem) {
-                         cItem.mesh.position.copy(newPos);
+                         const vS = group.labelInitialPos.clone().normalize();
+                         const vE = newPos.clone().normalize();
+                         cItem.mesh.quaternion.setFromUnitVectors(vS, vE);
+                         cItem.center.copy(newPos);
                          state.tempArrangement[state.draggedNodeId] = { position: [newPos.x, newPos.y, newPos.z] };
                      }
                  }
