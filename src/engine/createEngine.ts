@@ -534,7 +534,7 @@ export function createEngine({
 
                     float zoomScale = pow(uScale, 0.5);
                     float perceptualSize = pow(size, 0.55);
-                    gl_PointSize = clamp(perceptualSize * zoomScale * 0.5 * pixelRatio * (800.0 / -mvPosition.z) * horizonFade, 0.5, 20.0);
+                    gl_PointSize = clamp(perceptualSize * zoomScale * 0.5 * pixelRatio * (800.0 / length(mvPosition.xyz)) * horizonFade, 0.5, 20.0);
                 }
             `,
             fragmentShader: `
@@ -1061,7 +1061,7 @@ export function createEngine({
                     // pow(size, 0.7) is gentler compression than 0.55 — preserves more of
                     // the aggressive JS curve so large stars stay visually dominant.
                     float perceptualSize = pow(size, 0.7);
-                    gl_PointSize = clamp((perceptualSize * sizeBoost * 20.0) * uScale * pixelRatio * (2000.0 / -mvPosition.z) * horizonFade, 1.0, 600.0);
+                    gl_PointSize = clamp((perceptualSize * sizeBoost * 20.0) * uScale * pixelRatio * (2000.0 / length(mvPosition.xyz)) * horizonFade, 1.0, 600.0);
                     vSize = gl_PointSize;
                 }
             `,
