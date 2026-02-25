@@ -112,7 +112,12 @@ export class ConstellationArtworkLayer {
 
     getItems() { return this.items; }
 
-    load(config: ConstellationConfig, getPosition: (id: string) => THREE.Vector3 | null) {
+    load(
+        config: ConstellationConfig,
+        getPosition: (id: string) => THREE.Vector3 | null,
+        getOrientationPosition?: (id: string) => THREE.Vector3 | null,
+    ) {
+        const getAnchorPos = getOrientationPosition ?? getPosition;
         this.clear();
         console.log(`[Constellation] Loading ${config.constellations.length} constellations from ${config.atlasBasePath}`);
         // Remove trailing slash if present
@@ -172,8 +177,8 @@ export class ConstellationArtworkLayer {
             let upDir = new THREE.Vector3();
 
             if (c.anchors.length >= 2) {
-                const p0 = getPosition(c.anchors[0]);
-                const p1 = getPosition(c.anchors[1]);
+                const p0 = getAnchorPos(c.anchors[0]);
+                const p1 = getAnchorPos(c.anchors[1]);
                 if (p0 && p1 && p0.distanceTo(p1) > 0.001) {
                     const diff = new THREE.Vector3().subVectors(p1, p0);
                     rightDir.copy(diff).sub(centerNorm.clone().multiplyScalar(diff.dot(centerNorm))).normalize();

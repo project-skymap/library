@@ -1468,6 +1468,30 @@ export function createEngine({
         else if (cfg.arrangement && starPoints) { if (lastModel) buildFromModel(lastModel, cfg); }
         
         if (cfg.constellations) {
+            // Orientation-only getter: reads raw layout positions from node meta,
+            // bypassing getPosition() which checks the arrangement first.
+            // This ensures moving anchor stars never rotates artwork — only
+            // rotationDeg in the constellation config controls orientation.
+            const getLayoutPosition = (id: string): THREE.Vector3 | null => {
+                const n = nodeById.get(id);
+                if (!n) return null;
+                const x = (n.meta?.x as number) ?? 0;
+                const y = (n.meta?.y as number) ?? 0;
+                const z = (n.meta?.z as number) ?? 0;
+                if (z === 0) {
+                    const radius = cfg.layout?.radius ?? 2000;
+                    const r_norm = Math.min(1.0, Math.sqrt(x * x + y * y) / radius);
+                    const phi = Math.atan2(y, x);
+                    const theta = r_norm * (Math.PI / 2);
+                    return new THREE.Vector3(
+                        Math.sin(theta) * Math.cos(phi),
+                        Math.cos(theta),
+                        Math.sin(theta) * Math.sin(phi)
+                    ).multiplyScalar(radius);
+                }
+                return new THREE.Vector3(x, y, z);
+            };
+
             constellationLayer.load(cfg.constellations, (id) => {
                 // 1. Check Arrangement (Override)
                 if (cfg.arrangement && cfg.arrangement[id]) {
@@ -1488,11 +1512,10 @@ export function createEngine({
                     }
                     return new THREE.Vector3(arr.position[0], arr.position[1], arr.position[2]);
                 }
-                
+
                 // 2. Check Scene Nodes (Stars/Anchors)
-                const n = nodeById.get(id);
-                return n ? getPosition(n) : null;
-            });
+                return getLayoutPosition(id);
+            }, getLayoutPosition);
         }
     }
     
