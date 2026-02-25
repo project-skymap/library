@@ -71,11 +71,14 @@ export type StarMapConfig = {
     labelColors?: Record<string, string>; // key: book id (e.g. "GEN"), value: hex color
     constellations?: any; // constellation data
     showConstellationArt?: boolean;
+    constellationBaseOpacity?: number; // Multiplier for all constellation artwork opacity (default 1.0).
     showConstellationLines?: boolean;
     showDivisionBoundaries?: boolean;
     showBackdropStars?: boolean;
     backdropStarsCount?: number;
     showAtmosphere?: boolean;
+    starSizeExponent?: number; // Power curve exponent for weight→size mapping. Default 2.8. Higher = more dramatic spread.
+    starSizeScale?: number;    // Uniform multiplier applied to all star sizes. Default 1.0.
     showBookLabels?: boolean;
     showChapterLabels?: boolean;
     showDivisionLabels?: boolean;

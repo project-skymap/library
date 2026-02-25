@@ -379,7 +379,8 @@ export class ConstellationArtworkLayer {
                 opacity = THREE.MathUtils.lerp(fade.maxOpacity, fade.minOpacity, t);
             }
 
-            opacity = Math.min(Math.max(opacity, 0), 1) * this._globalOpacity;
+            // Scale fade-driven opacity by per-constellation base opacity from config.
+            opacity = Math.min(Math.max(opacity, 0), 1) * this._globalOpacity * item.baseOpacity;
 
             // Stellarium-style visibility culling: hide constellations whose
             // center direction is > ~80° from camera forward (approaching the

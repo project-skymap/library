@@ -795,11 +795,9 @@ export function createEngine({
                 let baseSize = 3.5;
                 if (typeof n.weight === "number") {
                     const t = (n.weight - minWeight) / (maxWeight - minWeight);
-                    // Aggressive power curve: large chapters dominate, small ones recede.
-                    // Exponent > 1 compresses small values and stretches large ones,
-                    // creating a dramatic Stellarium-like magnitude spread.
-                    // Range: 0.5 to 22.0
-                    baseSize = 0.5 + Math.pow(t, 2.8) * 21.5;
+                    const sizeExp = cfg.starSizeExponent ?? 2.8;
+                    const sizeScale = cfg.starSizeScale ?? 1.0;
+                    baseSize = Math.pow(t, sizeExp) * 22.0 * sizeScale;
                 }
                 starSizes.push(baseSize);
                 
@@ -2369,9 +2367,8 @@ export function createEngine({
         artFader.update(dt);
 
         constellationLayer.update(state.fov, artFader.eased > 0.01, camera);
-        if (artFader.eased < 1.0) {
-            constellationLayer.setGlobalOpacity?.(artFader.eased);
-        }
+        const baseArtOpacity = THREE.MathUtils.clamp(currentConfig?.constellationBaseOpacity ?? 1.0, 0, 10);
+        constellationLayer.setGlobalOpacity?.(artFader.eased * baseArtOpacity);
         backdropGroup.visible = currentConfig?.showBackdropStars ?? true;
         if (atmosphereMesh) atmosphereMesh.visible = currentConfig?.showAtmosphere ?? false;
 
