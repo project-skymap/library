@@ -385,8 +385,9 @@ export function createEngine({
         let atmosphereMesh: THREE.Mesh | null = null;
     let moonMesh: THREE.Mesh | null = null;
     let moonGlowMesh: THREE.Mesh | null = null;
-    let sunriseMesh: THREE.Mesh | null = null;
-    let lastSunriseUrl = '';
+    let sunDiscMesh: THREE.Mesh | null = null;
+    let sunHaloMesh: THREE.Mesh | null = null;
+    let milkyWayMesh: THREE.Mesh | null = null;
 
     function createAtmosphere() {
         const geometry = new THREE.SphereGeometry(990, 64, 64);
@@ -568,22 +569,151 @@ export function createEngine({
     }
 
     // ---------------------------
-    // Sunrise / Horizon Glow
+    // Procedural Sun
     // ---------------------------
-    function createSunrise(url: string) {
-        if (sunriseMesh) {
-            scene.remove(sunriseMesh);
-            sunriseMesh.geometry.dispose();
-            (sunriseMesh.material as THREE.ShaderMaterial).dispose();
-            sunriseMesh = null;
+    function createSun() {
+        // Sun direction: peeking at the horizon in the default camera direction (lon≈275° = –x).
+        // Placing it just below the horizon makes the top of the disc/glow peek over terrain.
+        const sunDir = new THREE.Vector3(-1.0, -0.08, 0.0).normalize();
+        const sunWorldPos = sunDir.clone().multiplyScalar(2000);
+
+        // --- Solar halo: large additive glow + crepuscular rays ---
+        const haloGeo = new THREE.PlaneGeometry(1, 1);
+        const haloMat = createSmartMaterial({
+            uniforms: { uSunHaloSize: { value: 0.46 } },
+            vertexShaderBody: `
+                uniform float uSunHaloSize;
+                varying vec2 vUv;
+                void main() {
+                    vUv = uv;
+                    vec4 mvPos = modelViewMatrix * vec4(0.0, 0.0, 0.0, 1.0);
+                    vec4 projected = smartProject(mvPos);
+                    if (projected.z > 4.0) { gl_Position = vec4(10.0, 10.0, 10.0, 1.0); return; }
+                    vec2 offset = position.xy * uSunHaloSize * uScale;
+                    projected.xy += offset / vec2(uAspect, 1.0);
+                    vScreenPos = projected.xy / projected.w;
+                    gl_Position = projected;
+                }
+            `,
+            fragmentShader: `
+                varying vec2 vUv;
+                void main() {
+                    float alphaMask = getMaskAlpha();
+                    if (alphaMask < 0.01) discard;
+
+                    vec2 p = vUv * 2.0 - 1.0;
+                    float d = length(p);
+                    if (d > 1.0) discard;
+
+                    // Asymmetric falloff: spread wider horizontally than vertically
+                    float asymDist = length(vec2(p.x * 0.55, p.y));
+
+                    // Radial glow: warm near centre, fading outward
+                    float glow = exp(-2.8 * asymDist * asymDist) * 1.0;
+                    glow      += exp(-1.0 * asymDist) * 0.35;
+
+                    // Crepuscular rays: fan out from bottom, visible above sun centre
+                    float rayMask = smoothstep(-0.05, 0.35, p.y);
+                    float rayFade = max(0.0, 1.0 - d) * (1.0 - d);
+                    float rayAngle = atan(p.x, max(0.0001, p.y)); // angle from vertical
+                    float rays = pow(abs(sin(rayAngle * 7.0  + 0.30)), 9.0) * 0.10
+                               + pow(abs(sin(rayAngle * 13.0 - 1.10)), 14.0) * 0.07
+                               + pow(abs(sin(rayAngle * 19.0 + 2.30)), 11.0) * 0.05;
+                    rays *= rayMask * rayFade;
+
+                    // Colour: white-yellow → orange → hot-pink → purple
+                    vec3 cYellow = vec3(1.00, 0.88, 0.52);
+                    vec3 cOrange = vec3(1.00, 0.42, 0.10);
+                    vec3 cPink   = vec3(0.90, 0.22, 0.52);
+                    vec3 cPurple = vec3(0.38, 0.12, 0.48);
+                    vec3 col = mix(cYellow, cOrange, smoothstep(0.00, 0.40, asymDist));
+                    col      = mix(col,    cPink,   smoothstep(0.35, 0.72, asymDist));
+                    col      = mix(col,    cPurple, smoothstep(0.65, 1.00, asymDist));
+
+                    float total = (glow + rays) * alphaMask;
+                    if (total < 0.005) discard;
+                    gl_FragColor = vec4(col * total, total);
+                }
+            `,
+            transparent: true, depthWrite: false, depthTest: true,
+            blending: THREE.AdditiveBlending,
+        });
+        sunHaloMesh = new THREE.Mesh(haloGeo, haloMat);
+        sunHaloMesh.position.copy(sunWorldPos);
+        sunHaloMesh.frustumCulled = false;
+        sunHaloMesh.renderOrder = 1;
+        scene.add(sunHaloMesh);
+
+        // --- Sun disc: small opaque photosphere ---
+        const discGeo = new THREE.PlaneGeometry(1, 1);
+        const discMat = createSmartMaterial({
+            uniforms: { uSunSize: { value: 0.09 } },
+            vertexShaderBody: `
+                uniform float uSunSize;
+                varying vec2 vUv;
+                void main() {
+                    vUv = uv;
+                    vec4 mvPos = modelViewMatrix * vec4(0.0, 0.0, 0.0, 1.0);
+                    vec4 projected = smartProject(mvPos);
+                    if (projected.z > 4.0) { gl_Position = vec4(10.0, 10.0, 10.0, 1.0); return; }
+                    vec2 offset = position.xy * uSunSize * uScale;
+                    projected.xy += offset / vec2(uAspect, 1.0);
+                    vScreenPos = projected.xy / projected.w;
+                    gl_Position = projected;
+                }
+            `,
+            fragmentShader: `
+                varying vec2 vUv;
+                void main() {
+                    float alphaMask = getMaskAlpha();
+                    if (alphaMask < 0.01) discard;
+
+                    vec2 p = vUv * 2.0 - 1.0;
+                    float d = length(p);
+                    if (d > 1.0) discard;
+
+                    float edge = smoothstep(1.0, 0.86, d);
+
+                    // Photosphere limb darkening: bright white core → orange limb
+                    float core = smoothstep(0.28, 0.00, d);
+                    float mid  = smoothstep(0.68, 0.22, d) * (1.0 - core);
+                    float limb = (1.0 - smoothstep(0.70, 1.00, d)) * (1.0 - core - mid);
+
+                    vec3 cCore = vec3(1.00, 0.97, 0.88); // hot white
+                    vec3 cMid  = vec3(1.00, 0.80, 0.38); // yellow
+                    vec3 cLimb = vec3(1.00, 0.52, 0.08); // deep orange
+
+                    vec3 col = cCore * (core + 0.12) + cMid * mid + cLimb * limb;
+                    col = clamp(col, 0.0, 1.5); // allow slight overbright
+
+                    gl_FragColor = vec4(col * edge, edge * alphaMask);
+                }
+            `,
+            transparent: true, depthWrite: true, depthTest: true,
+            blending: THREE.NormalBlending,
+        });
+        sunDiscMesh = new THREE.Mesh(discGeo, discMat);
+        sunDiscMesh.position.copy(sunWorldPos);
+        sunDiscMesh.frustumCulled = false;
+        sunDiscMesh.renderOrder = 3;
+        scene.add(sunDiscMesh);
+    }
+
+    // ---------------------------
+    // Milky Way Galactic Band
+    // ---------------------------
+    function createMilkyWay() {
+        if (milkyWayMesh) {
+            scene.remove(milkyWayMesh);
+            milkyWayMesh.geometry.dispose();
+            (milkyWayMesh.material as THREE.ShaderMaterial).dispose();
+            milkyWayMesh = null;
         }
 
-        const geo = new THREE.PlaneGeometry(580, 340, 4, 4);
+        // Wide, short plane — angular span ~62° wide × 24° tall at r=920
+        const geo = new THREE.PlaneGeometry(1100, 380, 4, 4);
         const mat = createSmartMaterial({
-            uniforms: {
-                uMap:   { value: null },
-                uAlpha: { value: 0.0 },
-            },
+            uniforms: {},
             vertexShaderBody: `
                 varying vec2 vUv;
                 void main() {
@@ -594,53 +724,104 @@ export function createEngine({
                 }
             `,
             fragmentShader: `
-                uniform sampler2D uMap;
-                uniform float uAlpha;
                 varying vec2 vUv;
+
+                // --- Noise helpers ---
+                float hash(vec2 p) {
+                    p = fract(p * vec2(127.1, 311.7));
+                    p += dot(p, p + 19.19);
+                    return fract(p.x * p.y);
+                }
+                float vnoise(vec2 p) {
+                    vec2 i = floor(p); vec2 f = fract(p);
+                    f = f * f * (3.0 - 2.0 * f);
+                    return mix(
+                        mix(hash(i),              hash(i + vec2(1.0, 0.0)), f.x),
+                        mix(hash(i + vec2(0.0,1.0)), hash(i + vec2(1.0,1.0)), f.x), f.y
+                    );
+                }
+                float fbm(vec2 p) {
+                    float v = 0.0; float a = 0.5;
+                    mat2 m = mat2(1.6, 1.2, -1.2, 1.6);
+                    for (int i = 0; i < 7; i++) { v += a * vnoise(p); p = m * p; a *= 0.5; }
+                    return v;
+                }
+
                 void main() {
                     float alphaMask = getMaskAlpha();
                     if (alphaMask < 0.01) discard;
-                    vec4 tex = texture2D(uMap, vUv);
 
-                    // Soft vignette: fade all four edges to black so the image
-                    // blends seamlessly into the surrounding sky.
-                    vec2 p = vUv * 2.0 - 1.0;  // –1..+1
-                    float edgeX = smoothstep(1.0, 0.55, abs(p.x));
-                    float edgeY = smoothstep(1.0, 0.30, abs(p.y));
-                    // Extra fade toward the top (let stars show above the glow)
-                    float topFade = smoothstep(0.2, -0.4, p.y);
-                    float vignette = edgeX * edgeY * topFade;
+                    vec2 uv = vUv * 2.0 - 1.0; // -1..1 centred
 
-                    float a = tex.a * uAlpha * alphaMask * vignette;
-                    if (a < 0.003) discard;
-                    gl_FragColor = vec4(tex.rgb, a);
+                    // Galactic band: tight Gaussian falloff vertically
+                    float bandMask = exp(-uv.y * uv.y * 10.0);
+
+                    // Warp UV for organic turbulence (two layers of distortion)
+                    vec2 q = vec2(fbm(uv * 1.5),
+                                  fbm(uv * 1.5 + vec2(5.2, 1.3)));
+                    vec2 r = vec2(fbm(uv * 1.0 + 4.0 * q + vec2(1.7, 9.2)),
+                                  fbm(uv * 1.0 + 4.0 * q + vec2(8.3, 2.8)));
+
+                    float nebula = fbm(uv * 2.0 + 2.0 * r);
+                    float detail = fbm(uv * 5.0 + r * 3.0 + vec2(3.1, 2.7));
+                    float fine   = fbm(uv * 10.0 + vec2(1.0, 5.0));
+
+                    // Base density
+                    float density = smoothstep(0.30, 0.80, nebula) * bandMask;
+                    density      += smoothstep(0.45, 0.85, detail) * bandMask * 0.35;
+
+                    // Dust lanes — dark patches carved into the band
+                    float dust = fbm(uv * 3.5 + vec2(11.0, 7.0));
+                    density   *= (1.0 - smoothstep(0.52, 0.62, dust) * 0.7 * bandMask);
+
+                    // Galactic core boost toward horizontal centre
+                    float galCore = exp(-uv.x * uv.x * 1.2) * bandMask;
+
+                    // --- Color palette ---
+                    vec3 deepBlue  = vec3(0.10, 0.15, 0.45);
+                    vec3 midBlue   = vec3(0.25, 0.30, 0.65);
+                    vec3 purple    = vec3(0.40, 0.20, 0.60);
+                    vec3 coreWarm  = vec3(0.85, 0.80, 0.65); // warm star-cluster glow
+                    vec3 pinkNeb   = vec3(0.65, 0.28, 0.50); // emission nebula pink
+
+                    float t1 = smoothstep(0.3, 0.7, nebula);
+                    float t2 = smoothstep(0.5, 0.8, detail);
+                    float t3 = smoothstep(0.55, 0.75, fine);
+
+                    vec3 color = mix(deepBlue, midBlue, t1);
+                    color = mix(color, purple,  t2 * 0.5);
+                    color = mix(color, pinkNeb, t3 * 0.25 * bandMask);
+                    color += coreWarm * galCore * 0.45 * density;
+
+                    // Micro-star field — denser in the band
+                    float starThresh = mix(0.975, 0.940, bandMask);
+                    float starSeed   = hash(floor(vUv * 500.0));
+                    float star       = step(starThresh, starSeed);
+                    float starBright = hash(floor(vUv * 500.0) + 37.0);
+                    color   += vec3(0.90, 0.95, 1.0) * star * (0.4 + 0.6 * starBright);
+                    density  = max(density, star * bandMask * 0.5);
+
+                    // Soft edge vignette
+                    float ex = smoothstep(0.0, 0.12, vUv.x) * smoothstep(1.0, 0.88, vUv.x);
+                    float ey = smoothstep(0.0, 0.18, vUv.y) * smoothstep(1.0, 0.82, vUv.y);
+
+                    float alpha = density * ex * ey * alphaMask * 0.80;
+                    if (alpha < 0.004) discard;
+                    gl_FragColor = vec4(color, alpha);
                 }
             `,
             transparent: true, depthWrite: false, depthTest: true,
             side: THREE.DoubleSide, blending: THREE.AdditiveBlending,
         });
 
-        sunriseMesh = new THREE.Mesh(geo, mat);
-        // Aligned with builder default lon=275° (camera faces roughly –x direction).
-        // The front face normal must point toward +x (toward origin) so it faces the camera.
-        sunriseMesh.position.set(-900, 75, 0);
-        sunriseMesh.rotation.y = Math.PI / 2;   // normal → +x (toward origin)
-        sunriseMesh.frustumCulled = false;
-        sunriseMesh.renderOrder = 1;
-        scene.add(sunriseMesh);
-
-        const loader = new THREE.TextureLoader();
-        loader.load(url, (texture) => {
-            texture.minFilter = THREE.LinearFilter;
-            texture.magFilter = THREE.LinearFilter;
-            const m = sunriseMesh?.material as THREE.ShaderMaterial | undefined;
-            if (m?.uniforms) {
-                m.uniforms.uMap.value = texture;
-                m.uniforms.uAlpha.value = 1.0;
-            }
-        });
-
-        lastSunriseUrl = url;
+        milkyWayMesh = new THREE.Mesh(geo, mat);
+        const mwDir = new THREE.Vector3(-0.62, 0.60, -0.50).normalize();
+        milkyWayMesh.position.copy(mwDir.clone().multiplyScalar(920));
+        milkyWayMesh.lookAt(0, 0, 0);
+        milkyWayMesh.rotateY(Math.PI);
+        milkyWayMesh.frustumCulled = false;
+        milkyWayMesh.renderOrder = 1;
+        scene.add(milkyWayMesh);
     }
 
     const backdropGroup = new THREE.Group();
@@ -775,6 +956,8 @@ export function createEngine({
     createGround();
     createAtmosphere();
     createMoon();
+    createSun();
+    createMilkyWay();
     createBackdropStars();
 
     // ---------------------------
@@ -968,8 +1151,37 @@ export function createEngine({
             const viewportH = Math.max(1, renderer.domElement.clientHeight);
             const fovRad = state.fov * Math.PI / 180;
             const worldPerPixel = (2 * dist * Math.tan(fovRad * 0.5)) / viewportH;
-            const edgeMarginPx = THREE.MathUtils.lerp(2, 5, starNorm);
-            const offset = THREE.MathUtils.clamp((item.chapterGlowRadiusPx + edgeMarginPx) * worldPerPixel, 3, 42);
+
+            let labelHalfDiagPx = 18;
+            const mat = item.obj.material;
+            if (mat instanceof THREE.ShaderMaterial && mat.uniforms?.uSize?.value instanceof THREE.Vector2) {
+                const uAlpha = (typeof mat.uniforms.uAlpha?.value === "number")
+                    ? (mat.uniforms.uAlpha.value as number)
+                    : 0;
+                const revealT = THREE.MathUtils.smoothstep(uAlpha, 0, 1);
+                const revealScale = 0.82 + 0.28 * revealT;
+                const fadeOutScale = 1.0 + (1.0 - revealT) * 0.06;
+                const zoomTextBoost = 1.0 + (1.0 - THREE.MathUtils.smoothstep(state.fov, 10, 45)) * 0.2;
+                const starTextBoost = THREE.MathUtils.lerp(0.9, 1.35, starNorm);
+                const scaleMul = zoomTextBoost * starTextBoost * revealScale * fadeOutScale;
+                const uSize = mat.uniforms.uSize.value as THREE.Vector2;
+                const targetX = item.initialScale.x * scaleMul;
+                const targetY = item.initialScale.y * scaleMul;
+                uSize.x = THREE.MathUtils.lerp(uSize.x, targetX, 0.2);
+                uSize.y = THREE.MathUtils.lerp(uSize.y, targetY, 0.2);
+
+                const size = mat.uniforms.uSize.value as THREE.Vector2;
+                const pixelH = size.y * viewportH * 0.8;
+                const pixelW = size.x * viewportH * 0.8;
+                // Use a conservative footprint estimate so labels stay local.
+                labelHalfDiagPx = Math.max(6, Math.max(pixelH, pixelW * 0.45) * 0.5);
+            }
+
+            const edgeMarginPx = THREE.MathUtils.lerp(1, 3, starNorm);
+            const requiredPx = item.chapterGlowRadiusPx + edgeMarginPx + labelHalfDiagPx;
+            const zoomPush = 1.0 + (1.0 - THREE.MathUtils.smoothstep(state.fov, 8, 30)) * 0.8;
+            const starPush = THREE.MathUtils.lerp(0.95, 1.2, starNorm);
+            const offset = THREE.MathUtils.clamp(requiredPx * worldPerPixel * zoomPush * starPush, 3, 76);
 
             item.obj.position.copy(starPos);
             item.obj.position.addScaledVector(tangent, offset);
@@ -1159,7 +1371,7 @@ export function createEngine({
                             0,
                             1
                         );
-                        baseScale = THREE.MathUtils.lerp(0.04, 0.085, starNorm);
+                        baseScale = THREE.MathUtils.lerp(0.032, 0.11, starNorm);
                     }
                     
                     const size = new THREE.Vector2(baseScale * texRes.aspect, baseScale);
@@ -1237,7 +1449,7 @@ export function createEngine({
                     
                     root.add(mesh);
                     const chapterMaxFovBias = n.level === 3
-                        ? THREE.MathUtils.lerp(-8, 4, THREE.MathUtils.clamp(
+                        ? THREE.MathUtils.lerp(-4, 8, THREE.MathUtils.clamp(
                             ((chapterStarSizeById.get(n.id) ?? 3.5) - minChapterStarSize) / (maxChapterStarSize - minChapterStarSize),
                             0,
                             1
@@ -1933,12 +2145,6 @@ export function createEngine({
         if (lastBackdropCount !== desiredBackdropCount) {
             createBackdropStars(desiredBackdropCount);
             lastBackdropCount = desiredBackdropCount;
-        }
-
-        // Load sunrise texture when URL is first provided or changes
-        const sunriseUrl = cfg.sunriseTextureUrl ?? '';
-        if (sunriseUrl && sunriseUrl !== lastSunriseUrl) {
-            createSunrise(sunriseUrl);
         }
 
         let shouldRebuild = false;
@@ -2868,7 +3074,10 @@ export function createEngine({
         if (atmosphereMesh) atmosphereMesh.visible = currentConfig?.showAtmosphere ?? false;
         if (moonMesh) moonMesh.visible = currentConfig?.showMoon ?? true;
         if (moonGlowMesh) moonGlowMesh.visible = currentConfig?.showMoon ?? true;
-        if (sunriseMesh) sunriseMesh.visible = currentConfig?.showSunrise ?? true;
+        const showSun = currentConfig?.showSunrise ?? true;
+        if (sunDiscMesh) sunDiscMesh.visible = showSun;
+        if (sunHaloMesh) sunHaloMesh.visible = showSun;
+        if (milkyWayMesh) milkyWayMesh.visible = currentConfig?.showMilkyWay ?? true;
 
         const DIVISION_THRESHOLD = 60;
         const showDivisions = state.fov > DIVISION_THRESHOLD;
@@ -2955,7 +3164,9 @@ export function createEngine({
         constellationLayer.dispose();
         if (moonMesh) { scene.remove(moonMesh); moonMesh.geometry.dispose(); (moonMesh.material as THREE.ShaderMaterial).dispose(); moonMesh = null; }
         if (moonGlowMesh) { scene.remove(moonGlowMesh); moonGlowMesh.geometry.dispose(); (moonGlowMesh.material as THREE.ShaderMaterial).dispose(); moonGlowMesh = null; }
-        if (sunriseMesh) { scene.remove(sunriseMesh); sunriseMesh.geometry.dispose(); (sunriseMesh.material as THREE.ShaderMaterial).dispose(); sunriseMesh = null; }
+        if (sunDiscMesh) { scene.remove(sunDiscMesh); sunDiscMesh.geometry.dispose(); (sunDiscMesh.material as THREE.ShaderMaterial).dispose(); sunDiscMesh = null; }
+        if (sunHaloMesh) { scene.remove(sunHaloMesh); sunHaloMesh.geometry.dispose(); (sunHaloMesh.material as THREE.ShaderMaterial).dispose(); sunHaloMesh = null; }
+        if (milkyWayMesh) { scene.remove(milkyWayMesh); milkyWayMesh.geometry.dispose(); (milkyWayMesh.material as THREE.ShaderMaterial).dispose(); milkyWayMesh = null; }
         renderer.dispose();
         renderer.domElement.remove();
     }

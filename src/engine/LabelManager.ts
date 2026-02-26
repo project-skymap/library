@@ -135,7 +135,7 @@ const DEFAULT_LABEL_BEHAVIOR: ResolvedLabelBehavior = {
         },
         chapter: {
             minFov: 0,
-            maxFov: 40,
+            maxFov: 46,
             priority: 30,
             mode: "pinned",
             maxOverlapPx: 999,
@@ -334,6 +334,23 @@ export class LabelManager {
                                 targetAlpha *= fade;
                             }
 
+                            if (targetAlpha > 0 && record.classKey === "chapter" && !isSpecial) {
+                                // Center-weighted reveal: wide/medium zoom favors center labels.
+                                const dist = Math.sqrt(ndcX * ndcX + ndcY * ndcY);
+                                const fovWeight = THREE.MathUtils.smoothstep(ctx.fov, 10, 40);
+                                const focusOuter = THREE.MathUtils.lerp(0.82, 0.62, fovWeight);
+                                const focusInner = THREE.MathUtils.lerp(0.24, 0.16, fovWeight);
+                                const centerFocus = 1.0 - THREE.MathUtils.smoothstep(dist, focusInner, focusOuter);
+                                const chapterVisibility = THREE.MathUtils.lerp(1.0, centerFocus, fovWeight);
+                                targetAlpha *= chapterVisibility;
+                                if (dist > focusOuter && ctx.fov > 12) {
+                                    targetAlpha = 0;
+                                }
+                                if (dist < 0.18 && ctx.fov < 58) {
+                                    targetAlpha = Math.max(targetAlpha, 0.55);
+                                }
+                            }
+
                             if (targetAlpha > 0 && ctx.shouldFilter) {
                                 const node = record.label.node;
                                 if (node.level === 3) {
@@ -359,10 +376,14 @@ export class LabelManager {
                                         priority: classBehavior.priority,
                                     };
                                     const glowRadiusPx = record.label.chapterGlowRadiusPx ?? 18;
-                                    const clearancePx = Math.max(2, glowRadiusPx * 0.05);
+                                    const clearancePx = Math.max(1, glowRadiusPx * 0.02);
                                     const distToLabel = boundsDistPoint(rect, starSX, starSY);
-                                    if (distToLabel < glowRadiusPx + clearancePx) {
-                                        targetAlpha = 0;
+                                    if (glowRadiusPx >= 70) {
+                                        const threshold = glowRadiusPx + clearancePx;
+                                        const visibility = THREE.MathUtils.smoothstep(distToLabel, threshold - 4, threshold + 2);
+                                        const lowFovRelief = 1.0 - THREE.MathUtils.smoothstep(ctx.fov, 8, 18);
+                                        const boostedVisibility = isSpecial ? Math.max(visibility, 0.92) : Math.max(visibility, lowFovRelief * 0.85);
+                                        targetAlpha *= boostedVisibility;
                                     }
                                 }
                             }

@@ -97,9 +97,9 @@ export type StarMapConfig = {
     showBackdropStars?: boolean;
     backdropStarsCount?: number;
     showAtmosphere?: boolean;
-    showMoon?: boolean;          // Whether to show the moon (default: true)
-    showSunrise?: boolean;       // Whether to show the sunrise (default: true when URL provided)
-    sunriseTextureUrl?: string;  // URL to the sunrise/horizon glow texture
+    showMoon?: boolean;          // Procedural moon (default: true)
+    showSunrise?: boolean;       // Procedural sun at horizon (default: true)
+    showMilkyWay?: boolean;      // Procedural galactic band (default: true)
     starSizeExponent?: number; // Power curve exponent for weight→size mapping. Default 2.8. Higher = more dramatic spread.
     starSizeScale?: number;    // Uniform multiplier applied to all star sizes. Default 1.0.
     showBookLabels?: boolean;
