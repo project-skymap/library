@@ -761,6 +761,7 @@ export function createEngine({
         const starChapterIndices: number[] = [];
         const starTestamentIndices: number[] = [];
         const starDivisionIndices: number[] = [];
+        const chapterLineCutById = new Map<string, number>();
         
         // Realistic Star Colors (High Brightness/Whiteness for Stellarium Look)
         const SPECTRAL_COLORS = [
@@ -800,6 +801,13 @@ export function createEngine({
                     baseSize = Math.pow(t, sizeExp) * 22.0 * sizeScale;
                 }
                 starSizes.push(baseSize);
+                // World-space line truncation radius near each chapter star.
+                // Derived from the same star size curve so larger stars reserve
+                // more space around their core.
+                chapterLineCutById.set(
+                    n.id,
+                    THREE.MathUtils.clamp(2.5 + baseSize * 0.45, 3.0, 40.0)
+                );
                 
                 // Assign weighted random spectral color
                 // Bias towards cooler stars (index higher) using pow(r, 1.5)
@@ -1123,19 +1131,41 @@ export function createEngine({
                 const c1 = chapters[i]; const c2 = chapters[i+1];
                 if (!c1 || !c2) continue;
                 const p1 = getPosition(c1); const p2 = getPosition(c2);
-                linePoints.push(p1.x, p1.y, p1.z); linePoints.push(p2.x, p2.y, p2.z);
+                const dir = new THREE.Vector3().subVectors(p2, p1);
+                const len = dir.length();
+                if (len < 0.001) continue;
+                dir.divideScalar(len);
+
+                let cutA = chapterLineCutById.get(c1.id) ?? 4.0;
+                let cutB = chapterLineCutById.get(c2.id) ?? 4.0;
+
+                // Keep short segments valid by capping combined truncation.
+                const maxTotalCut = len * 0.8;
+                const totalCut = cutA + cutB;
+                if (totalCut > maxTotalCut && totalCut > 0) {
+                    const scale = maxTotalCut / totalCut;
+                    cutA *= scale;
+                    cutB *= scale;
+                }
+
+                const a = p1.clone().addScaledVector(dir, cutA);
+                const b = p2.clone().addScaledVector(dir, -cutB);
+                linePoints.push(a.x, a.y, a.z); linePoints.push(b.x, b.y, b.z);
             }
         }
         if (linePoints.length > 0) {
             // Build quad-strip mesh for glowing lines (Stellarium-style)
             const quadPositions: number[] = [];
             const quadUvs: number[] = [];
+            const quadSegmentIndex: number[] = [];
             const quadIndices: number[] = [];
             const lineWidth = 8.0; // world-space half-width for glow region
+            const segmentCount = linePoints.length / 6;
 
             for (let i = 0; i < linePoints.length; i += 6) {
                 const ax = linePoints[i], ay = linePoints[i+1], az = linePoints[i+2];
                 const bx = linePoints[i+3], by = linePoints[i+4], bz = linePoints[i+5];
+                const segIndex = i / 6;
 
                 // Direction and perpendicular in 3D
                 const dx = bx - ax, dy = by - ay, dz = bz - az;
@@ -1157,6 +1187,7 @@ export function createEngine({
                 quadPositions.push(ax + px*hw, ay + py*hw, az + pz*hw); quadUvs.push(0, 1);
                 quadPositions.push(bx - px*hw, by - py*hw, bz - pz*hw); quadUvs.push(1, -1);
                 quadPositions.push(bx + px*hw, by + py*hw, bz + pz*hw); quadUvs.push(1, 1);
+                quadSegmentIndex.push(segIndex, segIndex, segIndex, segIndex);
 
                 quadIndices.push(baseIdx, baseIdx+1, baseIdx+2, baseIdx+1, baseIdx+3, baseIdx+2);
             }
@@ -1164,19 +1195,25 @@ export function createEngine({
             const lineGeo = new THREE.BufferGeometry();
             lineGeo.setAttribute('position', new THREE.Float32BufferAttribute(quadPositions, 3));
             lineGeo.setAttribute('lineUv', new THREE.Float32BufferAttribute(quadUvs, 2));
+            lineGeo.setAttribute('segmentIndex', new THREE.Float32BufferAttribute(quadSegmentIndex, 1));
             lineGeo.setIndex(quadIndices);
 
             const lineMat = createSmartMaterial({
                 uniforms: {
                     color: { value: new THREE.Color(0xaaccff) },
                     uLineWidth: { value: 1.5 },
-                    uGlowIntensity: { value: 0.3 }
+                    uGlowIntensity: { value: 0.3 },
+                    uReveal: { value: 0.0 },
+                    uSegmentCount: { value: Math.max(1, segmentCount) },
                 },
                 vertexShaderBody: `
                     attribute vec2 lineUv;
+                    attribute float segmentIndex;
                     varying vec2 vLineUv;
+                    varying float vSegmentIndex;
                     void main() {
                         vLineUv = lineUv;
+                        vSegmentIndex = segmentIndex;
                         vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
                         gl_Position = smartProject(mvPosition);
                         vScreenPos = gl_Position.xy / gl_Position.w;
@@ -1186,10 +1223,30 @@ export function createEngine({
                     uniform vec3 color;
                     uniform float uLineWidth;
                     uniform float uGlowIntensity;
+                    uniform float uReveal;
+                    uniform float uSegmentCount;
                     varying vec2 vLineUv;
+                    varying float vSegmentIndex;
                     void main() {
                         float alphaMask = getMaskAlpha();
                         if (alphaMask < 0.01) discard;
+
+                        // Progressive line draw tuned closer to Stellarium feel:
+                        // - eased global reveal
+                        // - sequential segment staggering with slight overlap
+                        // - smooth growth of each segment endpoint
+                        float reveal = smoothstep(0.0, 1.0, uReveal);
+                        float segCount = max(uSegmentCount, 1.0);
+                        float segStart = vSegmentIndex / segCount;
+                        float segSpan = (1.25 / segCount) + 0.04;
+                        float localReveal = clamp((reveal - segStart) / segSpan, 0.0, 1.0);
+                        localReveal = smoothstep(0.0, 1.0, localReveal);
+
+                        // Keep fragment only when x is before the animated endpoint.
+                        float endpointMask = 1.0 - smoothstep(localReveal - 0.03, localReveal + 0.02, vLineUv.x);
+                        // Fade in segment brightness as it begins drawing.
+                        float drawMask = endpointMask * smoothstep(0.0, 0.08, localReveal);
+                        if (drawMask < 0.001) discard;
 
                         float dist = abs(vLineUv.y);
 
@@ -1203,7 +1260,7 @@ export function createEngine({
                         float alpha = max(glow, base);
                         if (alpha < 0.005) discard;
 
-                        gl_FragColor = vec4(color, alpha * alphaMask);
+                        gl_FragColor = vec4(color, alpha * alphaMask * drawMask);
                     }
                 `,
                 transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
@@ -2366,7 +2423,7 @@ export function createEngine({
         artFader.target = currentConfig?.showConstellationArt ?? false;
         artFader.update(dt);
 
-        constellationLayer.update(state.fov, artFader.eased > 0.01, camera);
+        constellationLayer.update(state.fov, artFader.eased > 0.01, camera, dt);
         const baseArtOpacity = THREE.MathUtils.clamp(currentConfig?.constellationBaseOpacity ?? 1.0, 0, 300);
         constellationLayer.setGlobalOpacity?.(artFader.eased * baseArtOpacity);
         backdropGroup.visible = currentConfig?.showBackdropStars ?? true;
@@ -2382,7 +2439,8 @@ export function createEngine({
                 const mat = (constellationLines as THREE.Mesh).material as THREE.ShaderMaterial;
                 if (mat.uniforms?.color) {
                     mat.uniforms.color.value.setHex(0xaaccff);
-                    mat.opacity = linesFader.eased;
+                    if (mat.uniforms.uReveal) mat.uniforms.uReveal.value = linesFader.eased;
+                    mat.opacity = 1.0;
                 }
             }
         }

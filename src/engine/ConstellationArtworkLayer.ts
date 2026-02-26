@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import { ConstellationConfig, ConstellationItem } from "../types";
 import { createSmartMaterial } from "./materials";
+import { Fader } from "./fader";
 
 function buildSphereQuad(
     center: THREE.Vector3,
@@ -95,8 +96,11 @@ export class ConstellationArtworkLayer {
         center: THREE.Vector3;
         rightDir: THREE.Vector3;
         upDir: THREE.Vector3;
+        halfWidth: number;
         halfHeight: number;
         domeRadius: number;
+        visibleFader: Fader;
+        imageLoadedFader: Fader;
     }[] = [];
     private textureLoader: THREE.TextureLoader;
     private hoveredId: string | null = null;
@@ -295,9 +299,13 @@ export class ConstellationArtworkLayer {
                         if (item) {
                             item.mesh.geometry.dispose();
                             item.mesh.geometry = newGeometry;
+                            item.halfWidth = newHalfWidth;
                             item.halfHeight = newHalfHeight;
+                            item.imageLoadedFader.target = true;
                         }
                     }
+                    const item = this.items.find(i => i.config.id === c.id);
+                    if (item) item.imageLoadedFader.target = true;
                     console.log(`[Constellation] Loaded: ${c.id} (${tex.image.width}x${tex.image.height})`);
                 },
                 (progress) => {
@@ -326,8 +334,11 @@ export class ConstellationArtworkLayer {
                 center: center.clone(),
                 rightDir: rightDir.clone(),
                 upDir: upDir.clone(),
+                halfWidth,
                 halfHeight,
                 domeRadius: radius,
+                visibleFader: new Fader(0.35),
+                imageLoadedFader: new Fader(0.5),
             });
         });
     }
@@ -353,7 +364,7 @@ export class ConstellationArtworkLayer {
      * constellations whose center is near or past the projection clip
      * boundary are hidden to prevent mesh distortion from escape positions.
      */
-    update(fov: number, showArt: boolean, camera?: THREE.Camera) {
+    update(fov: number, showArt: boolean, camera?: THREE.Camera, dt = 0.016) {
         this.root.visible = showArt;
         if (!showArt) {
             return;
@@ -379,20 +390,31 @@ export class ConstellationArtworkLayer {
                 opacity = THREE.MathUtils.lerp(fade.maxOpacity, fade.minOpacity, t);
             }
 
+            // Adaptive zoom fade based on each constellation's own angular size.
+            const halfAngleX = Math.atan2(item.halfWidth, item.domeRadius);
+            const halfAngleY = Math.atan2(item.halfHeight, item.domeRadius);
+            const diameterDeg = Math.max(halfAngleX, halfAngleY) * 2 * THREE.MathUtils.RAD2DEG;
+            const zoomFade = THREE.MathUtils.smoothstep(fov, diameterDeg / 5, diameterDeg / 2);
+            opacity *= zoomFade;
+
             // Scale fade-driven opacity by per-constellation base opacity from config.
             opacity = Math.min(Math.max(opacity, 0), 1) * this._globalOpacity * item.baseOpacity;
 
-            // Stellarium-style visibility culling: hide constellations whose
-            // center direction is > ~80° from camera forward (approaching the
-            // clip boundary). Smooth fade from 70° to 85°.
+            // Per-constellation visibility fader driven by in-view state.
             if (cameraForward) {
                 const centerDir = item.center.clone().normalize();
                 const dot = cameraForward.dot(centerDir);
-                // dot=1 → directly ahead, dot=0 → 90° away, dot<0 → behind
-                // cos(70°)≈0.342, cos(85°)≈0.087
-                const visFade = THREE.MathUtils.smoothstep(dot, 0.087, 0.342);
-                opacity *= visFade;
+                const angle = Math.acos(THREE.MathUtils.clamp(dot, -1, 1));
+                const angularRadius = Math.max(halfAngleX, halfAngleY);
+                const margin = THREE.MathUtils.degToRad(8);
+                item.visibleFader.target = angle <= (Math.PI * 0.5 + angularRadius + margin);
+            } else {
+                item.visibleFader.target = true;
             }
+            item.visibleFader.update(dt);
+            opacity *= item.visibleFader.eased;
+            item.imageLoadedFader.update(dt);
+            opacity *= item.imageLoadedFader.eased;
 
             item.material.uniforms.uOpacity.value = opacity;
             item.mesh.visible = opacity > 0.001;
