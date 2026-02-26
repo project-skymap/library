@@ -113,6 +113,15 @@ export type ConstellationConfig = {
         opacity: number;
         blend: string;
         zBias: number;
+        linePaths?: {
+            weight?: "thin" | "normal" | "bold";
+            nodes: string[];
+        }[];
+        lineSegments?: {
+            weight?: "thin" | "normal" | "bold";
+            from: string;
+            to: string;
+        }[];
         fade: {
             zoomInStart: number;
             zoomInEnd: number;

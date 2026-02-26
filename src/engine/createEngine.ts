@@ -1116,7 +1116,130 @@ export function createEngine({
         root.add(starPoints);
 
         const linePoints: number[] = [];
+        const lineWeights: number[] = [];
+        const seenEdges = new Set<string>();
         const bookMap = new Map<string, SceneNode[]>();
+        const parseBookKeyFromChapterId = (id: string | undefined): string | null => {
+            if (!id) return null;
+            const parts = id.split(":");
+            if (parts.length < 3 || parts[0] !== "C") return null;
+            return parts[1] || null;
+        };
+        const weightScaleFromLabel = (weight?: string): number => {
+            if (weight === "thin") return 0.65;
+            if (weight === "bold") return 1.6;
+            return 1.0;
+        };
+        const edgeKey = (aNodeId: string, bNodeId: string) =>
+            aNodeId < bNodeId ? `${aNodeId}|${bNodeId}` : `${bNodeId}|${aNodeId}`;
+        const addTruncatedSegment = (aNodeId: string, bNodeId: string, weightScale: number) => {
+            if (aNodeId === bNodeId) return;
+            const k = edgeKey(aNodeId, bNodeId);
+            if (seenEdges.has(k)) return;
+            seenEdges.add(k);
+
+            const aNode = nodeById.get(aNodeId);
+            const bNode = nodeById.get(bNodeId);
+            if (!aNode || !bNode) return;
+
+            const p1 = getPosition(aNode);
+            const p2 = getPosition(bNode);
+            const dir = new THREE.Vector3().subVectors(p2, p1);
+            const len = dir.length();
+            if (len < 0.001) return;
+            dir.divideScalar(len);
+
+            let cutA = chapterLineCutById.get(aNodeId) ?? 4.0;
+            let cutB = chapterLineCutById.get(bNodeId) ?? 4.0;
+
+            // Keep short segments valid by capping combined truncation.
+            const maxTotalCut = len * 0.8;
+            const totalCut = cutA + cutB;
+            if (totalCut > maxTotalCut && totalCut > 0) {
+                const scale = maxTotalCut / totalCut;
+                cutA *= scale;
+                cutB *= scale;
+            }
+
+            const a = p1.clone().addScaledVector(dir, cutA);
+            const b = p2.clone().addScaledVector(dir, -cutB);
+            linePoints.push(a.x, a.y, a.z); linePoints.push(b.x, b.y, b.z);
+            lineWeights.push(weightScale);
+        };
+
+        // Parse custom line topology from constellation config (Stellarium-style).
+        // Any book with custom paths will skip the default sequential chapter linking.
+        const customBooks = new Set<string>();
+        const rawConstellations = (cfg.constellations && Array.isArray((cfg.constellations as any).constellations))
+            ? (cfg.constellations as any).constellations
+            : [];
+        for (const c of rawConstellations) {
+            const linePaths = Array.isArray(c?.linePaths) ? c.linePaths : [];
+            const lineSegments = Array.isArray(c?.lineSegments) ? c.lineSegments : [];
+            if (linePaths.length === 0 && lineSegments.length === 0) continue;
+
+            const anchorBookKey = parseBookKeyFromChapterId(c?.anchors?.[0]);
+            if (anchorBookKey) customBooks.add(anchorBookKey);
+
+            for (const segDef of lineSegments) {
+                let from: string | undefined;
+                let to: string | undefined;
+                let weightLabel: string | undefined;
+
+                if (Array.isArray(segDef)) {
+                    const raw = segDef as unknown[];
+                    if (typeof raw[0] === "string" && (raw[0] === "thin" || raw[0] === "bold" || raw[0] === "normal")) {
+                        weightLabel = raw[0];
+                        from = typeof raw[1] === "string" ? raw[1] : undefined;
+                        to = typeof raw[2] === "string" ? raw[2] : undefined;
+                    } else {
+                        from = typeof raw[0] === "string" ? raw[0] : undefined;
+                        to = typeof raw[1] === "string" ? raw[1] : undefined;
+                    }
+                } else if (segDef) {
+                    from = typeof (segDef as any).from === "string" ? (segDef as any).from : undefined;
+                    to = typeof (segDef as any).to === "string" ? (segDef as any).to : undefined;
+                    weightLabel = typeof (segDef as any).weight === "string" ? (segDef as any).weight : undefined;
+                }
+
+                if (!from || !to) continue;
+                const k1 = parseBookKeyFromChapterId(from);
+                const k2 = parseBookKeyFromChapterId(to);
+                if (k1) customBooks.add(k1);
+                if (k2) customBooks.add(k2);
+
+                addTruncatedSegment(from, to, weightScaleFromLabel(weightLabel));
+            }
+
+            for (const pathDef of linePaths) {
+                let nodes: string[] = [];
+                let weightLabel: string | undefined = undefined;
+
+                if (Array.isArray(pathDef)) {
+                    const raw = pathDef as unknown[];
+                    if (typeof raw[0] === "string" && (raw[0] === "thin" || raw[0] === "bold" || raw[0] === "normal")) {
+                        weightLabel = raw[0];
+                        nodes = raw.slice(1).filter((v): v is string => typeof v === "string");
+                    } else {
+                        nodes = raw.filter((v): v is string => typeof v === "string");
+                    }
+                } else if (pathDef && Array.isArray((pathDef as any).nodes)) {
+                    nodes = (pathDef as any).nodes.filter((v: unknown): v is string => typeof v === "string");
+                    weightLabel = typeof (pathDef as any).weight === "string" ? (pathDef as any).weight : undefined;
+                }
+
+                if (nodes.length < 2) continue;
+
+                const inferredBookKey = parseBookKeyFromChapterId(nodes[0]);
+                if (inferredBookKey) customBooks.add(inferredBookKey);
+
+                const w = weightScaleFromLabel(weightLabel);
+                for (let i = 0; i < nodes.length - 1; i++) {
+                    addTruncatedSegment(nodes[i], nodes[i + 1], w);
+                }
+            }
+        }
+
         for (const n of laidOut.nodes) {
             if (n.level === 3 && n.parent) {
                 const list = bookMap.get(n.parent) ?? [];
@@ -1127,36 +1250,19 @@ export function createEngine({
         for (const chapters of bookMap.values()) {
             chapters.sort((a, b) => ((a.meta?.chapter as number) || 0) - ((b.meta?.chapter as number) || 0));
             if (chapters.length < 2) continue;
+            const bookKey = (chapters[0]?.meta?.bookKey as string | undefined) ?? null;
+            if (bookKey && customBooks.has(bookKey)) continue;
             for (let i = 0; i < chapters.length - 1; i++) {
                 const c1 = chapters[i]; const c2 = chapters[i+1];
                 if (!c1 || !c2) continue;
-                const p1 = getPosition(c1); const p2 = getPosition(c2);
-                const dir = new THREE.Vector3().subVectors(p2, p1);
-                const len = dir.length();
-                if (len < 0.001) continue;
-                dir.divideScalar(len);
-
-                let cutA = chapterLineCutById.get(c1.id) ?? 4.0;
-                let cutB = chapterLineCutById.get(c2.id) ?? 4.0;
-
-                // Keep short segments valid by capping combined truncation.
-                const maxTotalCut = len * 0.8;
-                const totalCut = cutA + cutB;
-                if (totalCut > maxTotalCut && totalCut > 0) {
-                    const scale = maxTotalCut / totalCut;
-                    cutA *= scale;
-                    cutB *= scale;
-                }
-
-                const a = p1.clone().addScaledVector(dir, cutA);
-                const b = p2.clone().addScaledVector(dir, -cutB);
-                linePoints.push(a.x, a.y, a.z); linePoints.push(b.x, b.y, b.z);
+                addTruncatedSegment(c1.id, c2.id, 1.0);
             }
         }
         if (linePoints.length > 0) {
             // Build quad-strip mesh for glowing lines (Stellarium-style)
             const quadPositions: number[] = [];
             const quadUvs: number[] = [];
+            const quadLineWeight: number[] = [];
             const quadSegmentIndex: number[] = [];
             const quadIndices: number[] = [];
             const lineWidth = 8.0; // world-space half-width for glow region
@@ -1187,6 +1293,8 @@ export function createEngine({
                 quadPositions.push(ax + px*hw, ay + py*hw, az + pz*hw); quadUvs.push(0, 1);
                 quadPositions.push(bx - px*hw, by - py*hw, bz - pz*hw); quadUvs.push(1, -1);
                 quadPositions.push(bx + px*hw, by + py*hw, bz + pz*hw); quadUvs.push(1, 1);
+                const w = lineWeights[segIndex] ?? 1.0;
+                quadLineWeight.push(w, w, w, w);
                 quadSegmentIndex.push(segIndex, segIndex, segIndex, segIndex);
 
                 quadIndices.push(baseIdx, baseIdx+1, baseIdx+2, baseIdx+1, baseIdx+3, baseIdx+2);
@@ -1195,6 +1303,7 @@ export function createEngine({
             const lineGeo = new THREE.BufferGeometry();
             lineGeo.setAttribute('position', new THREE.Float32BufferAttribute(quadPositions, 3));
             lineGeo.setAttribute('lineUv', new THREE.Float32BufferAttribute(quadUvs, 2));
+            lineGeo.setAttribute('lineWeight', new THREE.Float32BufferAttribute(quadLineWeight, 1));
             lineGeo.setAttribute('segmentIndex', new THREE.Float32BufferAttribute(quadSegmentIndex, 1));
             lineGeo.setIndex(quadIndices);
 
@@ -1208,11 +1317,14 @@ export function createEngine({
                 },
                 vertexShaderBody: `
                     attribute vec2 lineUv;
+                    attribute float lineWeight;
                     attribute float segmentIndex;
                     varying vec2 vLineUv;
+                    varying float vLineWeight;
                     varying float vSegmentIndex;
                     void main() {
                         vLineUv = lineUv;
+                        vLineWeight = lineWeight;
                         vSegmentIndex = segmentIndex;
                         vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
                         gl_Position = smartProject(mvPosition);
@@ -1226,6 +1338,7 @@ export function createEngine({
                     uniform float uReveal;
                     uniform float uSegmentCount;
                     varying vec2 vLineUv;
+                    varying float vLineWeight;
                     varying float vSegmentIndex;
                     void main() {
                         float alphaMask = getMaskAlpha();
@@ -1251,11 +1364,11 @@ export function createEngine({
                         float dist = abs(vLineUv.y);
 
                         // Anti-aliased core line
-                        float hw = uLineWidth * 0.05;
+                        float hw = (uLineWidth * vLineWeight) * 0.05;
                         float base = smoothstep(hw + 0.08, hw - 0.08, dist);
 
                         // Soft glow extending outward
-                        float glow = (1.0 - dist) * uGlowIntensity;
+                        float glow = (1.0 - dist) * uGlowIntensity * vLineWeight;
 
                         float alpha = max(glow, base);
                         if (alpha < 0.005) discard;
