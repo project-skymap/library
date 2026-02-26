@@ -6,6 +6,8 @@ import { ConstellationArtworkLayer } from "./ConstellationArtworkLayer";
 import { PROJECTIONS, BlendedProjection } from "./projections";
 import type { Projection, ProjectionId } from "./projections";
 import { Fader } from "./fader";
+import { LabelManager } from "./LabelManager";
+import type { DynamicLabel } from "./LabelManager";
 
 // Haptic feedback helper
 function triggerHaptic(style: 'light' | 'medium' | 'heavy' = 'light') {
@@ -74,6 +76,7 @@ export function createEngine({
     // ---------------------------
     let hoveredBookId: string | null = null;
     let focusedBookId: string | null = null;
+    let focusedNodeId: string | null = null;
     let orderRevealEnabled = true;
     let activeBookIndex = -1;
     let orderRevealStrength = 0.0; // Animated 0 -> 1
@@ -380,6 +383,10 @@ export function createEngine({
     }
     
         let atmosphereMesh: THREE.Mesh | null = null;
+    let moonMesh: THREE.Mesh | null = null;
+    let moonGlowMesh: THREE.Mesh | null = null;
+    let sunriseMesh: THREE.Mesh | null = null;
+    let lastSunriseUrl = '';
 
     function createAtmosphere() {
         const geometry = new THREE.SphereGeometry(990, 64, 64);
@@ -436,10 +443,209 @@ export function createEngine({
         atmosphereMesh = atm;
         groundGroup.add(atm);
     }
-    
+
+    // ---------------------------
+    // Moon
+    // ---------------------------
+    function createMoon() {
+        const moonDir = new THREE.Vector3(-0.38, 0.62, -0.68).normalize();
+        const moonWorldPos = moonDir.clone().multiplyScalar(2000);
+
+        // Outer corona/glow (additive)
+        const glowGeo = new THREE.PlaneGeometry(1, 1);
+        const glowMat = createSmartMaterial({
+            uniforms: { uMoonSize: { value: 0.082 } },
+            vertexShaderBody: `
+                uniform float uMoonSize;
+                varying vec2 vUv;
+                void main() {
+                    vUv = uv;
+                    vec4 mvPos = modelViewMatrix * vec4(0.0, 0.0, 0.0, 1.0);
+                    vec4 projected = smartProject(mvPos);
+                    if (projected.z > 4.0) { gl_Position = vec4(10.0, 10.0, 10.0, 1.0); return; }
+                    vec2 offset = position.xy * uMoonSize * uScale * 2.4;
+                    projected.xy += offset / vec2(uAspect, 1.0);
+                    vScreenPos = projected.xy / projected.w;
+                    gl_Position = projected;
+                }
+            `,
+            fragmentShader: `
+                varying vec2 vUv;
+                void main() {
+                    float alphaMask = getMaskAlpha();
+                    if (alphaMask < 0.01) discard;
+                    vec2 p = vUv * 2.0 - 1.0;
+                    float d = length(p);
+                    if (d > 1.0) discard;
+                    float halo = exp(-5.0 * d * d) * 0.07;
+                    halo += exp(-2.5 * max(0.0, d - 0.42)) * 0.045;
+                    if (halo < 0.003) discard;
+                    gl_FragColor = vec4(vec3(0.78, 0.88, 1.0) * halo, halo * alphaMask);
+                }
+            `,
+            transparent: true, depthWrite: false, depthTest: true,
+            blending: THREE.AdditiveBlending,
+        });
+        moonGlowMesh = new THREE.Mesh(glowGeo, glowMat);
+        moonGlowMesh.position.copy(moonWorldPos);
+        moonGlowMesh.frustumCulled = false;
+        moonGlowMesh.renderOrder = 2;
+        scene.add(moonGlowMesh);
+
+        // Moon disc (opaque — occludes background stars)
+        const discGeo = new THREE.PlaneGeometry(1, 1);
+        const discMat = createSmartMaterial({
+            uniforms: { uMoonSize: { value: 0.082 } },
+            vertexShaderBody: `
+                uniform float uMoonSize;
+                varying vec2 vUv;
+                void main() {
+                    vUv = uv;
+                    vec4 mvPos = modelViewMatrix * vec4(0.0, 0.0, 0.0, 1.0);
+                    vec4 projected = smartProject(mvPos);
+                    if (projected.z > 4.0) { gl_Position = vec4(10.0, 10.0, 10.0, 1.0); return; }
+                    vec2 offset = position.xy * uMoonSize * uScale;
+                    projected.xy += offset / vec2(uAspect, 1.0);
+                    vScreenPos = projected.xy / projected.w;
+                    gl_Position = projected;
+                }
+            `,
+            fragmentShader: `
+                varying vec2 vUv;
+                void main() {
+                    float alphaMask = getMaskAlpha();
+                    if (alphaMask < 0.01) discard;
+                    vec2 p = vUv * 2.0 - 1.0;
+                    float d = length(p);
+                    if (d > 1.0) discard;
+
+                    float edge = smoothstep(1.0, 0.90, d);
+
+                    // Phase: sunlight from upper-right (gibbous moon)
+                    vec2 sunDir2D = normalize(vec2(0.55, 0.45));
+                    float phaseRaw = dot(normalize(p + vec2(0.0001)), sunDir2D);
+                    float lit = smoothstep(-0.18, 0.32, phaseRaw);
+
+                    // Limb darkening (classical sqrt law)
+                    float cosTheta = sqrt(max(0.001, 1.0 - d * d));
+                    float limb = cosTheta * 0.42 + 0.58;
+
+                    // Procedural surface texture
+                    float angle = atan(p.y, p.x);
+                    float r = d;
+                    float detail = sin(angle * 5.0 + 2.1) * sin(r * 8.3) * 0.038
+                                 + sin(angle * 11.0 - 1.3) * sin(r * 13.0) * 0.022
+                                 + sin(angle * 2.0 + 0.8) * (1.0 - r) * 0.055
+                                 + sin(angle * 17.0 + r * 6.5) * 0.014
+                                 + sin(angle * 23.0 - r * 11.0) * 0.009;
+
+                    // Mare (dark maria) patches
+                    float mare1 = 1.0 - smoothstep(0.0, 0.30, length(p - vec2(-0.20, 0.22)));
+                    float mare2 = 1.0 - smoothstep(0.0, 0.20, length(p - vec2( 0.10, 0.30)));
+                    float mare3 = 1.0 - smoothstep(0.0, 0.24, length(p - vec2( 0.17,-0.06)));
+                    float mare4 = 1.0 - smoothstep(0.0, 0.14, length(p - vec2(-0.30,-0.20)));
+                    float totalMare = clamp(mare1*0.50 + mare2*0.38 + mare3*0.32 + mare4*0.28, 0.0, 0.58);
+
+                    vec3 highland  = vec3(0.88, 0.85, 0.80);
+                    vec3 mareColor = vec3(0.40, 0.39, 0.37);
+                    vec3 moonBase  = clamp(mix(highland, mareColor, totalMare) + detail, 0.0, 1.0);
+
+                    vec3 litSurface = moonBase * limb;
+                    vec3 earthshine = vec3(0.038, 0.052, 0.078);
+                    vec3 finalColor = mix(earthshine, litSurface, lit);
+
+                    gl_FragColor = vec4(finalColor * edge, edge * alphaMask);
+                }
+            `,
+            transparent: true, depthWrite: true, depthTest: true,
+            blending: THREE.NormalBlending,
+        });
+        moonMesh = new THREE.Mesh(discGeo, discMat);
+        moonMesh.position.copy(moonWorldPos);
+        moonMesh.frustumCulled = false;
+        moonMesh.renderOrder = 3;
+        scene.add(moonMesh);
+    }
+
+    // ---------------------------
+    // Sunrise / Horizon Glow
+    // ---------------------------
+    function createSunrise(url: string) {
+        if (sunriseMesh) {
+            scene.remove(sunriseMesh);
+            sunriseMesh.geometry.dispose();
+            (sunriseMesh.material as THREE.ShaderMaterial).dispose();
+            sunriseMesh = null;
+        }
+
+        const geo = new THREE.PlaneGeometry(580, 340, 4, 4);
+        const mat = createSmartMaterial({
+            uniforms: {
+                uMap:   { value: null },
+                uAlpha: { value: 0.0 },
+            },
+            vertexShaderBody: `
+                varying vec2 vUv;
+                void main() {
+                    vUv = uv;
+                    vec4 mv = modelViewMatrix * vec4(position, 1.0);
+                    gl_Position = smartProject(mv);
+                    vScreenPos = gl_Position.xy / gl_Position.w;
+                }
+            `,
+            fragmentShader: `
+                uniform sampler2D uMap;
+                uniform float uAlpha;
+                varying vec2 vUv;
+                void main() {
+                    float alphaMask = getMaskAlpha();
+                    if (alphaMask < 0.01) discard;
+                    vec4 tex = texture2D(uMap, vUv);
+
+                    // Soft vignette: fade all four edges to black so the image
+                    // blends seamlessly into the surrounding sky.
+                    vec2 p = vUv * 2.0 - 1.0;  // –1..+1
+                    float edgeX = smoothstep(1.0, 0.55, abs(p.x));
+                    float edgeY = smoothstep(1.0, 0.30, abs(p.y));
+                    // Extra fade toward the top (let stars show above the glow)
+                    float topFade = smoothstep(0.2, -0.4, p.y);
+                    float vignette = edgeX * edgeY * topFade;
+
+                    float a = tex.a * uAlpha * alphaMask * vignette;
+                    if (a < 0.003) discard;
+                    gl_FragColor = vec4(tex.rgb, a);
+                }
+            `,
+            transparent: true, depthWrite: false, depthTest: true,
+            side: THREE.DoubleSide, blending: THREE.AdditiveBlending,
+        });
+
+        sunriseMesh = new THREE.Mesh(geo, mat);
+        // Aligned with builder default lon=275° (camera faces roughly –x direction).
+        // The front face normal must point toward +x (toward origin) so it faces the camera.
+        sunriseMesh.position.set(-900, 75, 0);
+        sunriseMesh.rotation.y = Math.PI / 2;   // normal → +x (toward origin)
+        sunriseMesh.frustumCulled = false;
+        sunriseMesh.renderOrder = 1;
+        scene.add(sunriseMesh);
+
+        const loader = new THREE.TextureLoader();
+        loader.load(url, (texture) => {
+            texture.minFilter = THREE.LinearFilter;
+            texture.magFilter = THREE.LinearFilter;
+            const m = sunriseMesh?.material as THREE.ShaderMaterial | undefined;
+            if (m?.uniforms) {
+                m.uniforms.uMap.value = texture;
+                m.uniforms.uAlpha.value = 1.0;
+            }
+        });
+
+        lastSunriseUrl = url;
+    }
+
     const backdropGroup = new THREE.Group();
     scene.add(backdropGroup);
-    
+
     function createBackdropStars(count: number = 5000) {
         backdropGroup.clear();
         // Clear any existing children properly
@@ -568,6 +774,7 @@ export function createEngine({
     
     createGround();
     createAtmosphere();
+    createMoon();
     createBackdropStars();
 
     // ---------------------------
@@ -582,8 +789,10 @@ export function createEngine({
 
     const nodeById = new Map<string, SceneNode>();
     const starIndexToId: string[] = [];
+    const starIdToIndex = new Map<string, number>();
     
-    const dynamicLabels: { obj: THREE.Mesh; node: SceneNode; initialScale: THREE.Vector2 }[] = [];
+    const dynamicLabels: DynamicLabel[] = [];
+    const labelManager = new LabelManager();
     
     // Hover Label
     const hoverLabelMat = createSmartMaterial({
@@ -654,7 +863,9 @@ export function createEngine({
         }
         nodeById.clear();
         starIndexToId.length = 0;
+        starIdToIndex.clear();
         dynamicLabels.length = 0;
+        labelManager.clear();
         constellationLines = null;
         boundaryLines = null;
         starPoints = null;
@@ -717,6 +928,57 @@ export function createEngine({
         return new THREE.Vector3(x, y, z).multiplyScalar(radius);
     }
 
+    function updateChapterLabelAnchors() {
+        if (!starPoints) return;
+        const attr = starPoints.geometry.attributes.position as THREE.BufferAttribute | undefined;
+        if (!attr) return;
+
+        const cameraUpWorld = new THREE.Vector3(0, 1, 0).applyQuaternion(camera.quaternion).normalize();
+        const cameraRightWorld = new THREE.Vector3(1, 0, 0).applyQuaternion(camera.quaternion).normalize();
+
+        for (const item of dynamicLabels) {
+            if (item.node.level !== 3) continue;
+            const idx = starIdToIndex.get(item.node.id);
+            if (idx === undefined) continue;
+
+            const starPos = new THREE.Vector3(attr.getX(idx), attr.getY(idx), attr.getZ(idx));
+            const normal = starPos.clone().normalize();
+            const tangent = cameraUpWorld.clone().sub(normal.clone().multiplyScalar(cameraUpWorld.dot(normal)));
+            if (tangent.lengthSq() < 1e-6) {
+                tangent.copy(cameraRightWorld).sub(normal.clone().multiplyScalar(cameraRightWorld.dot(normal)));
+            }
+            if (tangent.lengthSq() < 1e-6) continue;
+            tangent.normalize();
+
+            const starNorm = item.chapterStarSizeNorm ?? 0.5;
+            const baseSize = item.chapterStarBaseSize ?? 3.5;
+            const altitude = normal.y;
+            const horizonFade = THREE.MathUtils.smoothstep(altitude, -0.1, 0.05);
+            const mvPos = starPos.clone().applyMatrix4(camera.matrixWorldInverse);
+            const dist = Math.max(1, mvPos.length());
+            const perceptualSize = Math.pow(baseSize, 0.7);
+            const sizeBoost = 1.0 + Math.pow(baseSize, 0.5) * 0.08;
+            const pointSize = THREE.MathUtils.clamp(
+                (perceptualSize * sizeBoost * 20.0) * globalUniforms.uScale.value * renderer.getPixelRatio() * (2000.0 / dist) * horizonFade,
+                1.0,
+                600.0
+            );
+            item.chapterGlowRadiusPx = pointSize * 0.6;
+
+            const viewportH = Math.max(1, renderer.domElement.clientHeight);
+            const fovRad = state.fov * Math.PI / 180;
+            const worldPerPixel = (2 * dist * Math.tan(fovRad * 0.5)) / viewportH;
+            const edgeMarginPx = THREE.MathUtils.lerp(2, 5, starNorm);
+            const offset = THREE.MathUtils.clamp((item.chapterGlowRadiusPx + edgeMarginPx) * worldPerPixel, 3, 42);
+
+            item.obj.position.copy(starPos);
+            item.obj.position.addScaledVector(tangent, offset);
+            item.obj.position.addScaledVector(normal, 2.5);
+
+            item.chapterStarWorldPos = starPos.clone();
+        }
+    }
+
     function buildFromModel(model: SceneModel, cfg: StarMapConfig) {
         clearRoot();
         bookIdToIndex.clear();
@@ -762,6 +1024,9 @@ export function createEngine({
         const starTestamentIndices: number[] = [];
         const starDivisionIndices: number[] = [];
         const chapterLineCutById = new Map<string, number>();
+        const chapterStarSizeById = new Map<string, number>();
+        let minChapterStarSize = Infinity;
+        let maxChapterStarSize = -Infinity;
         
         // Realistic Star Colors (High Brightness/Whiteness for Stellarium Look)
         const SPECTRAL_COLORS = [
@@ -789,10 +1054,6 @@ export function createEngine({
 
         for (const n of laidOut.nodes) {
             if (n.level === 3) {
-                const p = getPosition(n);
-                starPositions.push(p.x, p.y, p.z);
-                starIndexToId.push(n.id);
-
                 let baseSize = 3.5;
                 if (typeof n.weight === "number") {
                     const t = (n.weight - minWeight) / (maxWeight - minWeight);
@@ -800,6 +1061,22 @@ export function createEngine({
                     const sizeScale = cfg.starSizeScale ?? 6.0;
                     baseSize = Math.pow(t, sizeExp) * 22.0 * sizeScale;
                 }
+                chapterStarSizeById.set(n.id, baseSize);
+                minChapterStarSize = Math.min(minChapterStarSize, baseSize);
+                maxChapterStarSize = Math.max(maxChapterStarSize, baseSize);
+            }
+        }
+        if (!Number.isFinite(minChapterStarSize)) { minChapterStarSize = 1; maxChapterStarSize = 2; }
+        else if (minChapterStarSize === maxChapterStarSize) { maxChapterStarSize = minChapterStarSize + 1; }
+
+        for (const n of laidOut.nodes) {
+            if (n.level === 3) {
+                const p = getPosition(n);
+                starPositions.push(p.x, p.y, p.z);
+                starIdToIndex.set(n.id, starIndexToId.length);
+                starIndexToId.push(n.id);
+
+                const baseSize = chapterStarSizeById.get(n.id) ?? 3.5;
                 starSizes.push(baseSize);
                 // World-space line truncation radius near each chapter star.
                 // Derived from the same star size curve so larger stars reserve
@@ -854,7 +1131,6 @@ export function createEngine({
                 starDivisionIndices.push(dIdx);
             }
             
-
             // 2. Process Labels (Level 1, 2, 3)
             if (n.level === 1 || n.level === 2 || n.level === 3) {
                 let color = "#ffffff";
@@ -876,7 +1152,15 @@ export function createEngine({
                     let baseScale = 0.05;
                     if (n.level === 1) baseScale = 0.08;
                     else if (n.level === 2) baseScale = 0.04; // Books: Decreased from 0.06
-                    else if (n.level === 3) baseScale = 0.03; // Chapters: Small
+                    else if (n.level === 3) {
+                        const starSize = chapterStarSizeById.get(n.id) ?? 3.5;
+                        const starNorm = THREE.MathUtils.clamp(
+                            (starSize - minChapterStarSize) / (maxChapterStarSize - minChapterStarSize),
+                            0,
+                            1
+                        );
+                        baseScale = THREE.MathUtils.lerp(0.04, 0.085, starNorm);
+                    }
                     
                     const size = new THREE.Vector2(baseScale * texRes.aspect, baseScale);
                     
@@ -918,7 +1202,7 @@ export function createEngine({
                         `,
                         transparent: true,
                         depthWrite: false,
-                        depthTest: true
+                        depthTest: n.level === 3 ? false : true
                     });
 
                     const mesh = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), mat);
@@ -935,9 +1219,15 @@ export function createEngine({
                         const angle = Math.atan2(p.z, p.x);
                         p.set(r * Math.cos(angle), 150, r * Math.sin(angle)); // Lifted slightly
                     } else if (n.level === 3) {
-                        // Offset chapters slightly so they hover above the star
-                        p.y += 30; // Lifted higher
-                        p.multiplyScalar(1.001);
+                        // Offset chapters radially based on star size.
+                        const starSize = chapterStarSizeById.get(n.id) ?? 3.5;
+                        const starNorm = THREE.MathUtils.clamp(
+                            (starSize - minChapterStarSize) / (maxChapterStarSize - minChapterStarSize),
+                            0,
+                            1
+                        );
+                        const radialOffset = THREE.MathUtils.lerp(16, 46, starNorm);
+                        p.addScaledVector(p.clone().normalize(), radialOffset);
                     }
                     
                     mesh.position.set(p.x, p.y, p.z);
@@ -946,7 +1236,27 @@ export function createEngine({
                     mesh.userData = { id: n.id };
                     
                     root.add(mesh);
-                    dynamicLabels.push({ obj: mesh, node: n, initialScale: size.clone() });
+                    const chapterMaxFovBias = n.level === 3
+                        ? THREE.MathUtils.lerp(-8, 4, THREE.MathUtils.clamp(
+                            ((chapterStarSizeById.get(n.id) ?? 3.5) - minChapterStarSize) / (maxChapterStarSize - minChapterStarSize),
+                            0,
+                            1
+                        ))
+                        : 0;
+                    dynamicLabels.push({
+                        obj: mesh,
+                        node: n,
+                        initialScale: size.clone(),
+                        maxFovBias: chapterMaxFovBias,
+                        chapterStarSizeNorm: n.level === 3
+                            ? THREE.MathUtils.clamp(
+                                ((chapterStarSizeById.get(n.id) ?? 3.5) - minChapterStarSize) / (maxChapterStarSize - minChapterStarSize),
+                                0,
+                                1
+                            )
+                            : undefined,
+                        chapterStarBaseSize: n.level === 3 ? (chapterStarSizeById.get(n.id) ?? 3.5) : undefined
+                    });
                 }
             }
         }
@@ -1575,6 +1885,7 @@ export function createEngine({
             }
         }
         
+        labelManager.setLabels(dynamicLabels);
         resize();
     }
 
@@ -1598,6 +1909,9 @@ export function createEngine({
 
     function setConfig(cfg: StarMapConfig) {
         currentConfig = cfg;
+        const externalFocusId = (cfg as any).focus?.nodeId;
+        if (typeof externalFocusId === "string") focusedNodeId = externalFocusId;
+        if (externalFocusId === null) focusedNodeId = null;
 
         // Update projection if provided
         if (cfg.projection) setProjection(cfg.projection);
@@ -1619,6 +1933,12 @@ export function createEngine({
         if (lastBackdropCount !== desiredBackdropCount) {
             createBackdropStars(desiredBackdropCount);
             lastBackdropCount = desiredBackdropCount;
+        }
+
+        // Load sunrise texture when URL is first provided or changes
+        const sunriseUrl = cfg.sunriseTextureUrl ?? '';
+        if (sunriseUrl && sunriseUrl !== lastSunriseUrl) {
+            createSunrise(sunriseUrl);
         }
 
         let shouldRebuild = false;
@@ -2020,10 +2340,12 @@ export function createEngine({
                 if (hit) {
                     handlers.onSelect?.(hit.node);
                     constellationLayer.setFocused(hit.node.id);
+                    focusedNodeId = hit.node.id;
                     if (hit.node.level === 2) setFocusedBook(hit.node.id);
                     else if (hit.node.level === 3 && hit.node.parent) setFocusedBook(hit.node.parent);
                 } else {
                     setFocusedBook(null);
+                    focusedNodeId = null;
                 }
             }
         } else {
@@ -2031,6 +2353,7 @@ export function createEngine({
             if (hit) {
                 handlers.onSelect?.(hit.node);
                 constellationLayer.setFocused(hit.node.id);
+                focusedNodeId = hit.node.id;
 
                 // Auto-Focus for Order Reveal
                 if (hit.node.level === 2) setFocusedBook(hit.node.id);
@@ -2039,6 +2362,7 @@ export function createEngine({
             } else {
                 // Background click clears focus
                 setFocusedBook(null);
+                focusedNodeId = null;
             }
         }
     }
@@ -2524,7 +2848,8 @@ export function createEngine({
         camera.lookAt(target);
         camera.updateMatrixWorld();
         camera.matrixWorldInverse.copy(camera.matrixWorld).invert();
-        updateUniforms(); 
+        updateUniforms();
+        updateChapterLabelAnchors();
         
         // --- Fader Updates ---
         const nowSec = now / 1000;
@@ -2541,6 +2866,9 @@ export function createEngine({
         constellationLayer.setGlobalOpacity?.(artFader.eased * baseArtOpacity);
         backdropGroup.visible = currentConfig?.showBackdropStars ?? true;
         if (atmosphereMesh) atmosphereMesh.visible = currentConfig?.showAtmosphere ?? false;
+        if (moonMesh) moonMesh.visible = currentConfig?.showMoon ?? true;
+        if (moonGlowMesh) moonGlowMesh.visible = currentConfig?.showMoon ?? true;
+        if (sunriseMesh) sunriseMesh.visible = currentConfig?.showSunrise ?? true;
 
         const DIVISION_THRESHOLD = 60;
         const showDivisions = state.fov > DIVISION_THRESHOLD;
@@ -2561,179 +2889,41 @@ export function createEngine({
             boundaryLines.visible = currentConfig?.showDivisionBoundaries ?? false;
         }
         
-        // --- Polished Label Management ---
-        // 1. Collect and Project
+        // --- Label Management (Stellarium-style) ---
         const rect = renderer.domElement.getBoundingClientRect();
         const screenW = rect.width;
         const screenH = rect.height;
         const aspect = screenW / screenH;
-        const labelsToCheck = [];
-        const occupied: {x:number, y:number, w:number, h:number}[] = [];
+        const hoverId = ((handlers as unknown as { _lastHoverId?: string })._lastHoverId) ?? null;
+        const selectedId = state.draggedNodeId;
 
-        function isOverlapping(x:number, y:number, w:number, h:number) {
-            for (const r of occupied) {
-                if (x < r.x + r.w && x + w > r.x && y < r.y + r.h && y + h > r.y) return true;
-            }
-            return false;
-        }
-
-        const showBookLabels = currentConfig?.showBookLabels === true;
-        const showDivisionLabels = currentConfig?.showDivisionLabels === true;
-        const showChapterLabels = currentConfig?.showChapterLabels === true;
-        const showGroupLabels = currentConfig?.showGroupLabels === true;
-        
-        // FOV thresholds
-        // showDivisions already calculated above
-        const showBooks = true;
-        const showChapters = state.fov < 45;
-
-        for (const item of dynamicLabels) {
-            const uniforms = (item.obj.material as THREE.ShaderMaterial).uniforms as any;
-            const level = item.node.level;
-
-            // Global Toggle Check
-            let isEnabled = false;
-            if (level === 2 && showBookLabels) isEnabled = true;
-            else if (level === 1 && showDivisionLabels) isEnabled = true;
-            else if (level === 3 && showChapterLabels) isEnabled = true;
-            else if (level === 2.5 && showGroupLabels) isEnabled = true;
-            
-            if (!isEnabled) {
-                 uniforms.uAlpha.value = THREE.MathUtils.lerp(uniforms.uAlpha.value, 0, 0.2);
-                 item.obj.visible = uniforms.uAlpha.value > 0.01;
-                 continue;
-            }
-
-            // Project to Screen
-            const pWorld = item.obj.position;
-            const pProj = smartProjectJS(pWorld);
-            
-            // Frustum Cull
-            if (pProj.z > 0.2) { 
-                 uniforms.uAlpha.value = THREE.MathUtils.lerp(uniforms.uAlpha.value, 0, 0.2);
-                 item.obj.visible = uniforms.uAlpha.value > 0.01;
-                 continue;
-            } 
-            
-            // Optimization: If Level 2 (Books) and not zoomed in, cull immediately
-            if (level === 2 && !showBooks && item.node.id !== state.draggedNodeId) {
-                uniforms.uAlpha.value = THREE.MathUtils.lerp(uniforms.uAlpha.value, 0, 0.2);
-                item.obj.visible = uniforms.uAlpha.value > 0.01;
-                continue;
-            }
-
-            // Optimization: If Level 3 (Chapters) or Level 2.5 (Groups) and not zoomed in, cull immediately
-            if ((level === 3 || level === 2.5) && !showChapters && item.node.id !== state.draggedNodeId) {
-                 uniforms.uAlpha.value = THREE.MathUtils.lerp(uniforms.uAlpha.value, 0, 0.2);
-                 item.obj.visible = uniforms.uAlpha.value > 0.01;
-                 continue;
-            }
-
-            // Calculate screen coords
-            const ndcX = pProj.x * globalUniforms.uScale.value / aspect;
-            const ndcY = pProj.y * globalUniforms.uScale.value;
-            const sX = (ndcX * 0.5 + 0.5) * screenW;
-            const sY = (-ndcY * 0.5 + 0.5) * screenH;
-            
-            // Dimensions
-            const size = (uniforms.uSize.value as THREE.Vector2);
-            const pixelH = size.y * screenH * 0.8; 
-            const pixelW = size.x * screenH * 0.8; 
-            
-            // Push to check list
-            labelsToCheck.push({ item, sX, sY, w: pixelW, h: pixelH, uniforms, level, ndcX, ndcY });
-        }
-        
-        // 2. Sort by Priority
-        const hoverId = (handlers as any)._lastHoverId;
-        const selectedId = state.draggedNodeId; 
-        
-        labelsToCheck.sort((a, b) => {
-            const getScore = (l: typeof a) => {
-                if (l.item.node.id === selectedId) return 10;
-                if (l.item.node.id === hoverId) return 9;
-                const level = l.level;
-                if (level === 2) return 5; 
-                if (level === 1) return showDivisions ? 6 : 1; 
-                return 0;
-            };
-            return getScore(b) - getScore(a);
+        labelManager.update({
+            nowMs: now,
+            dt,
+            fov: state.fov,
+            camera,
+            projectionId: currentProjection.id,
+            screenW,
+            screenH,
+            globalScale: globalUniforms.uScale.value,
+            aspect,
+            hoverId,
+            selectedId,
+            focusedId: focusedNodeId,
+            shouldFilter: !!currentFilter && filterStrength > 0.01,
+            isNodeFiltered: (node) => {
+                const nodeToCheck = node.level === 2.5 && node.parent ? nodeById.get(node.parent) : node;
+                return !!nodeToCheck && isNodeFiltered(nodeToCheck);
+            },
+            toggles: {
+                showBookLabels: currentConfig?.showBookLabels === true,
+                showDivisionLabels: currentConfig?.showDivisionLabels === true,
+                showChapterLabels: currentConfig?.showChapterLabels === true,
+                showGroupLabels: currentConfig?.showGroupLabels === true,
+            },
+            config: currentConfig?.labelBehavior,
+            project: smartProjectJS,
         });
-
-        // 3. Collision & Target Alpha
-        for (const l of labelsToCheck) {
-            let target = 0.0;
-            const isSpecial = l.item.node.id === selectedId || l.item.node.id === hoverId;
-            
-            // Rotation Logic for Divisions (Level 1)
-            if (l.level === 1) {
-                let rot = 0;
-                const isWideAngle = currentProjection.id !== "perspective";
-                if (isWideAngle) {
-                    const dx = l.sX - screenW / 2;
-                    const dy = l.sY - screenH / 2;
-                    rot = Math.atan2(-dy, -dx) - Math.PI / 2;
-                }
-                l.uniforms.uAngle.value = THREE.MathUtils.lerp(l.uniforms.uAngle.value, rot, 0.1);
-            }
-
-            if (l.level === 2) {
-                // Books: Visible if zoomed in OR special (hover/drag)
-                if (showBooks || isSpecial) {
-                    target = 1.0;
-                    occupied.push({ x: l.sX - l.w/2, y: l.sY - l.h/2, w: l.w, h: l.h });
-                }
-            } 
-            else if (l.level === 1) {
-                // Divisions: Check overlaps
-                if (showDivisions || isSpecial) {
-                    const pad = -5;
-                    if (!isOverlapping(l.sX - l.w/2 - pad, l.sY - l.h/2 - pad, l.w + pad*2, l.h + pad*2)) {
-                        target = 1.0;
-                        occupied.push({ x: l.sX - l.w/2, y: l.sY - l.h/2, w: l.w, h: l.h });
-                    }
-                }
-            }
-            else if (l.level === 2.5 || l.level === 3) {
-                // Groups & Chapters: Use showChapters threshold AND radial focus
-                if (showChapters || isSpecial) {
-                    target = 1.0;
-                    
-                    if (!isSpecial) {
-                        // Radial Focus: Fade out towards periphery
-                        // ndc distance from center (0,0)
-                        // X is scaled by aspect in ndc calculation in loop? 
-                        // Wait, previous code: ndcX = pProj.x ... / aspect.
-                        // So ndcX is -1..1 (width adjusted). ndcY is -1..1.
-                        // Distance is straightforward.
-                        
-                        const dist = Math.sqrt(l.ndcX * l.ndcX + l.ndcY * l.ndcY);
-                        
-                        // Focus zone: 0.0 -> 0.4 (Full opacity)
-                        // Fade zone: 0.4 -> 0.7 (Fade out)
-                        // Hidden: > 0.7
-                        const focusFade = 1.0 - THREE.MathUtils.smoothstep(0.4, 0.7, dist);
-                        target *= focusFade;
-                    }
-                }
-            }
-            
-            // Apply hierarchy filter dimming
-            if (target > 0 && currentFilter && filterStrength > 0.01) {
-                const node = l.item.node;
-                if (node.level === 3) { // Chapter
-                    target = 0.0;
-                } else if (node.level === 2 || node.level === 2.5) { // Book or Group
-                    const nodeToCheck = (node.level === 2.5 && node.parent) ? nodeById.get(node.parent) : node;
-                    if (nodeToCheck && isNodeFiltered(nodeToCheck)) {
-                        target = 0.0;
-                    }
-                }
-            }
-
-            l.uniforms.uAlpha.value = THREE.MathUtils.lerp(l.uniforms.uAlpha.value, target, 0.1);
-            l.item.obj.visible = l.uniforms.uAlpha.value > 0.01;
-        }
         renderer.render(scene, camera);
     }
 
@@ -2760,7 +2950,15 @@ export function createEngine({
         el.removeEventListener("gesturechange", onGesturePrevent);
         el.removeEventListener("gestureend", onGesturePrevent);
     }
-    function dispose() { stop(); constellationLayer.dispose(); renderer.dispose(); renderer.domElement.remove(); }
+    function dispose() {
+        stop();
+        constellationLayer.dispose();
+        if (moonMesh) { scene.remove(moonMesh); moonMesh.geometry.dispose(); (moonMesh.material as THREE.ShaderMaterial).dispose(); moonMesh = null; }
+        if (moonGlowMesh) { scene.remove(moonGlowMesh); moonGlowMesh.geometry.dispose(); (moonGlowMesh.material as THREE.ShaderMaterial).dispose(); moonGlowMesh = null; }
+        if (sunriseMesh) { scene.remove(sunriseMesh); sunriseMesh.geometry.dispose(); (sunriseMesh.material as THREE.ShaderMaterial).dispose(); sunriseMesh = null; }
+        renderer.dispose();
+        renderer.domElement.remove();
+    }
     
     function setHoveredBook(id: string | null) { 
         if (id === hoveredBookId) return;
@@ -2778,6 +2976,7 @@ export function createEngine({
     function flyTo(nodeId: string, targetFov?: number) {
         const node = nodeById.get(nodeId);
         if (!node) return;
+        focusedNodeId = nodeId;
         const pos = getPosition(node).normalize();
         flyToTargetLat = Math.asin(Math.max(-0.999, Math.min(0.999, pos.y)));
         flyToTargetLon = Math.atan2(pos.x, -pos.z);

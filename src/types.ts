@@ -55,6 +55,26 @@ export type StarArrangement = {
     }
 };
 
+export type LabelClassKey = "division" | "book" | "group" | "chapter";
+
+export type LabelClassBehavior = {
+    minFov?: number;
+    maxFov?: number;
+    priority?: number;
+    mode?: "floating" | "pinned";
+    maxOverlapPx?: number;
+    radialFadeStart?: number;
+    radialFadeEnd?: number;
+    fadeDuration?: number;
+};
+
+export type LabelBehaviorConfig = {
+    hideBackFacing?: boolean;
+    overlapPaddingPx?: number;
+    reappearDelayMs?: number;
+    classes?: Partial<Record<LabelClassKey, LabelClassBehavior>>;
+};
+
 export type StarMapConfig = {
     // Data
     data?: any;
@@ -77,12 +97,16 @@ export type StarMapConfig = {
     showBackdropStars?: boolean;
     backdropStarsCount?: number;
     showAtmosphere?: boolean;
+    showMoon?: boolean;          // Whether to show the moon (default: true)
+    showSunrise?: boolean;       // Whether to show the sunrise (default: true when URL provided)
+    sunriseTextureUrl?: string;  // URL to the sunrise/horizon glow texture
     starSizeExponent?: number; // Power curve exponent for weight→size mapping. Default 2.8. Higher = more dramatic spread.
     starSizeScale?: number;    // Uniform multiplier applied to all star sizes. Default 1.0.
     showBookLabels?: boolean;
     showChapterLabels?: boolean;
     showDivisionLabels?: boolean;
     showGroupLabels?: boolean;
+    labelBehavior?: LabelBehaviorConfig;
     groups?: Record<string, { name: string, start: number, end: number }[]>;
 
     // Interaction & Camera
