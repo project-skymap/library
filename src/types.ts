@@ -96,6 +96,9 @@ export type StarMapConfig = {
     showDivisionBoundaries?: boolean;
     showBackdropStars?: boolean;
     backdropStarsCount?: number;
+    backdropWideFovGain?: number; // Multiplier at wide FOV (0..1). Lower = dimmer backdrop when zoomed out.
+    backdropSizeExponent?: number; // Exponent for backdrop scaling with uScale (0.5..1.2). Higher = shrinks more at wide FOV.
+    backdropEnergy?: number; // Backdrop color energy multiplier (recommended 1.0..3.0).
     showAtmosphere?: boolean;
     showMoon?: boolean;          // Procedural moon (default: true)
     showSunrise?: boolean;       // Procedural sun at horizon (default: true)

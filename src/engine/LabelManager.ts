@@ -115,7 +115,7 @@ const DEFAULT_LABEL_BEHAVIOR: ResolvedLabelBehavior = {
         },
         book: {
             minFov: 0,
-            maxFov: 180,
+            maxFov: 65,
             priority: 60,
             mode: "pinned",
             maxOverlapPx: 999,
@@ -351,6 +351,20 @@ export class LabelManager {
                                 }
                             }
 
+                            if (targetAlpha > 0 && record.classKey === "book" && !isSpecial) {
+                                // Center-weighted reveal like chapters, but with a wider focus radius.
+                                const dist = Math.sqrt(ndcX * ndcX + ndcY * ndcY);
+                                const fovWeight = THREE.MathUtils.smoothstep(ctx.fov, 15, 58);
+                                const focusOuter = THREE.MathUtils.lerp(0.95, 0.70, fovWeight);
+                                const focusInner = THREE.MathUtils.lerp(0.35, 0.22, fovWeight);
+                                const centerFocus = 1.0 - THREE.MathUtils.smoothstep(dist, focusInner, focusOuter);
+                                const bookVisibility = THREE.MathUtils.lerp(1.0, centerFocus, fovWeight);
+                                targetAlpha *= bookVisibility;
+                                if (dist > focusOuter && ctx.fov > 20) {
+                                    targetAlpha = 0;
+                                }
+                            }
+
                             if (targetAlpha > 0 && ctx.shouldFilter) {
                                 const node = record.label.node;
                                 if (node.level === 3) {
@@ -500,7 +514,11 @@ export class LabelManager {
             const acceptedThisFrame = accepted.has(record.id) && record.targetAlpha > 0;
             record.fader.target = acceptedThisFrame;
             record.fader.update(ctx.dt);
-            const baseAlpha = acceptedThisFrame ? record.targetAlpha : 1.0;
+            // When a label was focus-faded to 0 (not accepted AND targetAlpha=0), use
+            // baseAlpha=0 so the fader doesn't cause a pop back to full opacity.
+            // When rejected by the overlap system (targetAlpha>0 but not accepted),
+            // use 1.0 so the fader drives a smooth fade-out as before.
+            const baseAlpha = acceptedThisFrame ? record.targetAlpha : (record.targetAlpha > 0 ? 1.0 : 0.0);
             const alpha = record.fader.eased * baseAlpha;
             applyUniformAlpha(record.label.obj, alpha);
             record.label.obj.visible = alpha > 0.01;

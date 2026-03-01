@@ -826,6 +826,7 @@ export function createEngine({
 
     const backdropGroup = new THREE.Group();
     scene.add(backdropGroup);
+    let backdropStarsMaterial: THREE.ShaderMaterial | null = null;
 
     function createBackdropStars(count: number = 5000) {
         backdropGroup.clear();
@@ -887,7 +888,10 @@ export function createEngine({
             uniforms: {
                 pixelRatio: { value: renderer.getPixelRatio() },
                 uScale: globalUniforms.uScale,
-                uTime: globalUniforms.uTime
+                uTime: globalUniforms.uTime,
+                uBackdropGain: { value: 1.0 },
+                uBackdropEnergy: { value: 2.2 },
+                uBackdropSizeExp: { value: 0.9 }
             },
             vertexShaderBody: `
                 attribute float size;
@@ -898,6 +902,9 @@ export function createEngine({
                 uniform float uAtmExtinction;
                 uniform float uAtmTwinkle;
                 uniform float uTime;
+                uniform float uBackdropGain;
+                uniform float uBackdropEnergy;
+                uniform float uBackdropSizeExp;
 
                 void main() {
                     vec3 nPos = normalize(position);
@@ -913,15 +920,16 @@ export function createEngine({
                     float twinkle = sin(uTime * 3.0 + position.x * 0.05 + position.z * 0.03) * 0.5 + 0.5;
                     float scintillation = mix(1.0, twinkle * 2.0, uAtmTwinkle * 0.4 * turbulence);
 
-                    vColor = color * 3.0 * extinction * horizonFade * scintillation;
+                    vColor = color * uBackdropEnergy * extinction * horizonFade * scintillation * uBackdropGain;
 
                     vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
                     gl_Position = smartProject(mvPosition);
                     vScreenPos = gl_Position.xy / gl_Position.w;
 
-                    float zoomScale = pow(uScale, 0.5);
+                    float zoomScale = pow(max(uScale, 0.0001), uBackdropSizeExp);
                     float perceptualSize = pow(size, 0.55);
-                    gl_PointSize = clamp(perceptualSize * zoomScale * 0.5 * pixelRatio * (800.0 / length(mvPosition.xyz)) * horizonFade, 0.5, 20.0);
+                    float sizeGain = mix(0.78, 1.0, uBackdropGain);
+                    gl_PointSize = clamp(perceptualSize * zoomScale * sizeGain * 0.5 * pixelRatio * (800.0 / length(mvPosition.xyz)) * horizonFade, 0.5, 20.0);
                 }
             `,
             fragmentShader: `
@@ -947,6 +955,7 @@ export function createEngine({
             depthTest: true,
             blending: THREE.AdditiveBlending 
         });
+        backdropStarsMaterial = material;
 
         const points = new THREE.Points(geometry, material);
         points.frustumCulled = false;
@@ -1201,30 +1210,30 @@ export function createEngine({
         const layoutCfg = { ...cfg.layout, radius: cfg.layout?.radius ?? 2000 };
         const laidOut = computeLayoutPositions(model, layoutCfg);
 
-        // Pre-calculate Division centroids based on actual Book positions (Arrangement)
+        // Pre-calculate Division centroids from actual Book positions (always, not just when arrangement exists)
         const divisionPositions = new Map<string, THREE.Vector3>();
-        if (cfg.arrangement) {
-             const divMap = new Map<string, SceneNode[]>();
-             for (const n of laidOut.nodes) {
-                 if (n.level === 2 && n.parent) { // Book
-                     const list = divMap.get(n.parent) ?? [];
-                     list.push(n);
-                     divMap.set(n.parent, list);
-                 }
-             }
-             for (const [divId, books] of divMap.entries()) {
-                 const centroid = new THREE.Vector3();
-                 let count = 0;
-                 for (const b of books) {
-                     const p = getPosition(b);
-                     centroid.add(p);
-                     count++;
-                 }
-                 if (count > 0) {
-                     centroid.divideScalar(count);
-                     divisionPositions.set(divId, centroid);
-                 }
-             }
+        {
+            const divMap = new Map<string, SceneNode[]>();
+            for (const n of laidOut.nodes) {
+                if (n.level === 2 && n.parent) {
+                    const list = divMap.get(n.parent) ?? [];
+                    list.push(n);
+                    divMap.set(n.parent, list);
+                }
+            }
+            for (const [divId, books] of divMap.entries()) {
+                const centroid = new THREE.Vector3();
+                let count = 0;
+                for (const b of books) {
+                    const p = getPosition(b);
+                    centroid.add(p);
+                    count++;
+                }
+                if (count > 0) {
+                    centroid.divideScalar(count);
+                    divisionPositions.set(divId, centroid);
+                }
+            }
         }
 
         const starPositions: number[] = [];
@@ -1420,16 +1429,21 @@ export function createEngine({
                     const mesh = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), mat);
                     let p = getPosition(n);
                     
-                    // Override for Division Labels: Place on Horizon
+                    // Override for Division Labels
                     if (n.level === 1) {
-                        // Use calculated centroid from children if available (matches Voronoi layout)
-                        if (divisionPositions.has(n.id)) {
-                            p.copy(divisionPositions.get(n.id)!);
+                        if (cfg.arrangement?.[n.id]) {
+                            // Explicit position set by the user via arrangement config
+                            const arr = cfg.arrangement[n.id];
+                            p.set(arr.position[0], arr.position[1], arr.position[2]);
+                        } else {
+                            // Auto: centroid of children projected onto the horizon ring
+                            if (divisionPositions.has(n.id)) {
+                                p.copy(divisionPositions.get(n.id)!);
+                            }
+                            const r = layoutCfg.radius * 0.95;
+                            const angle = Math.atan2(p.z, p.x);
+                            p.set(r * Math.cos(angle), 150, r * Math.sin(angle));
                         }
-                        
-                        const r = layoutCfg.radius * 0.95; 
-                        const angle = Math.atan2(p.z, p.x);
-                        p.set(r * Math.cos(angle), 150, r * Math.sin(angle)); // Lifted slightly
                     } else if (n.level === 3) {
                         // Offset chapters radially based on star size.
                         const starSize = chapterStarSizeById.get(n.id) ?? 3.5;
@@ -3071,6 +3085,14 @@ export function createEngine({
         const baseArtOpacity = THREE.MathUtils.clamp(currentConfig?.constellationBaseOpacity ?? 1.0, 0, 300);
         constellationLayer.setGlobalOpacity?.(artFader.eased * baseArtOpacity);
         backdropGroup.visible = currentConfig?.showBackdropStars ?? true;
+        if (backdropStarsMaterial?.uniforms) {
+            const minGain = THREE.MathUtils.clamp(currentConfig?.backdropWideFovGain ?? 0.42, 0, 1);
+            const fovT = THREE.MathUtils.smoothstep(state.fov, 24, 100);
+            const gain = THREE.MathUtils.lerp(1.0, minGain, fovT);
+            backdropStarsMaterial.uniforms.uBackdropGain.value = gain;
+            backdropStarsMaterial.uniforms.uBackdropEnergy.value = THREE.MathUtils.clamp(currentConfig?.backdropEnergy ?? 2.2, 0.2, 5.0);
+            backdropStarsMaterial.uniforms.uBackdropSizeExp.value = THREE.MathUtils.clamp(currentConfig?.backdropSizeExponent ?? 0.9, 0.4, 1.4);
+        }
         if (atmosphereMesh) atmosphereMesh.visible = currentConfig?.showAtmosphere ?? false;
         if (moonMesh) moonMesh.visible = currentConfig?.showMoon ?? true;
         if (moonGlowMesh) moonGlowMesh.visible = currentConfig?.showMoon ?? true;
