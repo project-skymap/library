@@ -115,7 +115,7 @@ const DEFAULT_LABEL_BEHAVIOR: ResolvedLabelBehavior = {
         },
         book: {
             minFov: 0,
-            maxFov: 65,
+            maxFov: 52,
             priority: 60,
             mode: "pinned",
             maxOverlapPx: 999,
@@ -125,7 +125,7 @@ const DEFAULT_LABEL_BEHAVIOR: ResolvedLabelBehavior = {
         },
         group: {
             minFov: 0,
-            maxFov: 56,
+            maxFov: 44,
             priority: 42,
             mode: "floating",
             maxOverlapPx: 12,
