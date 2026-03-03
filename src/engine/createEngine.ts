@@ -113,7 +113,7 @@ export function createEngine({
     container.appendChild(renderer.domElement);
 
     const scene = new THREE.Scene();
-    scene.background = new THREE.Color(0x000000);
+    scene.background = null; // Sky provided by skyBackgroundMesh
 
     const camera = new THREE.PerspectiveCamera(60, 1, 0.1, 10000); // Increased far plane to 10000
     camera.position.set(0, 0, 0);
@@ -382,12 +382,72 @@ export function createEngine({
         groundGroup.add(ground);
     }
     
-        let atmosphereMesh: THREE.Mesh | null = null;
+        let skyBackgroundMesh: THREE.Mesh | null = null;
+    let atmosphereMesh: THREE.Mesh | null = null;
     let moonMesh: THREE.Mesh | null = null;
     let moonGlowMesh: THREE.Mesh | null = null;
     let sunDiscMesh: THREE.Mesh | null = null;
     let sunHaloMesh: THREE.Mesh | null = null;
     let milkyWayMesh: THREE.Mesh | null = null;
+
+    function createSkyBackground() {
+        const geo = new THREE.SphereGeometry(2400, 32, 32);
+        const mat = createSmartMaterial({
+            uniforms: {},
+            vertexShaderBody: `
+                varying vec3 vWorldNormal;
+                void main() {
+                    vWorldNormal = normalize(position);
+                    vec4 mv = modelViewMatrix * vec4(position, 1.0);
+                    gl_Position = smartProject(mv);
+                    vScreenPos = gl_Position.xy / gl_Position.w;
+                }
+            `,
+            fragmentShader: `
+                varying vec3 vWorldNormal;
+                void main() {
+                    float h = clamp(normalize(vWorldNormal).y, -1.0, 1.0);
+
+                    // Scotopic-inspired 5-stop gradient.
+                    // Night sky: blue channel ~2.6x red, derived from CIE (x=0.25, y=0.25).
+                    vec3 cZenith  = vec3(0.010, 0.022, 0.055);
+                    vec3 cUpper   = vec3(0.015, 0.033, 0.080);
+                    vec3 cMid     = vec3(0.022, 0.048, 0.108);
+                    vec3 cLower   = vec3(0.035, 0.072, 0.148);
+                    vec3 cHorizon = vec3(0.052, 0.100, 0.190);
+
+                    float t1 = smoothstep(0.0, 0.30, h);
+                    float t2 = smoothstep(0.3, 0.60, h);
+                    float t3 = smoothstep(0.6, 0.85, h);
+                    float t4 = smoothstep(0.85, 1.00, h);
+
+                    vec3 col = cHorizon;
+                    col = mix(col, cLower,  t1);
+                    col = mix(col, cMid,    t2);
+                    col = mix(col, cUpper,  t3);
+                    col = mix(col, cZenith, t4);
+
+                    // Rayleigh limb brightening at horizon
+                    float limb = exp(-18.0 * abs(h)) * smoothstep(-0.05, 0.06, h);
+                    col += vec3(0.012, 0.024, 0.050) * limb;
+
+                    // Below ground: fade to near-black
+                    float below = smoothstep(-0.04, -0.18, h);
+                    col = mix(col, vec3(0.002, 0.003, 0.006), below);
+
+                    gl_FragColor = vec4(col, 1.0);
+                }
+            `,
+            transparent: false,
+            depthWrite: false,
+            depthTest: false,
+            side: THREE.BackSide,
+        });
+        skyBackgroundMesh = new THREE.Mesh(geo, mat);
+        skyBackgroundMesh.renderOrder = -2;
+        skyBackgroundMesh.frustumCulled = false;
+        scene.add(skyBackgroundMesh);
+    }
 
     function createAtmosphere() {
         const geometry = new THREE.SphereGeometry(990, 64, 64);
@@ -962,6 +1022,7 @@ export function createEngine({
         backdropGroup.add(points);
     }
     
+    createSkyBackground();
     createGround();
     createAtmosphere();
     createMoon();
@@ -1224,7 +1285,8 @@ export function createEngine({
         bookIdToIndex.clear();
         testamentToIndex.clear();
         divisionToIndex.clear();
-        scene.background = (cfg.background && cfg.background !== "transparent") ? new THREE.Color(cfg.background) : new THREE.Color(0x000000);
+        // Sky background is handled by skyBackgroundMesh; use null (clear to black) as fallback.
+        scene.background = (cfg.background && cfg.background !== "transparent") ? new THREE.Color(cfg.background) : null;
 
         const layoutCfg = { ...cfg.layout, radius: cfg.layout?.radius ?? 2000 };
         const laidOut = computeLayoutPositions(model, layoutCfg);
@@ -3101,6 +3163,7 @@ export function createEngine({
             backdropStarsMaterial.uniforms.uBackdropEnergy.value = THREE.MathUtils.clamp(currentConfig?.backdropEnergy ?? 2.2, 0.2, 5.0);
             backdropStarsMaterial.uniforms.uBackdropSizeExp.value = THREE.MathUtils.clamp(currentConfig?.backdropSizeExponent ?? 0.9, 0.4, 1.4);
         }
+        if (skyBackgroundMesh) skyBackgroundMesh.visible = currentConfig?.background !== "transparent";
         if (atmosphereMesh) atmosphereMesh.visible = currentConfig?.showAtmosphere ?? false;
         if (moonMesh) moonMesh.visible = currentConfig?.showMoon ?? true;
         if (moonGlowMesh) moonGlowMesh.visible = currentConfig?.showMoon ?? true;
@@ -3197,6 +3260,7 @@ export function createEngine({
         if (sunDiscMesh) { scene.remove(sunDiscMesh); sunDiscMesh.geometry.dispose(); (sunDiscMesh.material as THREE.ShaderMaterial).dispose(); sunDiscMesh = null; }
         if (sunHaloMesh) { scene.remove(sunHaloMesh); sunHaloMesh.geometry.dispose(); (sunHaloMesh.material as THREE.ShaderMaterial).dispose(); sunHaloMesh = null; }
         if (milkyWayMesh) { scene.remove(milkyWayMesh); milkyWayMesh.geometry.dispose(); (milkyWayMesh.material as THREE.ShaderMaterial).dispose(); milkyWayMesh = null; }
+        if (skyBackgroundMesh) { scene.remove(skyBackgroundMesh); skyBackgroundMesh.geometry.dispose(); (skyBackgroundMesh.material as THREE.ShaderMaterial).dispose(); skyBackgroundMesh = null; }
         renderer.dispose();
         renderer.domElement.remove();
     }
