@@ -1170,7 +1170,8 @@ export function createEngine({
                 const revealT = THREE.MathUtils.smoothstep(uAlpha, 0, 1);
                 const revealScale = 0.82 + 0.28 * revealT;
                 const fadeOutScale = 1.0 + (1.0 - revealT) * 0.06;
-                const zoomTextBoost = 1.0 + (1.0 - THREE.MathUtils.smoothstep(state.fov, 10, 45)) * 0.2;
+                // Labels grow as you zoom in: small at the chapter maxFov, large when close in.
+                const zoomTextBoost = THREE.MathUtils.lerp(1.4, 0.55, THREE.MathUtils.smoothstep(state.fov, 8, 46));
                 const starTextBoost = THREE.MathUtils.lerp(0.9, 1.35, starNorm);
                 const scaleMul = zoomTextBoost * starTextBoost * revealScale * fadeOutScale;
                 const uSize = mat.uniforms.uSize.value as THREE.Vector2;
@@ -1246,6 +1247,7 @@ export function createEngine({
         const starDivisionIndices: number[] = [];
         const chapterLineCutById = new Map<string, number>();
         const chapterStarSizeById = new Map<string, number>();
+        const chapterWeightNormById = new Map<string, number>(); // linear t, unaffected by starSizeExponent
         let minChapterStarSize = Infinity;
         let maxChapterStarSize = -Infinity;
         
@@ -1276,13 +1278,15 @@ export function createEngine({
         for (const n of laidOut.nodes) {
             if (n.level === 3) {
                 let baseSize = 3.5;
+                let weightNorm = 0;
                 if (typeof n.weight === "number") {
-                    const t = (n.weight - minWeight) / (maxWeight - minWeight);
+                    weightNorm = (n.weight - minWeight) / (maxWeight - minWeight);
                     const sizeExp = cfg.starSizeExponent ?? 4.0;
                     const sizeScale = cfg.starSizeScale ?? 6.0;
-                    baseSize = Math.pow(t, sizeExp) * 22.0 * sizeScale;
+                    baseSize = Math.pow(weightNorm, sizeExp) * 22.0 * sizeScale;
                 }
                 chapterStarSizeById.set(n.id, baseSize);
+                chapterWeightNormById.set(n.id, weightNorm);
                 minChapterStarSize = Math.min(minChapterStarSize, baseSize);
                 maxChapterStarSize = Math.max(maxChapterStarSize, baseSize);
             }
@@ -1374,13 +1378,10 @@ export function createEngine({
                     if (n.level === 1) baseScale = 0.08;
                     else if (n.level === 2) baseScale = 0.04; // Books: Decreased from 0.06
                     else if (n.level === 3) {
-                        const starSize = chapterStarSizeById.get(n.id) ?? 3.5;
-                        const starNorm = THREE.MathUtils.clamp(
-                            (starSize - minChapterStarSize) / (maxChapterStarSize - minChapterStarSize),
-                            0,
-                            1
-                        );
-                        baseScale = THREE.MathUtils.lerp(0.032, 0.11, starNorm);
+                        // Use linear weight norm (not the star-size-exponent-skewed value)
+                        // so label sizes spread visibly across the full range.
+                        const wn = chapterWeightNormById.get(n.id) ?? 0;
+                        baseScale = THREE.MathUtils.lerp(0.019, 0.039, wn);
                     }
                     
                     const size = new THREE.Vector2(baseScale * texRes.aspect, baseScale);
@@ -1462,25 +1463,14 @@ export function createEngine({
                     mesh.userData = { id: n.id };
                     
                     root.add(mesh);
-                    const chapterMaxFovBias = n.level === 3
-                        ? THREE.MathUtils.lerp(-4, 8, THREE.MathUtils.clamp(
-                            ((chapterStarSizeById.get(n.id) ?? 3.5) - minChapterStarSize) / (maxChapterStarSize - minChapterStarSize),
-                            0,
-                            1
-                        ))
-                        : 0;
+                    const wn = n.level === 3 ? (chapterWeightNormById.get(n.id) ?? 0) : 0;
+                    const chapterMaxFovBias = n.level === 3 ? THREE.MathUtils.lerp(-4, 8, wn) : 0;
                     dynamicLabels.push({
                         obj: mesh,
                         node: n,
                         initialScale: size.clone(),
                         maxFovBias: chapterMaxFovBias,
-                        chapterStarSizeNorm: n.level === 3
-                            ? THREE.MathUtils.clamp(
-                                ((chapterStarSizeById.get(n.id) ?? 3.5) - minChapterStarSize) / (maxChapterStarSize - minChapterStarSize),
-                                0,
-                                1
-                            )
-                            : undefined,
+                        chapterStarSizeNorm: n.level === 3 ? wn : undefined,
                         chapterStarBaseSize: n.level === 3 ? (chapterStarSizeById.get(n.id) ?? 3.5) : undefined
                     });
                 }
