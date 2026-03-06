@@ -115,7 +115,7 @@ const DEFAULT_LABEL_BEHAVIOR: ResolvedLabelBehavior = {
         },
         book: {
             minFov: 0,
-            maxFov: 52,
+            maxFov: 22,
             priority: 60,
             mode: "pinned",
             maxOverlapPx: 999,
@@ -125,17 +125,17 @@ const DEFAULT_LABEL_BEHAVIOR: ResolvedLabelBehavior = {
         },
         group: {
             minFov: 0,
-            maxFov: 44,
+            maxFov: 22,
             priority: 42,
-            mode: "floating",
-            maxOverlapPx: 12,
-            radialFadeStart: 0.5,
-            radialFadeEnd: 0.9,
-            fadeDuration: 0.18,
+            mode: "pinned",
+            maxOverlapPx: 999,
+            radialFadeStart: 1.0,
+            radialFadeEnd: 1.2,
+            fadeDuration: 0.22,
         },
         chapter: {
             minFov: 0,
-            maxFov: 46,
+            maxFov: 22,
             priority: 30,
             mode: "pinned",
             maxOverlapPx: 999,
@@ -324,16 +324,6 @@ export class LabelManager {
 
                             targetAlpha = 1;
 
-                            if (record.classKey === "group" && !isSpecial) {
-                                const dist = Math.sqrt(ndcX * ndcX + ndcY * ndcY);
-                                const fade = 1.0 - THREE.MathUtils.smoothstep(
-                                    dist,
-                                    classBehavior.radialFadeStart,
-                                    classBehavior.radialFadeEnd,
-                                );
-                                targetAlpha *= fade;
-                            }
-
                             if (targetAlpha > 0 && record.classKey === "chapter" && !isSpecial) {
                                 // Center-weighted reveal: wide/medium zoom favors center labels.
                                 const dist = Math.sqrt(ndcX * ndcX + ndcY * ndcY);
@@ -351,8 +341,8 @@ export class LabelManager {
                                 }
                             }
 
-                            if (targetAlpha > 0 && record.classKey === "book" && !isSpecial) {
-                                // Center-weighted reveal like chapters, but with a wider focus radius.
+                            if (targetAlpha > 0 && (record.classKey === "book" || record.classKey === "group") && !isSpecial) {
+                                // Center-weighted reveal, wider focus radius.
                                 const dist = Math.sqrt(ndcX * ndcX + ndcY * ndcY);
                                 const fovWeight = THREE.MathUtils.smoothstep(ctx.fov, 15, 58);
                                 const focusOuter = THREE.MathUtils.lerp(0.95, 0.70, fovWeight);

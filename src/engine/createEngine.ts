@@ -1268,7 +1268,7 @@ export function createEngine({
             const mat = item.obj.material;
             if (!(mat instanceof THREE.ShaderMaterial) || !(mat.uniforms?.uSize?.value instanceof THREE.Vector2)) continue;
 
-            const entryFov = level === 2 ? 52 : 44;
+            const entryFov = 22;
             const zoomBoost = THREE.MathUtils.lerp(1.3, 0.5, THREE.MathUtils.smoothstep(state.fov, 8, entryFov));
             const uAlpha = typeof mat.uniforms.uAlpha?.value === "number" ? mat.uniforms.uAlpha.value as number : 0;
             const revealT = THREE.MathUtils.smoothstep(uAlpha, 0, 1);
