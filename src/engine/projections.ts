@@ -141,6 +141,7 @@ export class BlendedProjection implements Projection {
 
     /** Current blend factor, updated via setFov() */
     private blend = 0;
+    private blendOverride: number | null = null;
 
     constructor(blendStart: number = 40, blendEnd: number = 100) {
         this.blendStart = blendStart;
@@ -156,16 +157,25 @@ export class BlendedProjection implements Projection {
     }
 
     getBlend(): number {
-        return this.blend;
+        return this.blendOverride ?? this.blend;
+    }
+
+    setBlendOverride(value: number | null) {
+        if (value === null || value === undefined || Number.isNaN(value)) {
+            this.blendOverride = null;
+            return;
+        }
+        this.blendOverride = Math.max(0, Math.min(1, value));
     }
 
     forward(dir: Vec3) {
-        if (this.blend > 0.5 && dir.z > 0.4) return null;
-        if (this.blend < 0.1 && dir.z > -0.1) return null;
+        const b = this.getBlend();
+        if (b > 0.5 && dir.z > 0.4) return null;
+        if (b < 0.1 && dir.z > -0.1) return null;
 
         const kLinear = 1.0 / Math.max(0.01, -dir.z);
         const kStereo = 2.0 / (1.0 - dir.z);
-        const k = kLinear * (1 - this.blend) + kStereo * this.blend;
+        const k = kLinear * (1 - b) + kStereo * b;
         return { x: k * dir.x, y: k * dir.y, z: dir.z };
     }
 
@@ -178,7 +188,8 @@ export class BlendedProjection implements Projection {
         const halfHeightStereo = 2 * Math.tan(fovRad / 4);
         const thetaStereo = 2 * Math.atan((r * halfHeightStereo) / 2);
 
-        const theta = thetaLin * (1 - this.blend) + thetaStereo * this.blend;
+        const b = this.getBlend();
+        const theta = thetaLin * (1 - b) + thetaStereo * b;
         const phi = Math.atan2(uvY, uvX);
         const sinT = Math.sin(theta);
         return {
@@ -191,12 +202,14 @@ export class BlendedProjection implements Projection {
     getScale(fovRad: number): number {
         const scaleLinear = 1.0 / Math.tan(fovRad / 2.0);
         const scaleStereo = 1.0 / (2.0 * Math.tan(fovRad / 4.0));
-        return scaleLinear * (1 - this.blend) + scaleStereo * this.blend;
+        const b = this.getBlend();
+        return scaleLinear * (1 - b) + scaleStereo * b;
     }
 
     isClipped(dirZ: number): boolean {
-        if (this.blend > 0.5) return dirZ > 0.4;
-        if (this.blend < 0.1) return dirZ > -0.1;
+        const b = this.getBlend();
+        if (b > 0.5) return dirZ > 0.4;
+        if (b < 0.1) return dirZ > -0.1;
         return false;
     }
 }

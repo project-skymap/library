@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import type { StarMapConfig, SceneModel, SceneNode, StarArrangement } from "../types";
+import type { StarMapConfig, SceneModel, SceneNode, StarArrangement, HorizonThemeConfig } from "../types";
 import { computeLayoutPositions } from "./layout";
 import { createSmartMaterial, globalUniforms } from "./materials";
 import { ConstellationArtworkLayer } from "./ConstellationArtworkLayer";
@@ -28,7 +28,7 @@ type Handlers = {
 const ENGINE_CONFIG = {
     minFov: 1,
     maxFov: 135,
-    defaultFov: 50,
+    defaultFov: 35,
     dragSpeed: 0.00125,
     inertiaDamping: 0.92,
     blendStart: 35,
@@ -54,6 +54,15 @@ const ORDER_REVEAL_CONFIG = {
     pulseAmplitude: 0.12,
     pulseDuration: 2,
     delayPerChapter: 0.1
+};
+
+type ActiveHorizonProfile = {
+    mode: 0 | 1;
+    pointCount: number;
+    azDeg: number[];
+    altDeg: number[];
+    rotateRad: number;
+    baseAltDeg: number;
 };
 
 export function createEngine({
@@ -118,60 +127,6 @@ export function createEngine({
     const camera = new THREE.PerspectiveCamera(60, 1, 0.1, 10000); // Increased far plane to 10000
     camera.position.set(0, 0, 0);
     camera.up.set(0, 1, 0);
-    
-    // ... (Engine State) ...
-
-    // ... (Helpers, etc.) ...
-
-    // ... (bottom of file) ...
-    
-    function setHoveredBook(id: string | null) {
-        if (id === hoveredBookId) return;
-        
-        const now = performance.now();
-        
-        // If we are LEAVING a book, record timestamp
-        if (hoveredBookId) {
-            hoverCooldowns.set(hoveredBookId, now);
-        }
-        
-        // If we are ENTERING a book, check cooldown
-        // However, if we just left IT, we shouldn't trigger if < cooldown
-        if (id) {
-             const lastExit = hoverCooldowns.get(id) || 0;
-             if (now - lastExit < COOLDOWN_MS) {
-                 // Cooldown active, don't set as hovered for visual purposes yet
-                 // But we still track it internally? 
-                 // If we suppress it here, `hoveredBookId` remains null, so no effect shows.
-                 // But if the user *stays* hovered, it will never trigger because setHoveredBook won't be called again.
-                 // We need to allow it to trigger *eventually* if they stay hovered.
-                 // So we set `hoveredBookId` but use a separate logic for "visual activation"?
-                 // Or we accept that rapid re-entry is suppressed.
-                 // If the user stays hovered, `tick` will see `hoveredBookId` is set.
-                 // We need a way to say "visuals are suppressed until X".
-                 // Let's add `visualSuppressionUntil: number` to state.
-                 // Actually, simpler:
-                 // If suppressed, don't set hoveredBookId? No, then if they stay, it never shows.
-                 // We should set it, but in `tick`, check cooldown?
-             }
-        }
-        
-        hoveredBookId = id; 
-    }
-    
-    // Actually, I need to modify `tick` to respect the cooldown, because `setHoveredBook` is only called on change.
-    // If I set `hoveredBookId` immediately, but `tick` checks cooldown, `tick` runs every frame.
-    // If `tick` sees `hoveredBookId` is set, and `now < cooldownEnd`, it keeps strength at 0.
-    // Once `now > cooldownEnd`, it ramps up.
-    // This supports "hover... wait... trigger".
-    
-    // Let's revert the complex `setHoveredBook` logic and just do state tracking there,
-    // then put the check in `tick`.
-    
-    // Wait, I can't modify `tick` easily without replacing the whole function or a large chunk.
-    // Let's see `tick` again.
-
-
     // ---------------------------
     // Engine State
     // ---------------------------
@@ -229,6 +184,10 @@ export function createEngine({
 
     let handlers: Handlers = { onSelect, onHover, onArrangementChange, onFovChange, onLongPress };
     let currentConfig: StarMapConfig | undefined;
+
+    function getSceneDebug() {
+        return currentConfig?.debug?.sceneMechanics;
+    }
     
     // ---------------------------
     // Constellation Artwork Layer
@@ -246,6 +205,7 @@ export function createEngine({
     function syncProjectionState() {
         if (currentProjection instanceof BlendedProjection) {
             currentProjection.setFov(state.fov);
+            currentProjection.setBlendOverride(getSceneDebug()?.projectionBlendOverride ?? null);
             globalUniforms.uBlend.value = currentProjection.getBlend();
         }
         globalUniforms.uProjectionType.value = currentProjection.glslProjectionType;
@@ -310,6 +270,244 @@ export function createEngine({
     // ---------------------------
     const groundGroup = new THREE.Group();
     scene.add(groundGroup);
+    const MAX_HORIZON_POINTS = 64;
+    let groundMaterial: THREE.ShaderMaterial | null = null;
+    let horizonLine: THREE.Line | null = null;
+    let activeHorizonProfile: ActiveHorizonProfile = {
+        mode: 0,
+        pointCount: 0,
+        azDeg: [],
+        altDeg: [],
+        rotateRad: 0,
+        baseAltDeg: 3
+    };
+    let lastHorizonDiagTs = 0;
+
+    function toColor(input: string | undefined, fallbackHex: number): THREE.Color {
+        if (!input) return new THREE.Color(fallbackHex);
+        try {
+            return new THREE.Color(input);
+        } catch {
+            return new THREE.Color(fallbackHex);
+        }
+    }
+
+    function applyGroundTheme(cfg?: StarMapConfig) {
+        if (!groundMaterial) return;
+        const theme: HorizonThemeConfig | undefined = getSceneDebug()?.disableHorizonTheme ? undefined : cfg?.horizonTheme;
+        const uniforms = groundMaterial.uniforms as Record<string, THREE.IUniform>;
+        const atmo = theme?.atmosphere;
+
+        const mode = theme?.source === "polygonal" && (theme.profile?.points?.length ?? 0) >= 2 ? 1 : 0;
+        const groundColor = toColor(theme?.groundColor, 0x010102);
+        const fogColor = toColor(theme?.horizonLineColor, 0x0a1e3a);
+        const fogIntensity = THREE.MathUtils.clamp(atmo?.fogIntensity ?? 0.6, 0.0, 1.5);
+        const fogVisible = atmo?.fogVisible === false ? 0.0 : 1.0;
+        const minBrightness = THREE.MathUtils.clamp(atmo?.minimalBrightness ?? 0.0, 0.0, 1.0);
+        const rotateRad = ((theme?.profile?.angleRotateZDeg ?? 0) * Math.PI) / 180;
+
+        const azSamples = new Array<number>(MAX_HORIZON_POINTS).fill(0);
+        const altSamples = new Array<number>(MAX_HORIZON_POINTS).fill(0);
+        let pointCount = 0;
+        let sortedPoints: { azDeg: number; altDeg: number }[] = [];
+
+        if (mode === 1 && theme?.profile?.points) {
+            sortedPoints = [...theme.profile.points]
+                .map((p) => ({
+                    azDeg: ((((p.azDeg % 360) + 360) % 360)),
+                    altDeg: THREE.MathUtils.clamp(p.altDeg, -30, 35)
+                }))
+                .sort((a, b) => a.azDeg - b.azDeg);
+
+            pointCount = Math.min(sortedPoints.length, MAX_HORIZON_POINTS);
+            for (let i = 0; i < pointCount; i++) {
+                azSamples[i] = sortedPoints[i]!.azDeg;
+                altSamples[i] = sortedPoints[i]!.altDeg;
+            }
+        }
+        const baseAltDeg = pointCount > 0
+            ? altSamples.slice(0, pointCount).reduce((sum, v) => sum + v, 0) / pointCount
+            : 3.0;
+        activeHorizonProfile = {
+            mode: mode as 0 | 1,
+            pointCount,
+            azDeg: azSamples.slice(0, pointCount),
+            altDeg: altSamples.slice(0, pointCount),
+            rotateRad,
+            baseAltDeg
+        };
+
+        uniforms.color.value = groundColor;
+        uniforms.fogColor.value = fogColor;
+        uniforms.uFogIntensity.value = fogIntensity;
+        uniforms.uFogVisible.value = fogVisible;
+        uniforms.uMinBrightness.value = minBrightness;
+        uniforms.uHorizonMode.value = mode;
+        uniforms.uHorizonPointCount.value = pointCount;
+        uniforms.uHorizonAzDeg.value = azSamples;
+        uniforms.uHorizonAltDeg.value = altSamples;
+        uniforms.uHorizonRotateRad.value = rotateRad;
+        uniforms.uBaseAltDeg.value = baseAltDeg;
+        groundMaterial.uniformsNeedUpdate = true;
+
+        if (atmosphereMesh && atmosphereMesh.material instanceof THREE.ShaderMaterial) {
+            const atmUniforms = atmosphereMesh.material.uniforms as Record<string, THREE.IUniform>;
+            const topAltDeg = atmo?.fogBandTopAltDeg ?? 90;
+            const bottomAltDeg = atmo?.fogBandBottomAltDeg ?? -90;
+            atmUniforms.uThemeFogVisible.value = fogVisible;
+            atmUniforms.uThemeFogIntensity.value = fogIntensity;
+            atmUniforms.uThemeFogTopSin.value = Math.sin(THREE.MathUtils.degToRad(topAltDeg));
+            atmUniforms.uThemeFogBottomSin.value = Math.sin(THREE.MathUtils.degToRad(bottomAltDeg));
+            atmUniforms.uThemeMinBrightness.value = minBrightness;
+            atmosphereMesh.material.uniformsNeedUpdate = true;
+        }
+
+        if (horizonLine) {
+            groundGroup.remove(horizonLine);
+            horizonLine.geometry.dispose();
+            (horizonLine.material as THREE.Material).dispose();
+            horizonLine = null;
+        }
+
+        const lineThickness = THREE.MathUtils.clamp(theme?.horizonLineThickness ?? 0, 0, 8);
+        const shouldDrawLine = mode === 1 && pointCount >= 2 && lineThickness > 0;
+        if (!shouldDrawLine) return;
+
+        const lineColor = toColor(theme?.horizonLineColor, 0x557799);
+        const lineRadius = 997.0;
+        const pts: THREE.Vector3[] = [];
+        for (let i = 0; i < pointCount; i++) {
+            const sample = sortedPoints[i]!;
+            const angleDeg = sample.azDeg - (theme?.profile?.angleRotateZDeg ?? 0);
+            const a = THREE.MathUtils.degToRad(angleDeg);
+            const alt = THREE.MathUtils.degToRad(sample.altDeg);
+            const rc = Math.cos(alt);
+            pts.push(new THREE.Vector3(
+                lineRadius * rc * Math.cos(a),
+                lineRadius * Math.sin(alt),
+                lineRadius * rc * Math.sin(a)
+            ));
+        }
+        if (pts.length > 0) pts.push(pts[0]!.clone());
+
+        const geo = new THREE.BufferGeometry().setFromPoints(pts);
+        const mat = createSmartMaterial({
+            uniforms: {
+                color: { value: lineColor },
+                alpha: { value: 0.95 }
+            },
+            vertexShaderBody: `
+                uniform vec3 color;
+                varying vec3 vColor;
+                void main() {
+                    vColor = color;
+                    vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+                    gl_Position = smartProject(mvPosition);
+                    vScreenPos = gl_Position.xy / gl_Position.w;
+                }
+            `,
+            fragmentShader: `
+                uniform float alpha;
+                varying vec3 vColor;
+                void main() {
+                    float alphaMask = getMaskAlpha();
+                    if (alphaMask < 0.01) discard;
+                    gl_FragColor = vec4(vColor, alpha * alphaMask);
+                }
+            `,
+            transparent: true,
+            depthWrite: false,
+            depthTest: true
+        });
+        const line = new THREE.Line(geo, mat);
+        (line.material as THREE.LineBasicMaterial).linewidth = lineThickness;
+        line.frustumCulled = false;
+        line.renderOrder = 3;
+        horizonLine = line;
+        groundGroup.add(line);
+    }
+
+    function sampleActiveHorizonAltDeg(azDeg: number): number {
+        const profile = activeHorizonProfile;
+        if (profile.mode !== 1 || profile.pointCount < 2) return profile.baseAltDeg;
+        const query = ((((azDeg + THREE.MathUtils.radToDeg(profile.rotateRad)) % 360) + 360) % 360);
+        const n = profile.pointCount;
+        const firstAz = profile.azDeg[0]!;
+        const firstAlt = profile.altDeg[0]!;
+        for (let i = 1; i < n; i++) {
+            const prevAz = profile.azDeg[i - 1]!;
+            const prevAlt = profile.altDeg[i - 1]!;
+            const curAz = profile.azDeg[i]!;
+            const curAlt = profile.altDeg[i]!;
+            if (query >= prevAz && query <= curAz) {
+                const t = (query - prevAz) / Math.max(0.0001, curAz - prevAz);
+                return mix(prevAlt, curAlt, t);
+            }
+        }
+        const prevAz = profile.azDeg[n - 1]!;
+        const prevAlt = profile.altDeg[n - 1]!;
+        const wrappedQuery = query < firstAz ? query + 360 : query;
+        const t = (wrappedQuery - prevAz) / Math.max(0.0001, firstAz + 360 - prevAz);
+        return mix(prevAlt, firstAlt, t);
+    }
+
+    function runHorizonDiagnostics(nowMs: number) {
+        if (nowMs - lastHorizonDiagTs < 1200) return;
+        lastHorizonDiagTs = nowMs;
+
+        const points: { x: number; y: number }[] = [];
+        const r = 997.0;
+        const scale = globalUniforms.uScale.value;
+        const aspect = Math.max(0.0001, globalUniforms.uAspect.value);
+        for (let az = 0; az < 360; az += 2) {
+            const altDeg = sampleActiveHorizonAltDeg(az);
+            const azRad = THREE.MathUtils.degToRad(az);
+            const altRad = THREE.MathUtils.degToRad(altDeg);
+            const rc = Math.cos(altRad);
+            const worldPos = new THREE.Vector3(
+                r * rc * Math.cos(azRad),
+                r * Math.sin(altRad),
+                r * rc * Math.sin(azRad)
+            );
+            const p = smartProjectJS(worldPos);
+            if (currentProjection.isClipped(p.z)) continue;
+            const x = (p.x * scale) / aspect;
+            const y = p.y * scale;
+            if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+            if (Math.abs(x) > 1.0) continue;
+            points.push({ x, y });
+        }
+
+        if (points.length < 16) {
+            console.debug(`[HorizonDiag] insufficient visible horizon samples at fov=${state.fov.toFixed(1)}`);
+            return;
+        }
+
+        const binCount = 12;
+        const maxY = new Array<number>(binCount).fill(-Infinity);
+        for (const p of points) {
+            const ax = Math.min(0.999, Math.abs(p.x));
+            const idx = Math.floor(ax * binCount);
+            maxY[idx] = Math.max(maxY[idx]!, p.y);
+        }
+        const compact = maxY.map((v) => (Number.isFinite(v) ? Number(v.toFixed(3)) : null));
+
+        let dropCount = 0;
+        for (let i = 1; i < binCount; i++) {
+            const prev = maxY[i - 1]!;
+            const cur = maxY[i]!;
+            if (!Number.isFinite(prev) || !Number.isFinite(cur)) continue;
+            if (cur < prev - 0.02) dropCount++;
+        }
+
+        const flatten = groundMaterial?.uniforms?.uZenithFlatten?.value;
+        const blend = currentProjection instanceof BlendedProjection ? currentProjection.getBlend() : -1;
+        console.debug(
+            `[HorizonDiag] fov=${state.fov.toFixed(1)} latDeg=${THREE.MathUtils.radToDeg(state.lat).toFixed(1)} ` +
+            `mode=${activeHorizonProfile.mode} blend=${blend.toFixed(3)} flatten=${Number(flatten ?? 0).toFixed(3)} ` +
+            `drops=${dropCount} bins=${JSON.stringify(compact)}`
+        );
+    }
     
     function createGround() {
         groundGroup.clear();
@@ -320,55 +518,124 @@ export function createEngine({
         const material = createSmartMaterial({
             uniforms: {
                 color: { value: new THREE.Color(0x010102) },
-                fogColor: { value: new THREE.Color(0x0a1e3a) }
+                fogColor: { value: new THREE.Color(0x0a1e3a) },
+                uFogIntensity: { value: 0.6 },
+                uFogVisible: { value: 1.0 },
+                uMinBrightness: { value: 0.0 },
+                uHorizonMode: { value: 0 },
+                uHorizonPointCount: { value: 0 },
+                uHorizonAzDeg: { value: new Array<number>(MAX_HORIZON_POINTS).fill(0) },
+                uHorizonAltDeg: { value: new Array<number>(MAX_HORIZON_POINTS).fill(0) },
+                uHorizonRotateRad: { value: 0.0 },
+                uHorizonRadius: { value: radius },
+                uBaseAltDeg: { value: 3.0 },
+                uZenithFlatten: { value: 0.0 }
             },
             vertexShaderBody: `
                 varying vec3 vPos; 
                 varying vec3 vWorldPos;
+                varying float vViewDirZ;
                 void main() { 
                     vPos = position; 
                     vec4 mvPosition = modelViewMatrix * vec4(position, 1.0); 
                     gl_Position = smartProject(mvPosition); 
                     vScreenPos = gl_Position.xy / gl_Position.w; 
                     vWorldPos = (modelMatrix * vec4(position, 1.0)).xyz;
+                    vViewDirZ = normalize(mvPosition.xyz).z;
                 }
             `,
             fragmentShader: `
                 uniform vec3 color; 
                 uniform vec3 fogColor;
+                uniform float uFogIntensity;
+                uniform float uFogVisible;
+                uniform float uMinBrightness;
+                uniform int uHorizonMode;
+                uniform int uHorizonPointCount;
+                uniform float uHorizonAzDeg[64];
+                uniform float uHorizonAltDeg[64];
+                uniform float uHorizonRotateRad;
+                uniform float uHorizonRadius;
+                uniform float uBaseAltDeg;
+                uniform float uZenithFlatten;
                 varying vec3 vPos; 
                 varying vec3 vWorldPos;
+                varying float vViewDirZ;
+
+                float samplePolygonalAltDeg(float azDeg) {
+                    if (uHorizonPointCount < 2) return 0.0;
+                    float z = mod(azDeg, 360.0);
+                    if (z < 0.0) z += 360.0;
+
+                    float prevAz = uHorizonAzDeg[0];
+                    float prevAlt = uHorizonAltDeg[0];
+                    for (int i = 1; i < 64; i++) {
+                        if (i >= uHorizonPointCount) break;
+                        float curAz = uHorizonAzDeg[i];
+                        float curAlt = uHorizonAltDeg[i];
+                        if (z >= prevAz && z <= curAz) {
+                            float t = (z - prevAz) / max(0.0001, curAz - prevAz);
+                            return mix(prevAlt, curAlt, t);
+                        }
+                        prevAz = curAz;
+                        prevAlt = curAlt;
+                    }
+
+                    float firstAz = uHorizonAzDeg[0] + 360.0;
+                    float firstAlt = uHorizonAltDeg[0];
+                    float zw = z;
+                    if (zw < uHorizonAzDeg[0]) zw += 360.0;
+                    float t = (zw - prevAz) / max(0.0001, firstAz - prevAz);
+                    return mix(prevAlt, firstAlt, t);
+                }
                 
                 void main() { 
                     float alphaMask = getMaskAlpha(); 
                     if (alphaMask < 0.01) discard; 
-                    
-                    // Procedural Horizon (Mountains)
-                    float angle = atan(vPos.z, vPos.x);
-                    
-                    // FBM-like terrain with increased amplitude
-                    float h = 0.0;
-                    h += sin(angle * 6.0) * 35.0;
-                    h += sin(angle * 13.0 + 1.0) * 18.0;
-                    h += sin(angle * 29.0 + 2.0) * 8.0;
-                    h += sin(angle * 63.0 + 4.0) * 3.0;
-                    h += sin(angle * 97.0 + 5.0) * 1.5;
 
-                    float terrainHeight = h + 12.0;
+                    // Keep ground visibility aligned with the active projection clip.
+                    float clipZ = -0.1;
+                    if (uProjectionType == 1) {
+                        clipZ = 0.1;
+                    } else if (uProjectionType == 2) {
+                        clipZ = mix(-0.1, 0.1, clamp(uBlend, 0.0, 1.0));
+                    }
+                    if (vViewDirZ > clipZ) discard;
+                    
+                    float angle = atan(vPos.z, vPos.x);
+                    float terrainHeight;
+
+                    if (uHorizonMode == 1 && uHorizonPointCount >= 2) {
+                        float azDeg = mod(degrees(angle) + 360.0 + degrees(uHorizonRotateRad), 360.0);
+                        float altDeg = samplePolygonalAltDeg(azDeg);
+                        terrainHeight = uHorizonRadius * sin(radians(altDeg));
+                    } else {
+                        // Procedural Horizon (Mountains)
+                        float h = 0.0;
+                        h += sin(angle * 6.0) * 35.0;
+                        h += sin(angle * 13.0 + 1.0) * 18.0;
+                        h += sin(angle * 29.0 + 2.0) * 8.0;
+                        h += sin(angle * 63.0 + 4.0) * 3.0;
+                        h += sin(angle * 97.0 + 5.0) * 1.5;
+                        terrainHeight = h + 12.0;
+                    }
+                    float circularHeight = uHorizonRadius * sin(radians(uBaseAltDeg));
+                    terrainHeight = mix(terrainHeight, circularHeight, clamp(uZenithFlatten, 0.0, 1.0));
 
                     if (vPos.y > terrainHeight) discard;
 
                     // Atmospheric rim glow just below terrain peaks
                     float rimDist = terrainHeight - vPos.y;
-                    float rim = exp(-rimDist * 0.15) * 0.4;
+                    float rim = exp(-rimDist * 0.15) * 0.4 * uFogVisible;
                     vec3 rimColor = fogColor * 1.5;
 
                     // Atmospheric haze — stronger near horizon
                     float fogFactor = smoothstep(-120.0, terrainHeight, vPos.y);
-                    vec3 finalCol = mix(color, fogColor, fogFactor * 0.6);
+                    vec3 finalCol = mix(color, fogColor, fogFactor * uFogIntensity * uFogVisible);
 
                     // Add rim glow near terrain peaks
                     finalCol += rimColor * rim;
+                    finalCol = max(finalCol, color * uMinBrightness);
 
                     gl_FragColor = vec4(finalCol, 1.0); 
                 }
@@ -378,8 +645,10 @@ export function createEngine({
             depthWrite: true, 
             depthTest: true
         });
+        groundMaterial = material;
         const ground = new THREE.Mesh(geometry, material);
         groundGroup.add(ground);
+        applyGroundTheme(currentConfig);
     }
     
         let skyBackgroundMesh: THREE.Mesh | null = null;
@@ -389,6 +658,10 @@ export function createEngine({
     let sunDiscMesh: THREE.Mesh | null = null;
     let sunHaloMesh: THREE.Mesh | null = null;
     let milkyWayMesh: THREE.Mesh | null = null;
+    let editHoverMesh: THREE.Mesh | null = null;
+    let editHoverTargetPos: THREE.Vector3 | null = null;
+    let editDropFlash = 0;
+
 
     function createSkyBackground() {
         const geo = new THREE.SphereGeometry(2400, 32, 32);
@@ -454,6 +727,13 @@ export function createEngine({
         
         // Inverted sphere (BackSide) so we see it from inside
         const material = createSmartMaterial({
+            uniforms: {
+                uThemeFogVisible: { value: 1.0 },
+                uThemeFogTopSin: { value: 0.95 },
+                uThemeFogBottomSin: { value: -1.0 },
+                uThemeFogIntensity: { value: 1.0 },
+                uThemeMinBrightness: { value: 0.0 }
+            },
             vertexShaderBody: `
                 varying vec3 vWorldNormal;
                 void main() { 
@@ -469,6 +749,11 @@ export function createEngine({
                 uniform float uAtmDark;
                 uniform vec3 uColorHorizon;
                 uniform vec3 uColorZenith;
+                uniform float uThemeFogVisible;
+                uniform float uThemeFogTopSin;
+                uniform float uThemeFogBottomSin;
+                uniform float uThemeFogIntensity;
+                uniform float uThemeMinBrightness;
                 
                 void main() {
                     float alphaMask = getMaskAlpha();
@@ -482,6 +767,10 @@ export function createEngine({
 
                     // Non-linear mix for realistic sky falloff
                     vec3 skyColor = mix(uColorHorizon * uAtmGlow, uColorZenith * (1.0 - uAtmDark), pow(t, 0.6));
+                    float hazeBand = smoothstep(uThemeFogBottomSin, uThemeFogTopSin, h);
+                    float hazeFadeEnd = max(uThemeFogTopSin + 0.001, min(1.0, uThemeFogTopSin + 0.25));
+                    hazeBand *= (1.0 - smoothstep(uThemeFogTopSin, hazeFadeEnd, h));
+                    float fogTheme = uThemeFogVisible * uThemeFogIntensity;
 
                     // 2. Teal tint at mid-altitudes (subtle colour variation)
                     float midBand = exp(-6.0 * pow(h - 0.3, 2.0));
@@ -489,11 +778,12 @@ export function createEngine({
 
                     // 3. Primary horizon glow band (wider than before)
                     float horizonBand = exp(-10.0 * abs(h - 0.02));
-                    skyColor += uColorHorizon * horizonBand * 0.5 * uAtmGlow;
+                    skyColor += uColorHorizon * horizonBand * 0.5 * uAtmGlow * fogTheme * max(0.15, hazeBand);
 
                     // 4. Warm secondary glow (light pollution / sodium scatter)
                     float warmGlow = exp(-8.0 * abs(h));
-                    skyColor += vec3(0.4, 0.25, 0.15) * warmGlow * 0.3 * uAtmGlow;
+                    skyColor += vec3(0.4, 0.25, 0.15) * warmGlow * 0.3 * uAtmGlow * fogTheme * max(0.15, hazeBand);
+                    skyColor = max(skyColor, uColorZenith * (0.2 * uThemeMinBrightness));
 
                     gl_FragColor = vec4(skyColor, 1.0);
                 }
@@ -1022,6 +1312,56 @@ export function createEngine({
         backdropGroup.add(points);
     }
     
+    function createEditHoverRing() {
+        const geo = new THREE.PlaneGeometry(1, 1);
+        const mat = createSmartMaterial({
+            uniforms: {
+                uRingSize:  { value: 0.060 },
+                uRingAlpha: { value: 0.0 },
+                uRingColor: { value: new THREE.Color(0.55, 0.88, 1.0) },
+            },
+            vertexShaderBody: `
+                uniform float uRingSize;
+                varying vec2 vUv;
+                void main() {
+                    vUv = uv;
+                    vec4 mvPos = modelViewMatrix * vec4(0.0, 0.0, 0.0, 1.0);
+                    vec4 proj = smartProject(mvPos);
+                    if (proj.z > 4.0) { gl_Position = vec4(10.0, 10.0, 10.0, 1.0); return; }
+                    vec2 offset = position.xy * uRingSize * uScale;
+                    proj.xy += offset / vec2(uAspect, 1.0);
+                    vScreenPos = proj.xy / proj.w;
+                    gl_Position = proj;
+                }
+            `,
+            fragmentShader: `
+                varying vec2 vUv;
+                uniform float uRingAlpha;
+                uniform vec3 uRingColor;
+                void main() {
+                    float alphaMask = getMaskAlpha();
+                    if (alphaMask < 0.01) discard;
+                    vec2 p = vUv * 2.0 - 1.0;
+                    float d = length(p);
+                    float ring = smoothstep(0.52, 0.62, d) * (1.0 - smoothstep(0.80, 0.92, d));
+                    float glow = (1.0 - smoothstep(0.55, 0.98, d)) * 0.18;
+                    float a = (ring + glow) * uRingAlpha * alphaMask;
+                    if (a < 0.005) discard;
+                    gl_FragColor = vec4(uRingColor * (ring * 1.2 + glow), a);
+                }
+            `,
+            transparent: true,
+            depthWrite: false,
+            depthTest: false,
+            side: THREE.DoubleSide,
+            blending: THREE.AdditiveBlending,
+        });
+        editHoverMesh = new THREE.Mesh(geo, mat);
+        editHoverMesh.renderOrder = 500;
+        editHoverMesh.frustumCulled = false;
+        scene.add(editHoverMesh);
+    }
+
     createSkyBackground();
     createGround();
     createAtmosphere();
@@ -1029,6 +1369,7 @@ export function createEngine({
     createSun();
     createMilkyWay();
     createBackdropStars();
+    createEditHoverRing();
 
     // ---------------------------
     // Picking / Model content
@@ -1151,23 +1492,26 @@ export function createEngine({
         if (currentConfig?.arrangement) {
              const arr = currentConfig.arrangement[n.id];
              if (arr) {
-                // If it's a 2D arrangement (z=0), project to sphere
-                if (arr.position[2] === 0) {
-                    const x = arr.position[0];
-                    const y = arr.position[1];
+                const [px, py, pz] = arr.position;
+                // Only reproject when position is clearly a 2D disc point (z=0 AND not already
+                // on the sphere surface). Drag-dropped positions have length ≈ radius, so they
+                // pass through as-is even when pz happens to be 0 (equatorial drop).
+                if (pz === 0) {
                     const radius = currentConfig.layout?.radius ?? 2000;
-                    
-                    const r_norm = Math.min(1.0, Math.sqrt(x * x + y * y) / radius);
-                    const phi = Math.atan2(y, x);
-                    const theta = r_norm * (Math.PI / 2);
-                    
-                    return new THREE.Vector3(
-                        Math.sin(theta) * Math.cos(phi),
-                        Math.cos(theta),
-                        Math.sin(theta) * Math.sin(phi)
-                    ).multiplyScalar(radius);
+                    const len3d = Math.sqrt(px * px + py * py);
+                    if (len3d < radius * 0.99) {
+                        // Genuine 2D interior disc point — project onto sphere
+                        const r_norm = Math.min(1.0, len3d / radius);
+                        const phi = Math.atan2(py, px);
+                        const theta = r_norm * (Math.PI / 2);
+                        return new THREE.Vector3(
+                            Math.sin(theta) * Math.cos(phi),
+                            Math.cos(theta),
+                            Math.sin(theta) * Math.sin(phi)
+                        ).multiplyScalar(radius);
+                    }
                 }
-                return new THREE.Vector3(arr.position[0], arr.position[1], arr.position[2]);
+                return new THREE.Vector3(px, py, pz);
              }
         }
         return new THREE.Vector3((n.meta?.x as number) ?? 0, (n.meta?.y as number) ?? 0, (n.meta?.z as number) ?? 0);
@@ -2205,6 +2549,7 @@ export function createEngine({
 
     function setConfig(cfg: StarMapConfig) {
         currentConfig = cfg;
+        applyGroundTheme(cfg);
         const externalFocusId = (cfg as any).focus?.nodeId;
         if (typeof externalFocusId === "string") focusedNodeId = externalFocusId;
         if (externalFocusId === null) focusedNodeId = null;
@@ -2347,46 +2692,75 @@ export function createEngine({
         const rect = renderer.domElement.getBoundingClientRect();
         const mX = ev.clientX - rect.left;
         const mY = ev.clientY - rect.top;
-        
+
         // Update Global NDC for other uses
         mouseNDC.x = (mX / rect.width) * 2 - 1;
         mouseNDC.y = -(mY / rect.height) * 2 + 1;
 
         const uScale = globalUniforms.uScale.value;
         const uAspect = camera.aspect;
-        const w = rect.width; 
+        const w = rect.width;
         const h = rect.height;
+        const isEditMode = currentConfig?.editable ?? false;
+
+        // Helper to find the closest label within threshold
+        function pickLabel(threshold: number) {
+            let closest = null;
+            let minDist = threshold;
+            for (const item of dynamicLabels) {
+                if (!item.obj.visible) continue;
+                if (isNodeFiltered(item.node)) continue;
+                const labelMat = item.obj.material as THREE.ShaderMaterial;
+                if ((labelMat?.uniforms?.uAlpha?.value ?? 0) < 0.1) continue;
+                const pWorld = item.obj.position;
+                const pProj = smartProjectJS(pWorld);
+                if (currentProjection.isClipped(pProj.z)) continue;
+                const xNDC = pProj.x * uScale / uAspect;
+                const yNDC = pProj.y * uScale;
+                const sX = (xNDC * 0.5 + 0.5) * w;
+                const sY = (-yNDC * 0.5 + 0.5) * h;
+                const d = Math.sqrt((mX - sX) ** 2 + (mY - sY) ** 2);
+                if (d < minDist) { minDist = d; closest = item; }
+            }
+            return closest;
+        }
+
+        // In edit mode, stars take priority — try stars first so labels don't block picks.
+        // In view mode, labels have highest priority (they are the primary interactive targets).
+        if (isEditMode) {
+            // 1. Stars first in edit mode — use a generous threshold (~60px screen radius)
+            if (starPoints) {
+                const worldDir = getMouseWorldVector(mX, mY, rect.width, rect.height);
+                raycaster.ray.origin.set(0, 0, 0);
+                raycaster.ray.direction.copy(worldDir);
+                raycaster.params.Points.threshold = 65.0 * (state.fov / 60);
+                const hits = raycaster.intersectObject(starPoints, false);
+                const pointHit = hits[0];
+                if (pointHit && pointHit.index !== undefined) {
+                    const id = starIndexToId[pointHit.index];
+                    if (id) {
+                        const node = nodeById.get(id);
+                        if (node && !isNodeFiltered(node)) {
+                            // Use the actual vertex position as the hit point (not the ray projection)
+                            const attr = starPoints.geometry.attributes.position;
+                            const starPos = new THREE.Vector3(attr.getX(pointHit.index), attr.getY(pointHit.index), attr.getZ(pointHit.index));
+                            return { type: 'star', node, index: pointHit.index, point: starPos, object: undefined };
+                        }
+                    }
+                }
+            }
+            // 2. Labels second (for group drag)
+            const editLabel = pickLabel(isTouchDevice ? 48 : 32);
+            if (editLabel) {
+                return { type: 'label', node: editLabel.node, object: editLabel.obj, point: editLabel.obj.position.clone(), index: undefined };
+            }
+            return undefined;
+        }
+
+        // --- View mode pick order ---
 
         // 1. Pick Labels (Highest Priority - Foreground UI)
-        let closestLabel = null;
-        const LABEL_THRESHOLD = isTouchDevice ? 48 : 40;
-        let minLabelDist = LABEL_THRESHOLD; // Pixel threshold
-
-        for (const item of dynamicLabels) {
-            if (!item.obj.visible) continue;
-            if (isNodeFiltered(item.node)) continue;
-
-            const pWorld = item.obj.position;
-            const pProj = smartProjectJS(pWorld);
-            
-            // Back-face cull check
-            if (currentProjection.isClipped(pProj.z)) continue;
-
-            const xNDC = pProj.x * uScale / uAspect;
-            const yNDC = pProj.y * uScale;
-            
-            const sX = (xNDC * 0.5 + 0.5) * w;
-            const sY = (-yNDC * 0.5 + 0.5) * h;
-            
-            const dx = mX - sX; 
-            const dy = mY - sY;
-            const d = Math.sqrt(dx*dx + dy*dy);
-            
-            if (d < minLabelDist) { 
-                minLabelDist = d; 
-                closestLabel = item; 
-            }
-        }
+        const closestLabel = pickLabel(isTouchDevice ? 48 : 40);
         if (closestLabel) {
             return { type: 'label', node: closestLabel.node, object: closestLabel.obj, point: closestLabel.obj.position.clone(), index: undefined };
         }
@@ -2412,10 +2786,10 @@ export function createEngine({
             }
         }
         if (closestConst) {
-            const fakeNode: SceneNode = { 
-                id: closestConst.config.id, 
-                label: closestConst.config.title, 
-                level: -1 
+            const fakeNode: SceneNode = {
+                id: closestConst.config.id,
+                label: closestConst.config.title,
+                level: -1
             };
             return { type: 'constellation', node: fakeNode, object: closestConst.mesh, point: closestConst.center.clone(), index: undefined };
         }
@@ -2454,12 +2828,23 @@ export function createEngine({
             if (hit) {
                 state.dragMode = 'node';
                 state.draggedNodeId = hit.node.id;
-                state.draggedDist = hit.point.length(); 
+                // Use the star's actual geometry position for drag distance (not ray projection)
+                if (hit.type === 'star' && hit.index !== undefined && starPoints) {
+                    const attr = starPoints.geometry.attributes.position;
+                    const starWorldPos = new THREE.Vector3(attr.getX(hit.index), attr.getY(hit.index), attr.getZ(hit.index));
+                    state.draggedDist = starWorldPos.length();
+                } else {
+                    state.draggedDist = hit.point.length();
+                }
                 document.body.style.cursor = 'crosshair';
-                
+                // Clear camera inertia so the view doesn't drift after releasing a star
+                state.velocityX = 0;
+                state.velocityY = 0;
+
                 if (hit.type === 'star') {
                     state.draggedStarIndex = hit.index ?? -1;
                     state.draggedGroup = null;
+                    state.tempArrangement = {}; // Clear stale data from previous drags
                 } else if (hit.type === 'label') {
                     // Group capture logic
                     const bookId = hit.node.id;
@@ -2515,7 +2900,11 @@ export function createEngine({
                  const attr = starPoints.geometry.attributes.position as THREE.BufferAttribute;
                  attr.setXYZ(idx, newPos.x, newPos.y, newPos.z);
                  attr.needsUpdate = true;
-             } 
+                 editHoverTargetPos = newPos.clone();
+                 // Mirror into tempArrangement so getFullArrangement() has the correct position
+                 const starId = starIndexToId[idx];
+                 if (starId) state.tempArrangement[starId] = { position: [newPos.x, newPos.y, newPos.z] };
+             }
              else if (state.draggedGroup && state.draggedNodeId) {
                  const group = state.draggedGroup;
                  const item = dynamicLabels.find(l => l.node.id === state.draggedNodeId);
@@ -2594,10 +2983,20 @@ export function createEngine({
                 // No lookAt needed for billboard shader
                 hoverLabelMat.uniforms.uAlpha.value = 1.0;
                 hoverLabelMesh.visible = true;
+                // Edit mode: track hover position for ring indicator (use exact vertex position)
+                if (currentConfig?.editable && hit.type === 'star' && hit.index !== undefined && starPoints) {
+                    const attr = starPoints.geometry.attributes.position;
+                    editHoverTargetPos = new THREE.Vector3(attr.getX(hit.index), attr.getY(hit.index), attr.getZ(hit.index));
+                } else if (currentConfig?.editable && hit.type === 'star') {
+                    editHoverTargetPos = hit.point.clone();
+                }
             } else {
                 currentHoverNodeId = null;
                 hoverLabelMat.uniforms.uAlpha.value = 0.0;
                 hoverLabelMesh.visible = false;
+                if (currentConfig?.editable && state.dragMode !== 'node') {
+                    editHoverTargetPos = null;
+                }
             }
 
             if (hit?.node.id !== (handlers as any)._lastHoverId) {
@@ -2617,6 +3016,7 @@ export function createEngine({
         if (state.dragMode === 'node') {
             const fullArr = getFullArrangement();
             handlers.onArrangementChange?.(fullArr);
+            editDropFlash = 1.0; // Trigger drop confirmation ring flash
             state.dragMode = 'none';
             state.draggedNodeId = null; state.draggedStarIndex = -1; state.draggedGroup = null;
             document.body.style.cursor = 'default';
@@ -2709,7 +3109,7 @@ export function createEngine({
         const newUp = new THREE.Vector3(0, 1, 0).applyQuaternion(qNew);
         camera.up.copy(newUp);
         
-        if (e.deltaY > 0 && state.fov > ENGINE_CONFIG.zenithStartFov) {
+        if (!getSceneDebug()?.disableZenithBias && e.deltaY > 0 && state.fov > ENGINE_CONFIG.zenithStartFov) {
             const range = ENGINE_CONFIG.maxFov - ENGINE_CONFIG.zenithStartFov;
             let t = (state.fov - ENGINE_CONFIG.zenithStartFov) / range; t = Math.max(0, Math.min(1, t));
             const bias = ENGINE_CONFIG.zenithStrength * t; const zenithLat = Math.PI / 2 - 0.001;
@@ -2848,7 +3248,7 @@ export function createEngine({
             handlers.onFovChange?.(state.fov);
 
             // Zenith pull-up when zooming out (FOV increasing)
-            if (state.fov > prevFov && state.fov > ENGINE_CONFIG.zenithStartFov) {
+            if (!getSceneDebug()?.disableZenithBias && state.fov > prevFov && state.fov > ENGINE_CONFIG.zenithStartFov) {
                 const range = ENGINE_CONFIG.maxFov - ENGINE_CONFIG.zenithStartFov;
                 let t = (state.fov - ENGINE_CONFIG.zenithStartFov) / range;
                 t = Math.max(0, Math.min(1, t));
@@ -3138,7 +3538,18 @@ export function createEngine({
         camera.lookAt(target);
         camera.updateMatrixWorld();
         camera.matrixWorldInverse.copy(camera.matrixWorld).invert();
+        if (groundMaterial?.uniforms?.uZenithFlatten) {
+            const flatten = getSceneDebug()?.disableZenithFlatten
+                ? 0
+                : THREE.MathUtils.smoothstep(
+                    state.lat,
+                    THREE.MathUtils.degToRad(68),
+                    THREE.MathUtils.degToRad(88)
+                );
+            groundMaterial.uniforms.uZenithFlatten.value = flatten;
+        }
         updateUniforms();
+        if (getSceneDebug()?.horizonDiagnostics) runHorizonDiagnostics(now);
         updateChapterLabelAnchors();
         
         // --- Fader Updates ---
@@ -3171,6 +3582,36 @@ export function createEngine({
         if (sunDiscMesh) sunDiscMesh.visible = showSun;
         if (sunHaloMesh) sunHaloMesh.visible = showSun;
         if (milkyWayMesh) milkyWayMesh.visible = currentConfig?.showMilkyWay ?? true;
+
+        // Edit hover ring animation
+        if (editHoverMesh) {
+            const ringMat = editHoverMesh.material as THREE.ShaderMaterial;
+            const isEditing = currentConfig?.editable ?? false;
+            const isDraggingStar = state.dragMode === 'node' && state.draggedStarIndex !== -1;
+            const hasTarget = isEditing && editHoverTargetPos !== null;
+            if (hasTarget) {
+                editHoverMesh.position.copy(editHoverTargetPos!);
+                const pulseBoost = editDropFlash * 1.8;
+                const targetAlpha = 0.80 + pulseBoost;
+                ringMat.uniforms.uRingAlpha.value = THREE.MathUtils.lerp(ringMat.uniforms.uRingAlpha.value, targetAlpha, 0.15);
+                // Gold while dragging, cyan when hovering; flash gold on drop
+                const tGold = isDraggingStar ? 1.0 : editDropFlash;
+                const targetColor = new THREE.Color(
+                    THREE.MathUtils.lerp(0.55, 1.00, tGold),
+                    THREE.MathUtils.lerp(0.88, 0.82, tGold),
+                    THREE.MathUtils.lerp(1.00, 0.18, tGold),
+                );
+                (ringMat.uniforms.uRingColor.value as THREE.Color).lerp(targetColor, 0.18);
+                // Slightly larger ring while dragging (landing zone indicator)
+                const baseSize = isDraggingStar ? 0.075 : 0.060;
+                const targetSize = baseSize * (1.0 + editDropFlash * 0.7);
+                ringMat.uniforms.uRingSize.value = THREE.MathUtils.lerp(ringMat.uniforms.uRingSize.value, targetSize, 0.18);
+                editDropFlash = Math.max(0, editDropFlash - dt * 3.0);
+            } else {
+                ringMat.uniforms.uRingAlpha.value = THREE.MathUtils.lerp(ringMat.uniforms.uRingAlpha.value, 0.0, 0.15);
+                ringMat.uniforms.uRingSize.value = THREE.MathUtils.lerp(ringMat.uniforms.uRingSize.value, 0.060, 0.2);
+            }
+        }
 
         const DIVISION_THRESHOLD = 60;
         const showDivisions = state.fov > DIVISION_THRESHOLD;
@@ -3261,6 +3702,7 @@ export function createEngine({
         if (sunHaloMesh) { scene.remove(sunHaloMesh); sunHaloMesh.geometry.dispose(); (sunHaloMesh.material as THREE.ShaderMaterial).dispose(); sunHaloMesh = null; }
         if (milkyWayMesh) { scene.remove(milkyWayMesh); milkyWayMesh.geometry.dispose(); (milkyWayMesh.material as THREE.ShaderMaterial).dispose(); milkyWayMesh = null; }
         if (skyBackgroundMesh) { scene.remove(skyBackgroundMesh); skyBackgroundMesh.geometry.dispose(); (skyBackgroundMesh.material as THREE.ShaderMaterial).dispose(); skyBackgroundMesh = null; }
+        if (editHoverMesh) { scene.remove(editHoverMesh); editHoverMesh.geometry.dispose(); (editHoverMesh.material as THREE.ShaderMaterial).dispose(); editHoverMesh = null; }
         renderer.dispose();
         renderer.domElement.remove();
     }

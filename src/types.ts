@@ -75,6 +75,46 @@ export type LabelBehaviorConfig = {
     classes?: Partial<Record<LabelClassKey, LabelClassBehavior>>;
 };
 
+export type HorizonSamplePoint = {
+    azDeg: number;
+    altDeg: number;
+};
+
+export type HorizonProfile = {
+    listMode?: "azDeg_altDeg";
+    angleRotateZDeg?: number;
+    points: HorizonSamplePoint[];
+};
+
+export type HorizonAtmosphereConfig = {
+    fogVisible?: boolean;
+    fogBandTopAltDeg?: number;
+    fogBandBottomAltDeg?: number;
+    fogIntensity?: number;
+    minimalBrightness?: number;
+    minimalAltitudeDeg?: number;
+};
+
+export type HorizonThemeConfig = {
+    id: string;
+    label: string;
+    source: "procedural" | "polygonal" | "fisheye" | "spherical";
+    profile?: HorizonProfile;
+    groundColor?: string;
+    horizonLineColor?: string;
+    horizonLineThickness?: number;
+    atmosphere?: HorizonAtmosphereConfig;
+    notes?: string;
+};
+
+export type SceneMechanicsDebugConfig = {
+    projectionBlendOverride?: number | null; // null = normal, 0..1 forces blended projection factor
+    disableZenithBias?: boolean;
+    disableZenithFlatten?: boolean;
+    disableHorizonTheme?: boolean;
+    horizonDiagnostics?: boolean;
+};
+
 export type StarMapConfig = {
     // Data
     data?: any;
@@ -111,12 +151,17 @@ export type StarMapConfig = {
     showGroupLabels?: boolean;
     labelBehavior?: LabelBehaviorConfig;
     groups?: Record<string, { name: string, start: number, end: number }[]>;
+    horizonTheme?: HorizonThemeConfig;
+    horizonThemes?: HorizonThemeConfig[];
 
     // Interaction & Camera
     editable?: boolean;
     projection?: "perspective" | "stereographic" | "blended";
     camera?: { lon?: number, lat?: number };
     fitProjection?: boolean;
+    debug?: {
+        sceneMechanics?: SceneMechanicsDebugConfig;
+    };
 };
 
 export type SceneLink = {
