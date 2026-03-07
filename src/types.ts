@@ -55,6 +55,66 @@ export type StarArrangement = {
     }
 };
 
+export type LabelClassKey = "division" | "book" | "group" | "chapter";
+
+export type LabelClassBehavior = {
+    minFov?: number;
+    maxFov?: number;
+    priority?: number;
+    mode?: "floating" | "pinned";
+    maxOverlapPx?: number;
+    radialFadeStart?: number;
+    radialFadeEnd?: number;
+    fadeDuration?: number;
+};
+
+export type LabelBehaviorConfig = {
+    hideBackFacing?: boolean;
+    overlapPaddingPx?: number;
+    reappearDelayMs?: number;
+    classes?: Partial<Record<LabelClassKey, LabelClassBehavior>>;
+};
+
+export type HorizonSamplePoint = {
+    azDeg: number;
+    altDeg: number;
+};
+
+export type HorizonProfile = {
+    listMode?: "azDeg_altDeg";
+    angleRotateZDeg?: number;
+    points: HorizonSamplePoint[];
+};
+
+export type HorizonAtmosphereConfig = {
+    fogVisible?: boolean;
+    fogBandTopAltDeg?: number;
+    fogBandBottomAltDeg?: number;
+    fogIntensity?: number;
+    minimalBrightness?: number;
+    minimalAltitudeDeg?: number;
+};
+
+export type HorizonThemeConfig = {
+    id: string;
+    label: string;
+    source: "procedural" | "polygonal" | "fisheye" | "spherical";
+    profile?: HorizonProfile;
+    groundColor?: string;
+    horizonLineColor?: string;
+    horizonLineThickness?: number;
+    atmosphere?: HorizonAtmosphereConfig;
+    notes?: string;
+};
+
+export type SceneMechanicsDebugConfig = {
+    projectionBlendOverride?: number | null; // null = normal, 0..1 forces blended projection factor
+    disableZenithBias?: boolean;
+    disableZenithFlatten?: boolean;
+    disableHorizonTheme?: boolean;
+    horizonDiagnostics?: boolean;
+};
+
 export type StarMapConfig = {
     // Data
     data?: any;
@@ -71,69 +131,37 @@ export type StarMapConfig = {
     labelColors?: Record<string, string>; // key: book id (e.g. "GEN"), value: hex color
     constellations?: any; // constellation data
     showConstellationArt?: boolean;
+    constellationBaseOpacity?: number; // Multiplier for all constellation artwork opacity (default 1.0).
     showConstellationLines?: boolean;
     showDivisionBoundaries?: boolean;
     showBackdropStars?: boolean;
     backdropStarsCount?: number;
+    backdropWideFovGain?: number; // Multiplier at wide FOV (0..1). Lower = dimmer backdrop when zoomed out.
+    backdropSizeExponent?: number; // Exponent for backdrop scaling with uScale (0.5..1.2). Higher = shrinks more at wide FOV.
+    backdropEnergy?: number; // Backdrop color energy multiplier (recommended 1.0..3.0).
     showAtmosphere?: boolean;
+    showMoon?: boolean;          // Procedural moon (default: true)
+    showSunrise?: boolean;       // Procedural sun at horizon (default: true)
+    showMilkyWay?: boolean;      // Procedural galactic band (default: true)
+    starSizeExponent?: number; // Power curve exponent for weight→size mapping. Default 2.8. Higher = more dramatic spread.
+    starSizeScale?: number;    // Uniform multiplier applied to all star sizes. Default 1.0.
     showBookLabels?: boolean;
     showChapterLabels?: boolean;
     showDivisionLabels?: boolean;
     showGroupLabels?: boolean;
-    constellationArt?: {
-        hoverEnterDelayMs?: number;
-        hoverLeaveDelayMs?: number;
-    };
-    adaptation?: {
-        enabled?: boolean;
-        minExposure?: number;
-        maxExposure?: number;
-        brighteningSpeed?: number;
-        darkeningSpeed?: number;
-    };
+    labelBehavior?: LabelBehaviorConfig;
     groups?: Record<string, { name: string, start: number, end: number }[]>;
-
-    // Optional tile streaming source for engine-next.
-    tileStreaming?: {
-        enabled?: boolean;
-        rootTileIds: string[];
-        getTile: (tileId: string) => Promise<{
-            model: SceneModel;
-            arrangement?: StarArrangement;
-        }>;
-        getChildren?: (tileId: string) => string[];
-        getParent?: (tileId: string) => string | undefined;
-        getTileMeta?: (tileId: string) => {
-            centerYawRad: number;
-            centerPitchRad: number;
-            radiusRad: number;
-            parent?: string;
-        } | undefined;
-        selectTiles?: (state: {
-            yawRad: number;
-            pitchRad: number;
-            fovDeg: number;
-            rootTileIds: string[];
-        }) => string[];
-        selector?: {
-            enabled?: boolean;
-            maxDepth?: number;
-            maxSelectedTiles?: number;
-            refinementFovDeg?: number;
-        };
-        transitionFrames?: number;
-        maxLoadedTiles?: number;
-        maxConcurrentLoads?: number;
-    };
+    horizonTheme?: HorizonThemeConfig;
+    horizonThemes?: HorizonThemeConfig[];
 
     // Interaction & Camera
     editable?: boolean;
     projection?: "perspective" | "stereographic" | "blended";
     camera?: { lon?: number, lat?: number };
     fitProjection?: boolean;
-
-    // Engine selection. Defaults to "legacy".
-    engineVariant?: "legacy" | "next";
+    debug?: {
+        sceneMechanics?: SceneMechanicsDebugConfig;
+    };
 };
 
 export type SceneLink = {
@@ -157,6 +185,15 @@ export type ConstellationConfig = {
         opacity: number;
         blend: string;
         zBias: number;
+        linePaths?: {
+            weight?: "thin" | "normal" | "bold";
+            nodes: string[];
+        }[];
+        lineSegments?: {
+            weight?: "thin" | "normal" | "bold";
+            from: string;
+            to: string;
+        }[];
         fade: {
             zoomInStart: number;
             zoomInEnd: number;

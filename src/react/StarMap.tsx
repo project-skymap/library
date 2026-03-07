@@ -11,12 +11,10 @@ export type StarMapProps = {
     onArrangementChange?: (arrangement: StarArrangement) => void;
     onFovChange?: (fov: number) => void;
     onLongPress?: (node: SceneNode | null, x: number, y: number) => void;
-    testId?: string;
 };
 
 export type StarMapHandle = {
     getFullArrangement: () => StarArrangement | undefined;
-    getDebugState: () => Record<string, unknown> | undefined;
     setHoveredBook: (id: string | null) => void;
     setFocusedBook: (id: string | null) => void;
     setOrderRevealEnabled: (enabled: boolean) => void;
@@ -26,13 +24,12 @@ export type StarMapHandle = {
 };
 
 export const StarMap = forwardRef<StarMapHandle, StarMapProps>(
-    ({ config, className, onSelect, onHover, onArrangementChange, onFovChange, onLongPress, testId }, ref) => {
+    ({ config, className, onSelect, onHover, onArrangementChange, onFovChange, onLongPress }, ref) => {
         const containerRef = useRef<HTMLDivElement | null>(null);
         const engineRef = useRef<any>(null);
 
         useImperativeHandle(ref, () => ({
             getFullArrangement: () => engineRef.current?.getFullArrangement?.(),
-            getDebugState: () => engineRef.current?.getDebugState?.(),
             setHoveredBook: (id) => engineRef.current?.setHoveredBook?.(id),
             setFocusedBook: (id) => engineRef.current?.setFocusedBook?.(id),
             setOrderRevealEnabled: (enabled) => engineRef.current?.setOrderRevealEnabled?.(enabled),
@@ -46,13 +43,10 @@ export const StarMap = forwardRef<StarMapHandle, StarMapProps>(
 
         async function init() {
             if (!containerRef.current) return;
-            const useNext = config.engineVariant === "next";
-            const engineFactory = useNext
-                ? (await import("../engine-next/createEngineNext")).createEngineNext
-                : (await import("../engine/createEngine")).createEngine;
+            const { createEngine } = await import("../engine/createEngine");
             if (disposed) return;
 
-            engineRef.current = engineFactory({
+            engineRef.current = createEngine({
                 container: containerRef.current,
                 onSelect,
                 onHover,
@@ -82,6 +76,6 @@ export const StarMap = forwardRef<StarMapHandle, StarMapProps>(
         engineRef.current?.setHandlers?.({ onSelect, onHover, onArrangementChange, onFovChange, onLongPress });
     }, [onSelect, onHover, onArrangementChange, onFovChange, onLongPress]);
 
-    return <div ref={containerRef} className={className} data-testid={testId} style={{ width: "100%", height: "100%" }} />;
+    return <div ref={containerRef} className={className} style={{ width: "100%", height: "100%" }} />;
     }
 );
