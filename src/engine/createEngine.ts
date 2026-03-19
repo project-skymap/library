@@ -86,6 +86,23 @@ const ORDER_REVEAL_CONFIG = {
 // chapterFeather: smoothstep transition width. Higher = softer fade-in.
 // backdropRevealStart/End: mappedZoom range where backdrop stars fade in.
 //   Raise both to push the backdrop appearance deeper into zoom.
+// --- Horizon-zoom coupling ---
+// When the user pans toward the horizon at a wide FOV the engine gently zooms
+// in rather than blocking the pan.
+//
+// latStartDeg:      elevation (degrees) below which the coupling begins.
+//                   Above this the user has complete freedom.
+// safeFovAtHorizon: maximum FOV allowed when looking directly at the horizon
+//                   (lat = 0°). Raise to be more permissive, lower to guard
+//                   more aggressively against projection distortion.
+// lerpRate:         per-frame lerp toward the constrained FOV.
+//                   0.02 = barely perceptible, 0.10 = snappy.
+const HORIZON_ZOOM_CONFIG = {
+    latStartDeg:      20,   // coupling is fully off above this elevation
+    safeFovAtHorizon: 60,   // max FOV at the horizon (below freeze-band threshold)
+    lerpRate:         0.03, // gentle — should feel like a natural breathing-in
+};
+
 const ZOOM_REVEAL_CONFIG = {
     wideFov:             120,    // above this FOV, revealZoom = 0 (nothing new revealed)
     narrowFov:           8,      // below this FOV, revealZoom = 1 (everything visible)
@@ -266,8 +283,10 @@ export function createEngine({
         if (zenithProjectionLockActive) return 0.0;
         const cfg = getVerticalPanDampConfig();
         const fovT = THREE.MathUtils.smoothstep(fov, cfg.fovStart, cfg.fovEnd);
+        // Use max(lat, 0) so the zenith-lat lock only fires when looking upward.
+        // Downward panning toward the horizon is handled by horizon-zoom coupling instead.
         const zenithT = THREE.MathUtils.smoothstep(
-            Math.abs(lat),
+            Math.max(lat, 0),
             THREE.MathUtils.degToRad(cfg.latStartDeg),
             THREE.MathUtils.degToRad(cfg.latEndDeg)
         );
@@ -3765,6 +3784,28 @@ export function createEngine({
         }
 
         state.lat = Math.max(-Math.PI / 2 + 0.01, Math.min(Math.PI / 2 - 0.01, state.lat));
+
+        // Horizon-zoom coupling: as the camera pans toward the horizon, gently
+        // narrow the FOV so projection distortion stays imperceptible.
+        // Above latStartDeg the user has complete pan freedom with no auto-zoom.
+        // Below it, maxFov ramps linearly from maxFov (unconstrained) down to
+        // safeFovAtHorizon as lat approaches 0°.  The lerp is slow enough that
+        // it feels like a natural zoom rather than a hard limit.
+        if (!flyToActive) {
+            const latDeg = THREE.MathUtils.radToDeg(state.lat);
+            if (latDeg < HORIZON_ZOOM_CONFIG.latStartDeg) {
+                const t = THREE.MathUtils.clamp(latDeg / HORIZON_ZOOM_CONFIG.latStartDeg, 0, 1);
+                const maxFov = THREE.MathUtils.lerp(
+                    HORIZON_ZOOM_CONFIG.safeFovAtHorizon,
+                    ENGINE_CONFIG.maxFov,
+                    t
+                );
+                if (state.fov > maxFov) {
+                    state.fov = THREE.MathUtils.lerp(state.fov, maxFov, HORIZON_ZOOM_CONFIG.lerpRate);
+                }
+            }
+        }
+
         applyZenithAutoCenter();
         const y = Math.sin(state.lat); const r = Math.cos(state.lat);
         const x = r * Math.sin(state.lon); const z = -r * Math.cos(state.lon);
