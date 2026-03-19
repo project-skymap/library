@@ -51,7 +51,10 @@ export type LayoutConfig = {
 
 export type StarArrangement = {
     [id: string]: {
-        position: [number, number, number];
+        position?: [number, number, number];  // star / label position
+        center?: [number, number, number];    // constellation art center
+        rotationDeg?: number;                 // constellation art rotation override
+        radius?: number;                      // constellation art size override
     }
 };
 
@@ -113,6 +116,13 @@ export type SceneMechanicsDebugConfig = {
     disableZenithFlatten?: boolean;
     disableHorizonTheme?: boolean;
     horizonDiagnostics?: boolean;
+    freezeBandStartFov?: number;
+    freezeBandEndFov?: number;
+    zenithBiasStartFov?: number;
+    verticalPanDampStartFov?: number;
+    verticalPanDampEndFov?: number;
+    verticalPanDampLatStartDeg?: number;
+    verticalPanDampLatEndDeg?: number;
 };
 
 export type StarMapConfig = {
@@ -145,6 +155,8 @@ export type StarMapConfig = {
     showMilkyWay?: boolean;      // Procedural galactic band (default: true)
     starSizeExponent?: number; // Power curve exponent for weight→size mapping. Default 2.8. Higher = more dramatic spread.
     starSizeScale?: number;    // Uniform multiplier applied to all star sizes. Default 1.0.
+    starSizeWeightPercentile?: number; // Percentile (0–1) used as the effective max weight for size normalisation. Default 0.95. Lower → outliers capped sooner, distribution spreads more evenly.
+    starZoomReveal?: boolean;          // Zoom-based star reveal system. Default true. Set false to show all stars at all zoom levels.
     showBookLabels?: boolean;
     showChapterLabels?: boolean;
     showDivisionLabels?: boolean;

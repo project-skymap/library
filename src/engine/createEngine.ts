@@ -31,8 +31,28 @@ const ENGINE_CONFIG = {
     defaultFov: 35,
     dragSpeed: 0.00125,
     inertiaDamping: 0.92,
+    lowSpeedInertiaDamping: 0.78,
+    lowSpeedVelocityThreshold: 0.0025,
+    velocityStopThreshold: 0.00004,
+    zoomResistanceWideFov: 0.82,
+    movementMassWideFov: 0.74,
+    edgePanMassWideFov: 0.68,
+    inputCompression: 0.018,
     blendStart: 35,
     blendEnd: 83,
+    freezeBandStartFov: 76,
+    freezeBandEndFov: 84,
+    zenithBiasStartFov: 85,
+    zenithLockBlendEnter: 0.90,
+    zenithLockBlendExit: 0.80,
+    zenithAutoCenterBlendStart: 0.62,
+    zenithAutoCenterBlendEnd: 0.90,
+    zenithAutoCenterMinLerp: 0.012,
+    zenithAutoCenterMaxLerp: 0.16,
+    verticalPanDampStartFov: 72,
+    verticalPanDampEndFov: 96,
+    verticalPanDampLatStartDeg: 45,
+    verticalPanDampLatEndDeg: 82,
     zenithStartFov: 75,
     zenithStrength: 0.15,
     horizonLockStrength: 0.05,
@@ -54,6 +74,26 @@ const ORDER_REVEAL_CONFIG = {
     pulseAmplitude: 0.12,
     pulseDuration: 2,
     delayPerChapter: 0.1
+};
+
+// --- Zoom-based Star Reveal ---
+// Controls how stars progressively appear as the user zooms in.
+// wideFov / narrowFov: FOV range over which revealZoom goes from 0 → 1.
+// zoomCurveExp: non-linear mapping pow(revealZoom, exp) so faint stars
+//   hide longer. Raise to make reveal later; lower for a more linear feel.
+// chapterRevealMax: revealThreshold for the faintest chapter star (0..1).
+//   Lower → faint stars appear earlier (and at wider FOV).
+// chapterFeather: smoothstep transition width. Higher = softer fade-in.
+// backdropRevealStart/End: mappedZoom range where backdrop stars fade in.
+//   Raise both to push the backdrop appearance deeper into zoom.
+const ZOOM_REVEAL_CONFIG = {
+    wideFov:             120,    // above this FOV, revealZoom = 0 (nothing new revealed)
+    narrowFov:           8,      // below this FOV, revealZoom = 1 (everything visible)
+    zoomCurveExp:        1.8,    // non-linear curve exponent (try 1.5 – 2.5)
+    chapterRevealMax:    0.50,   // faintest chapter star threshold — visible by ~fov 35
+    chapterFeather:      0.10,   // smoothstep width for chapter star fade-in
+    backdropRevealStart: 0.40,   // backdrop starts appearing at this mappedZoom
+    backdropRevealEnd:   0.65,   // backdrop fully visible at this mappedZoom
 };
 
 type ActiveHorizonProfile = {
@@ -152,7 +192,8 @@ export function createEngine({
         
         draggedGroup: null as null | {
             labelInitialPos: THREE.Vector3,
-            children: { index: number, initialPos: THREE.Vector3 }[]
+            children: { index: number, initialPos: THREE.Vector3 }[],
+            constellations: { id: string, initialCenter: THREE.Vector3 }[]
         },
         tempArrangement: {} as StarArrangement,
 
@@ -188,6 +229,62 @@ export function createEngine({
     function getSceneDebug() {
         return currentConfig?.debug?.sceneMechanics;
     }
+
+    function getFreezeBand() {
+        const dbg = getSceneDebug();
+        const startRaw = dbg?.freezeBandStartFov ?? ENGINE_CONFIG.freezeBandStartFov;
+        const endRaw = dbg?.freezeBandEndFov ?? ENGINE_CONFIG.freezeBandEndFov;
+        const start = Math.min(startRaw, endRaw);
+        const end = Math.max(startRaw, endRaw);
+        return { start, end };
+    }
+
+    function isInTransitionFreezeBand(fov: number) {
+        const band = getFreezeBand();
+        return fov >= band.start && fov <= band.end;
+    }
+
+    function getZenithBiasStartFov() {
+        return getSceneDebug()?.zenithBiasStartFov ?? ENGINE_CONFIG.zenithBiasStartFov;
+    }
+
+    function getVerticalPanDampConfig() {
+        const dbg = getSceneDebug();
+        const fovStartRaw = dbg?.verticalPanDampStartFov ?? ENGINE_CONFIG.verticalPanDampStartFov;
+        const fovEndRaw = dbg?.verticalPanDampEndFov ?? ENGINE_CONFIG.verticalPanDampEndFov;
+        const latStartRaw = dbg?.verticalPanDampLatStartDeg ?? ENGINE_CONFIG.verticalPanDampLatStartDeg;
+        const latEndRaw = dbg?.verticalPanDampLatEndDeg ?? ENGINE_CONFIG.verticalPanDampLatEndDeg;
+        return {
+            fovStart: Math.min(fovStartRaw, fovEndRaw),
+            fovEnd: Math.max(fovStartRaw, fovEndRaw),
+            latStartDeg: Math.min(latStartRaw, latEndRaw),
+            latEndDeg: Math.max(latStartRaw, latEndRaw)
+        };
+    }
+
+    function getVerticalPanFactor(fov: number, lat: number) {
+        if (zenithProjectionLockActive) return 0.0;
+        const cfg = getVerticalPanDampConfig();
+        const fovT = THREE.MathUtils.smoothstep(fov, cfg.fovStart, cfg.fovEnd);
+        const zenithT = THREE.MathUtils.smoothstep(
+            Math.abs(lat),
+            THREE.MathUtils.degToRad(cfg.latStartDeg),
+            THREE.MathUtils.degToRad(cfg.latEndDeg)
+        );
+        const lock = Math.max(fovT * 0.65, fovT * zenithT);
+        return THREE.MathUtils.clamp(1.0 - lock, 0.0, 1.0);
+    }
+
+    function getMovementMassFactor(fov: number, wideFovFactor: number = ENGINE_CONFIG.movementMassWideFov) {
+        const t = THREE.MathUtils.smoothstep(fov, 24, 96);
+        return THREE.MathUtils.lerp(1.0, wideFovFactor, t);
+    }
+
+    function compressInputDelta(delta: number) {
+        const absDelta = Math.abs(delta);
+        if (absDelta < 0.0001) return 0;
+        return Math.sign(delta) * (absDelta / (1.0 + absDelta * ENGINE_CONFIG.inputCompression));
+    }
     
     // ---------------------------
     // Constellation Artwork Layer
@@ -201,12 +298,65 @@ export function createEngine({
 
     // --- Projection system ---
     let currentProjection: Projection = new BlendedProjection(ENGINE_CONFIG.blendStart, ENGINE_CONFIG.blendEnd);
+    let zenithProjectionLockActive = false;
+
+    function getZenithLockBlendThresholds() {
+        const enterRaw = ENGINE_CONFIG.zenithLockBlendEnter;
+        const exitRaw = ENGINE_CONFIG.zenithLockBlendExit;
+        return {
+            enter: Math.max(0, Math.min(1, enterRaw)),
+            exit: Math.max(0, Math.min(1, Math.min(exitRaw, enterRaw)))
+        };
+    }
+
+    function getZenithLockLat() {
+        return Math.PI / 2 - 0.001;
+    }
+
+    function getBlendForZenithControl() {
+        if (currentProjection instanceof BlendedProjection) return currentProjection.getBlend();
+        return 0;
+    }
+
+    function applyZenithAutoCenter() {
+        const zenithLat = getZenithLockLat();
+        const blend = getBlendForZenithControl();
+        let pullT = THREE.MathUtils.smoothstep(
+            blend,
+            ENGINE_CONFIG.zenithAutoCenterBlendStart,
+            ENGINE_CONFIG.zenithAutoCenterBlendEnd
+        );
+        if (zenithProjectionLockActive) pullT = 1.0;
+        if (pullT <= 0.0001) return;
+
+        const pullLerp = THREE.MathUtils.lerp(
+            ENGINE_CONFIG.zenithAutoCenterMinLerp,
+            ENGINE_CONFIG.zenithAutoCenterMaxLerp,
+            pullT
+        );
+
+        state.lat = THREE.MathUtils.lerp(state.lat, zenithLat, pullLerp);
+        state.targetLat = THREE.MathUtils.lerp(state.targetLat, zenithLat, Math.min(1.0, pullLerp * 1.15));
+        state.velocityY *= (1.0 - 0.85 * pullT);
+
+        if (zenithProjectionLockActive && Math.abs(state.lat - zenithLat) < 0.00025) {
+            state.lat = zenithLat;
+            state.targetLat = zenithLat;
+            state.velocityY = 0;
+        }
+    }
 
     function syncProjectionState() {
         if (currentProjection instanceof BlendedProjection) {
             currentProjection.setFov(state.fov);
             currentProjection.setBlendOverride(getSceneDebug()?.projectionBlendOverride ?? null);
             globalUniforms.uBlend.value = currentProjection.getBlend();
+            const blend = currentProjection.getBlend();
+            const th = getZenithLockBlendThresholds();
+            if (!zenithProjectionLockActive && blend >= th.enter) zenithProjectionLockActive = true;
+            else if (zenithProjectionLockActive && blend <= th.exit) zenithProjectionLockActive = false;
+        } else {
+            zenithProjectionLockActive = false;
         }
         globalUniforms.uProjectionType.value = currentProjection.glslProjectionType;
     }
@@ -502,9 +652,19 @@ export function createEngine({
 
         const flatten = groundMaterial?.uniforms?.uZenithFlatten?.value;
         const blend = currentProjection instanceof BlendedProjection ? currentProjection.getBlend() : -1;
+        const freeze = isInTransitionFreezeBand(state.fov) ? 1 : 0;
+        const zenithBiasStart = getZenithBiasStartFov();
+        const vPanCfg = getVerticalPanDampConfig();
+        const vPan = getVerticalPanFactor(state.fov, state.lat);
+        const moveMass = getMovementMassFactor(state.fov);
         console.debug(
             `[HorizonDiag] fov=${state.fov.toFixed(1)} latDeg=${THREE.MathUtils.radToDeg(state.lat).toFixed(1)} ` +
-            `mode=${activeHorizonProfile.mode} blend=${blend.toFixed(3)} flatten=${Number(flatten ?? 0).toFixed(3)} ` +
+            `mode=${activeHorizonProfile.mode} blend=${blend.toFixed(3)} freeze=${freeze} ` +
+            `zLock=${zenithProjectionLockActive ? 1 : 0} ` +
+            `biasStart=${zenithBiasStart.toFixed(1)} vPan=${vPan.toFixed(3)} moveMass=${moveMass.toFixed(3)} ` +
+            `vPanFov=${vPanCfg.fovStart.toFixed(1)}-${vPanCfg.fovEnd.toFixed(1)} ` +
+            `vPanLat=${vPanCfg.latStartDeg.toFixed(1)}-${vPanCfg.latEndDeg.toFixed(1)} ` +
+            `flatten=${Number(flatten ?? 0).toFixed(3)} ` +
             `drops=${dropCount} bins=${JSON.stringify(compact)}`
         );
     }
@@ -658,9 +818,6 @@ export function createEngine({
     let sunDiscMesh: THREE.Mesh | null = null;
     let sunHaloMesh: THREE.Mesh | null = null;
     let milkyWayMesh: THREE.Mesh | null = null;
-    let editHoverMesh: THREE.Mesh | null = null;
-    let editHoverTargetPos: THREE.Vector3 | null = null;
-    let editDropFlash = 0;
 
 
     function createSkyBackground() {
@@ -1241,7 +1398,8 @@ export function createEngine({
                 uTime: globalUniforms.uTime,
                 uBackdropGain: { value: 1.0 },
                 uBackdropEnergy: { value: 2.2 },
-                uBackdropSizeExp: { value: 0.9 }
+                uBackdropSizeExp: { value: 0.9 },
+                uRevealZoom: { value: 0.0 }
             },
             vertexShaderBody: `
                 attribute float size;
@@ -1255,6 +1413,7 @@ export function createEngine({
                 uniform float uBackdropGain;
                 uniform float uBackdropEnergy;
                 uniform float uBackdropSizeExp;
+                uniform float uRevealZoom;
 
                 void main() {
                     vec3 nPos = normalize(position);
@@ -1270,7 +1429,12 @@ export function createEngine({
                     float twinkle = sin(uTime * 3.0 + position.x * 0.05 + position.z * 0.03) * 0.5 + 0.5;
                     float scintillation = mix(1.0, twinkle * 2.0, uAtmTwinkle * 0.4 * turbulence);
 
-                    vColor = color * uBackdropEnergy * extinction * horizonFade * scintillation * uBackdropGain;
+                    // Backdrop appears latest — fully hidden at wide FOV, emerges when zoomed in.
+                    // Thresholds come from ZOOM_REVEAL_CONFIG (baked at startup).
+                    float mappedZoom = pow(uRevealZoom, ${ZOOM_REVEAL_CONFIG.zoomCurveExp});
+                    float backdropReveal = smoothstep(${ZOOM_REVEAL_CONFIG.backdropRevealStart}, ${ZOOM_REVEAL_CONFIG.backdropRevealEnd}, mappedZoom);
+
+                    vColor = color * uBackdropEnergy * extinction * horizonFade * scintillation * uBackdropGain * backdropReveal;
 
                     vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
                     gl_Position = smartProject(mvPosition);
@@ -1312,56 +1476,6 @@ export function createEngine({
         backdropGroup.add(points);
     }
     
-    function createEditHoverRing() {
-        const geo = new THREE.PlaneGeometry(1, 1);
-        const mat = createSmartMaterial({
-            uniforms: {
-                uRingSize:  { value: 0.060 },
-                uRingAlpha: { value: 0.0 },
-                uRingColor: { value: new THREE.Color(0.55, 0.88, 1.0) },
-            },
-            vertexShaderBody: `
-                uniform float uRingSize;
-                varying vec2 vUv;
-                void main() {
-                    vUv = uv;
-                    vec4 mvPos = modelViewMatrix * vec4(0.0, 0.0, 0.0, 1.0);
-                    vec4 proj = smartProject(mvPos);
-                    if (proj.z > 4.0) { gl_Position = vec4(10.0, 10.0, 10.0, 1.0); return; }
-                    vec2 offset = position.xy * uRingSize * uScale;
-                    proj.xy += offset / vec2(uAspect, 1.0);
-                    vScreenPos = proj.xy / proj.w;
-                    gl_Position = proj;
-                }
-            `,
-            fragmentShader: `
-                varying vec2 vUv;
-                uniform float uRingAlpha;
-                uniform vec3 uRingColor;
-                void main() {
-                    float alphaMask = getMaskAlpha();
-                    if (alphaMask < 0.01) discard;
-                    vec2 p = vUv * 2.0 - 1.0;
-                    float d = length(p);
-                    float ring = smoothstep(0.52, 0.62, d) * (1.0 - smoothstep(0.80, 0.92, d));
-                    float glow = (1.0 - smoothstep(0.55, 0.98, d)) * 0.18;
-                    float a = (ring + glow) * uRingAlpha * alphaMask;
-                    if (a < 0.005) discard;
-                    gl_FragColor = vec4(uRingColor * (ring * 1.2 + glow), a);
-                }
-            `,
-            transparent: true,
-            depthWrite: false,
-            depthTest: false,
-            side: THREE.DoubleSide,
-            blending: THREE.AdditiveBlending,
-        });
-        editHoverMesh = new THREE.Mesh(geo, mat);
-        editHoverMesh.renderOrder = 500;
-        editHoverMesh.frustumCulled = false;
-        scene.add(editHoverMesh);
-    }
-
     createSkyBackground();
     createGround();
     createAtmosphere();
@@ -1369,7 +1483,6 @@ export function createEngine({
     createSun();
     createMilkyWay();
     createBackdropStars();
-    createEditHoverRing();
 
     // ---------------------------
     // Picking / Model content
@@ -1491,7 +1604,7 @@ export function createEngine({
     function getPosition(n: SceneNode) {
         if (currentConfig?.arrangement) {
              const arr = currentConfig.arrangement[n.id];
-             if (arr) {
+             if (arr?.position) {
                 const [px, py, pz] = arr.position;
                 // Only reproject when position is clearly a 2D disc point (z=0 AND not already
                 // on the sphere surface). Drag-dropped positions have length ≈ radius, so they
@@ -1669,6 +1782,7 @@ export function createEngine({
         const starChapterIndices: number[] = [];
         const starTestamentIndices: number[] = [];
         const starDivisionIndices: number[] = [];
+        const starRevealThresholds: number[] = [];
         const chapterLineCutById = new Map<string, number>();
         const chapterStarSizeById = new Map<string, number>();
         const chapterWeightNormById = new Map<string, number>(); // linear t, unaffected by starSizeExponent
@@ -1699,12 +1813,28 @@ export function createEngine({
         if (!Number.isFinite(minWeight)) { minWeight = 0; maxWeight = 1; }
         else if (minWeight === maxWeight) { maxWeight = minWeight + 1; }
 
+        // Percentile cap: prevents a single outlier (e.g. a very long chapter) from
+        // pushing all other stars to the bottom of the size range.
+        // Stars above the cap all get weightNorm = 1.0 (maximum brightness, always visible).
+        // Lower starSizeWeightPercentile → outliers capped sooner, distribution spreads more.
+        {
+            const pctCap = THREE.MathUtils.clamp(cfg.starSizeWeightPercentile ?? 0.95, 0.5, 1.0);
+            const allWeights: number[] = [];
+            for (const n of laidOut.nodes) {
+                if (n.level === 3 && typeof n.weight === "number") allWeights.push(n.weight);
+            }
+            allWeights.sort((a, b) => a - b);
+            const capIdx = Math.min(Math.floor(pctCap * allWeights.length), allWeights.length - 1);
+            const cappedMax = allWeights[capIdx];
+            if (cappedMax !== undefined && cappedMax > minWeight) maxWeight = cappedMax;
+        }
+
         for (const n of laidOut.nodes) {
             if (n.level === 3) {
                 let baseSize = 3.5;
                 let weightNorm = 0;
                 if (typeof n.weight === "number") {
-                    weightNorm = (n.weight - minWeight) / (maxWeight - minWeight);
+                    weightNorm = THREE.MathUtils.clamp((n.weight - minWeight) / (maxWeight - minWeight), 0, 1);
                     const sizeExp = cfg.starSizeExponent ?? 4.0;
                     const sizeScale = cfg.starSizeScale ?? 6.0;
                     baseSize = Math.pow(weightNorm, sizeExp) * 22.0 * sizeScale;
@@ -1727,6 +1857,20 @@ export function createEngine({
 
                 const baseSize = chapterStarSizeById.get(n.id) ?? 3.5;
                 starSizes.push(baseSize);
+
+                // Zoom-reveal threshold for this star (0..1 mappedZoom at which it starts appearing).
+                // Uses linear weightNorm so the reveal spreads evenly across the star population.
+                // Bright (wn=1): threshold = -feather → always fully visible.
+                // Faint (wn=0): threshold = chapterRevealMax → hidden until zoomed in.
+                {
+                    const wn = chapterWeightNormById.get(n.id) ?? 0;
+                    starRevealThresholds.push(THREE.MathUtils.lerp(
+                        -ZOOM_REVEAL_CONFIG.chapterFeather,
+                        ZOOM_REVEAL_CONFIG.chapterRevealMax,
+                        1.0 - wn
+                    ));
+                }
+
                 // World-space line truncation radius near each chapter star.
                 // Derived from the same star size curve so larger stars reserve
                 // more space around their core.
@@ -1859,7 +2003,7 @@ export function createEngine({
                         if (cfg.arrangement?.[n.id]) {
                             // Explicit position set by the user via arrangement config
                             const arr = cfg.arrangement[n.id];
-                            p.set(arr.position[0], arr.position[1], arr.position[2]);
+                            p.set(arr.position![0], arr.position![1], arr.position![2]);
                         } else {
                             // Auto: centroid of children projected onto the horizon ring
                             if (divisionPositions.has(n.id)) {
@@ -1910,6 +2054,7 @@ export function createEngine({
         starGeo.setAttribute('chapterIndex', new THREE.Float32BufferAttribute(starChapterIndices, 1));
         starGeo.setAttribute('testamentIndex', new THREE.Float32BufferAttribute(starTestamentIndices, 1));
         starGeo.setAttribute('divisionIndex', new THREE.Float32BufferAttribute(starDivisionIndices, 1));
+        starGeo.setAttribute('revealThreshold', new THREE.Float32BufferAttribute(starRevealThresholds, 1));
 
         const starMat = createSmartMaterial({
             uniforms: { 
@@ -1928,19 +2073,22 @@ export function createEngine({
                 uFilterDivisionIndex: { value: -1.0 },
                 uFilterBookIndex: { value: -1.0 },
                 uFilterStrength: { value: 0.0 },
-                uFilterDimFactor: { value: 0.08 }
+                uFilterDimFactor: { value: 0.08 },
+                uRevealZoom: { value: 0.0 }
             },
             vertexShaderBody: `
-                attribute float size; 
-                attribute vec3 color; 
+                attribute float size;
+                attribute vec3 color;
                 attribute float phase;
                 attribute float bookIndex;
                 attribute float chapterIndex;
                 attribute float testamentIndex;
                 attribute float divisionIndex;
+                attribute float revealThreshold;
 
                 varying vec3 vColor;
                 varying float vSize;
+                varying float vReveal;
                 uniform float pixelRatio;
 
                 uniform float uTime;
@@ -1957,6 +2105,7 @@ export function createEngine({
                 uniform float uFilterBookIndex;
                 uniform float uFilterStrength;
                 uniform float uFilterDimFactor;
+                uniform float uRevealZoom;
 
                 void main() { 
                     vec3 nPos = normalize(position);
@@ -2019,11 +2168,17 @@ export function createEngine({
                     float perceptualSize = pow(size, 0.7);
                     gl_PointSize = clamp((perceptualSize * sizeBoost * 20.0) * uScale * pixelRatio * (2000.0 / length(mvPosition.xyz)) * horizonFade, 1.0, 600.0);
                     vSize = gl_PointSize;
+
+                    // Zoom-based reveal: faint stars hide at wide FOV, fade in as user zooms.
+                    // Exponent and feather baked from ZOOM_REVEAL_CONFIG at startup.
+                    float mappedZoom = pow(uRevealZoom, ${ZOOM_REVEAL_CONFIG.zoomCurveExp});
+                    vReveal = smoothstep(revealThreshold, revealThreshold + ${ZOOM_REVEAL_CONFIG.chapterFeather}, mappedZoom);
                 }
             `,
             fragmentShader: `
                 varying vec3 vColor;
                 varying float vSize;
+                varying float vReveal;
                 void main() {
                     vec2 coord = gl_PointCoord - vec2(0.5);
                     float d = length(coord) * 2.0;
@@ -2052,7 +2207,8 @@ export function createEngine({
                     float spikeV = exp(-coord.x * coord.x * 180.0) * exp(-abs(coord.y) * 6.0);
                     float spikes = (spikeH + spikeV) * 0.18 * spikeFactor;
 
-                    gl_FragColor = vec4(finalColor * (k + spikes) * alphaMask, 1.0);
+                    // vReveal drives the additive contribution (AdditiveBlending uses SRC_ALPHA).
+                    gl_FragColor = vec4(finalColor * (k + spikes) * alphaMask, vReveal);
                 }
             `,
             transparent: true,
@@ -2355,7 +2511,7 @@ export function createEngine({
                         // Check Arrangement First
                         if (cfg.arrangement && cfg.arrangement[groupId]) {
                             const arr = cfg.arrangement[groupId];
-                            p.set(arr.position[0], arr.position[1], arr.position[2]);
+                            p.set(arr.position![0], arr.position![1], arr.position![2]);
                         } else {
                             // Calculate Centroid
                             const relevantChapters = chapters.filter(c => {
@@ -2616,24 +2772,26 @@ export function createEngine({
             };
 
             constellationLayer.load(cfg.constellations, (id) => {
-                // 1. Check Arrangement (Override)
+                // 1. Check Arrangement (Override) — center takes priority over position
                 if (cfg.arrangement && cfg.arrangement[id]) {
                     const arr = cfg.arrangement[id];
-                    // If it's a 2D arrangement, project it (same logic as getPosition)
-                    if (arr.position[2] === 0) {
-                        const x = arr.position[0];
-                        const y = arr.position[1];
-                        const radius = cfg.layout?.radius ?? 2000;
-                        const r_norm = Math.min(1.0, Math.sqrt(x * x + y * y) / radius);
-                        const phi = Math.atan2(y, x);
-                        const theta = r_norm * (Math.PI / 2);
-                        return new THREE.Vector3(
-                            Math.sin(theta) * Math.cos(phi),
-                            Math.cos(theta),
-                            Math.sin(theta) * Math.sin(phi)
-                        ).multiplyScalar(radius);
+                    const coords = arr.center ?? arr.position;
+                    if (coords) {
+                        if (coords[2] === 0) {
+                            const x = coords[0];
+                            const y = coords[1];
+                            const radius = cfg.layout?.radius ?? 2000;
+                            const r_norm = Math.min(1.0, Math.sqrt(x * x + y * y) / radius);
+                            const phi = Math.atan2(y, x);
+                            const theta = r_norm * (Math.PI / 2);
+                            return new THREE.Vector3(
+                                Math.sin(theta) * Math.cos(phi),
+                                Math.cos(theta),
+                                Math.sin(theta) * Math.sin(phi)
+                            ).multiplyScalar(radius);
+                        }
+                        return new THREE.Vector3(coords[0], coords[1], coords[2]);
                     }
-                    return new THREE.Vector3(arr.position[0], arr.position[1], arr.position[2]);
                 }
 
                 // 2. Check Scene Nodes (Stars/Anchors)
@@ -2667,9 +2825,9 @@ export function createEngine({
             arr[item.node.id] = { position: [item.obj.position.x, item.obj.position.y, item.obj.position.z] };
         }
         
-        // Add Constellations
+        // Add Constellations — stored under 'center' (distinct from star 'position')
         for (const item of constellationLayer.getItems()) {
-            arr[item.config.id] = { position: [item.center.x, item.center.y, item.center.z] };
+            arr[item.config.id] = { center: [item.center.x, item.center.y, item.center.z] };
         }
         
         // Merge temp arrangement to ensure dragged items are up to date
@@ -2818,35 +2976,70 @@ export function createEngine({
     
     function onWindowBlur() { isMouseInWindow = false; edgeHoverStart = 0; }
 
+    // Pick nearest star using the same custom projection (smartProjectJS) that renders the stars,
+    // so screen positions exactly match what the user sees regardless of projection mode.
+    function screenSpacePickStar(mx: number, my: number, maxPx = 50): { index: number, worldPos: THREE.Vector3 } | null {
+        if (!starPoints) return null;
+        const attr = starPoints.geometry.attributes.position as THREE.BufferAttribute;
+        const rect = renderer.domElement.getBoundingClientRect();
+        const w = rect.width;
+        const h = rect.height;
+        const uScale = globalUniforms.uScale.value;
+        const uAspect = globalUniforms.uAspect.value;
+        let bestIdx = -1;
+        let bestDist2 = maxPx * maxPx;
+        const worldPos = new THREE.Vector3();
+        for (let i = 0; i < attr.count; i++) {
+            worldPos.set(attr.getX(i), attr.getY(i), attr.getZ(i));
+            const proj = smartProjectJS(worldPos);
+            if (currentProjection.isClipped(proj.z)) continue;
+            const sx = ((proj.x * uScale / uAspect) * 0.5 + 0.5) * w;
+            const sy = (-(proj.y * uScale) * 0.5 + 0.5) * h;
+            const dx = mx - sx;
+            const dy = my - sy;
+            const d2 = dx * dx + dy * dy;
+            if (d2 < bestDist2) { bestDist2 = d2; bestIdx = i; }
+        }
+        if (bestIdx < 0) return null;
+        return {
+            index: bestIdx,
+            worldPos: new THREE.Vector3(attr.getX(bestIdx), attr.getY(bestIdx), attr.getZ(bestIdx)),
+        };
+    }
+
     function onMouseDown(e: MouseEvent) {
         state.lastMouseX = e.clientX;
         state.lastMouseY = e.clientY;
         
-        // In Edit Mode, we prioritize Object Interaction and disable Camera Panning
+        // Edit mode: direct drag-and-drop, no camera pan
         if (currentConfig?.editable) {
-            const hit = pick(e);
-            if (hit) {
+            const rect = renderer.domElement.getBoundingClientRect();
+            const mX = e.clientX - rect.left;
+            const mY = e.clientY - rect.top;
+            const starHit = screenSpacePickStar(mX, mY);
+
+            if (starHit) {
                 state.dragMode = 'node';
-                state.draggedNodeId = hit.node.id;
-                // Use the star's actual geometry position for drag distance (not ray projection)
-                if (hit.type === 'star' && hit.index !== undefined && starPoints) {
-                    const attr = starPoints.geometry.attributes.position;
-                    const starWorldPos = new THREE.Vector3(attr.getX(hit.index), attr.getY(hit.index), attr.getZ(hit.index));
-                    state.draggedDist = starWorldPos.length();
-                } else {
-                    state.draggedDist = hit.point.length();
-                }
-                document.body.style.cursor = 'crosshair';
-                // Clear camera inertia so the view doesn't drift after releasing a star
+                state.draggedStarIndex = starHit.index;
+                state.draggedNodeId = starIndexToId[starHit.index] ?? null;
+                state.draggedDist = starHit.worldPos.length();
+                state.draggedGroup = null;
+                state.tempArrangement = {};
                 state.velocityX = 0;
                 state.velocityY = 0;
+                return;
+            }
 
-                if (hit.type === 'star') {
-                    state.draggedStarIndex = hit.index ?? -1;
-                    state.draggedGroup = null;
-                    state.tempArrangement = {}; // Clear stale data from previous drags
-                } else if (hit.type === 'label') {
-                    // Group capture logic
+            // No star — check for label / constellation (group drag)
+            const hit = pick(e);
+            if (hit && (hit.type === 'label' || hit.type === 'constellation')) {
+                state.dragMode = 'node';
+                state.draggedNodeId = hit.node.id;
+                state.draggedDist = hit.point.length();
+                state.draggedStarIndex = -1;
+                state.velocityX = 0;
+                state.velocityY = 0;
+                if (hit.type === 'label') {
                     const bookId = hit.node.id;
                     const children: { index: number, initialPos: THREE.Vector3 }[] = [];
                     if (starPoints && starPoints.geometry.attributes.position) {
@@ -2861,15 +3054,25 @@ export function createEngine({
                             }
                         }
                     }
-                    state.draggedGroup = { labelInitialPos: hit.object!.position.clone(), children };
-                    state.draggedStarIndex = -1;
-                } else if (hit.type === 'constellation') {
-                    // Constellation Drag — store initial center so onMouseMove can compute rotation
-                    state.draggedGroup = { labelInitialPos: hit.point.clone(), children: [] };
-                    state.draggedStarIndex = -1;
+                    // Capture initial positions of constellation art anchored to this book
+                    const constellations: { id: string, initialCenter: THREE.Vector3 }[] = [];
+                    for (const cItem of constellationLayer.getItems()) {
+                        const anchored = cItem.config.anchors.some(anchorId => {
+                            const n = nodeById.get(anchorId);
+                            return n?.parent === bookId;
+                        });
+                        if (anchored) {
+                            constellations.push({ id: cItem.config.id, initialCenter: cItem.center.clone() });
+                        }
+                    }
+                    state.draggedGroup = { labelInitialPos: hit.object!.position.clone(), children, constellations };
+                } else {
+                    state.draggedGroup = { labelInitialPos: hit.point.clone(), children: [], constellations: [] };
                 }
+                return;
             }
-            // In Edit Mode, always disable camera pan
+
+            // Nothing hit — no camera pan in edit mode
             return;
         }
 
@@ -2900,7 +3103,6 @@ export function createEngine({
                  const attr = starPoints.geometry.attributes.position as THREE.BufferAttribute;
                  attr.setXYZ(idx, newPos.x, newPos.y, newPos.z);
                  attr.needsUpdate = true;
-                 editHoverTargetPos = newPos.clone();
                  // Mirror into tempArrangement so getFullArrangement() has the correct position
                  const starId = starIndexToId[idx];
                  if (starId) state.tempArrangement[starId] = { position: [newPos.x, newPos.y, newPos.z] };
@@ -2920,10 +3122,10 @@ export function createEngine({
                          const vE = newPos.clone().normalize();
                          cItem.mesh.quaternion.setFromUnitVectors(vS, vE);
                          cItem.center.copy(newPos);
-                         state.tempArrangement[state.draggedNodeId] = { position: [newPos.x, newPos.y, newPos.z] };
+                         state.tempArrangement[state.draggedNodeId] = { center: [newPos.x, newPos.y, newPos.z] };
                      }
                  }
-                 
+
                  // Rotate children based on World Vectors
                  const vStart = group.labelInitialPos.clone().normalize();
                  const vEnd = newPos.clone().normalize();
@@ -2943,33 +3145,46 @@ export function createEngine({
                      }
                      attr.needsUpdate = true;
                  }
+
+                 // Move constellation art anchored to this book
+                 if (group.constellations.length > 0) {
+                     for (const { id, initialCenter } of group.constellations) {
+                         const cItem = constellationLayer.getItems().find(c => c.config.id === id);
+                         if (cItem) {
+                             const newCenter = initialCenter.clone().applyQuaternion(q);
+                             cItem.center.copy(newCenter);
+                             cItem.mesh.quaternion.setFromUnitVectors(
+                                 initialCenter.clone().normalize(),
+                                 newCenter.clone().normalize()
+                             );
+                             state.tempArrangement[id] = { center: [newCenter.x, newCenter.y, newCenter.z] };
+                         }
+                     }
+                 }
              }
         } else if (state.dragMode === 'camera') {
             const deltaX = e.clientX - state.lastMouseX;
             const deltaY = e.clientY - state.lastMouseY;
             state.lastMouseX = e.clientX; state.lastMouseY = e.clientY;
-                        const speedScale = state.fov / ENGINE_CONFIG.defaultFov;
+            const speedScale = state.fov / ENGINE_CONFIG.defaultFov;
+            const latFactor = getVerticalPanFactor(state.fov, state.lat);
+            const massFactor = getMovementMassFactor(state.fov);
+            const moveX = compressInputDelta(deltaX) * massFactor;
+            const moveY = compressInputDelta(deltaY) * massFactor;
 
-                        // At wide FOV, transition from pan (lon+lat) to pure rotation
-                        // (lon only). This spins the dome around the zenith axis instead
-                        // of tilting the view off-axis.
-                        const rotLock = Math.max(0, Math.min(1, (state.fov - 100) / (ENGINE_CONFIG.maxFov - 100)));
-                        const latFactor = 1.0 - rotLock * rotLock; // lat sensitivity fades out
-
-                        state.targetLon += deltaX * ENGINE_CONFIG.dragSpeed * speedScale;
-            state.targetLat += deltaY * ENGINE_CONFIG.dragSpeed * speedScale * latFactor;
+            state.targetLon += moveX * ENGINE_CONFIG.dragSpeed * speedScale;
+            state.targetLat += moveY * ENGINE_CONFIG.dragSpeed * speedScale * latFactor;
             state.targetLat = Math.max(-Math.PI / 2 + 0.01, Math.min(Math.PI / 2 - 0.01, state.targetLat));
-            state.velocityX = deltaX * ENGINE_CONFIG.dragSpeed * speedScale;
-            state.velocityY = deltaY * ENGINE_CONFIG.dragSpeed * speedScale * latFactor;
+            state.velocityX = moveX * ENGINE_CONFIG.dragSpeed * speedScale;
+            state.velocityY = moveY * ENGINE_CONFIG.dragSpeed * speedScale * latFactor;
             state.lon = state.targetLon; state.lat = state.targetLat;
         } else {
             const hit = pick(e);
-            
-            // Hover Label Logic
+
             if (hit && hit.type === 'star') {
                 if (currentHoverNodeId !== hit.node.id) {
                     currentHoverNodeId = hit.node.id;
-                    const res = createTextTexture(hit.node.label, "#ffd700"); // Gold
+                    const res = createTextTexture(hit.node.label, "#ffd700");
                     if (res) {
                         hoverLabelMat.uniforms.uMap.value = res.tex;
                         const baseScale = 0.03;
@@ -2978,25 +3193,13 @@ export function createEngine({
                         hoverLabelMesh.scale.set(size.x, size.y, 1);
                     }
                 }
-                // Position at the star
                 hoverLabelMesh.position.copy(hit.point);
-                // No lookAt needed for billboard shader
                 hoverLabelMat.uniforms.uAlpha.value = 1.0;
                 hoverLabelMesh.visible = true;
-                // Edit mode: track hover position for ring indicator (use exact vertex position)
-                if (currentConfig?.editable && hit.type === 'star' && hit.index !== undefined && starPoints) {
-                    const attr = starPoints.geometry.attributes.position;
-                    editHoverTargetPos = new THREE.Vector3(attr.getX(hit.index), attr.getY(hit.index), attr.getZ(hit.index));
-                } else if (currentConfig?.editable && hit.type === 'star') {
-                    editHoverTargetPos = hit.point.clone();
-                }
             } else {
                 currentHoverNodeId = null;
                 hoverLabelMat.uniforms.uAlpha.value = 0.0;
                 hoverLabelMesh.visible = false;
-                if (currentConfig?.editable && state.dragMode !== 'node') {
-                    editHoverTargetPos = null;
-                }
             }
 
             if (hit?.node.id !== (handlers as any)._lastHoverId) {
@@ -3004,7 +3207,7 @@ export function createEngine({
                 handlers.onHover?.(hit?.node);
                 constellationLayer.setHovered(hit?.node.id ?? null);
             }
-            document.body.style.cursor = hit ? (currentConfig?.editable ? 'crosshair' : 'pointer') : 'default';
+            document.body.style.cursor = hit ? (currentConfig?.editable && hit.type === 'star' ? 'grab' : 'pointer') : 'default';
         }
     }
 
@@ -3016,7 +3219,6 @@ export function createEngine({
         if (state.dragMode === 'node') {
             const fullArr = getFullArrangement();
             handlers.onArrangementChange?.(fullArr);
-            editDropFlash = 1.0; // Trigger drop confirmation ring flash
             state.dragMode = 'none';
             state.draggedNodeId = null; state.draggedStarIndex = -1; state.draggedGroup = null;
             document.body.style.cursor = 'default';
@@ -3065,7 +3267,12 @@ export function createEngine({
         // Camera Rotate Logic still uses View Space matching to feel right
         const vBefore = getMouseViewVector(state.fov, aspect); 
         
-        const zoomSpeed = 0.001 * state.fov;
+        const zoomResistance = THREE.MathUtils.lerp(
+            1.0,
+            ENGINE_CONFIG.zoomResistanceWideFov,
+            THREE.MathUtils.smoothstep(state.fov, 24, 100)
+        );
+        const zoomSpeed = 0.001 * state.fov * zoomResistance;
         state.fov += e.deltaY * zoomSpeed;
         state.fov = Math.max(ENGINE_CONFIG.minFov, Math.min(ENGINE_CONFIG.maxFov, state.fov));
         
@@ -3077,15 +3284,21 @@ export function createEngine({
         const quaternion = new THREE.Quaternion().setFromUnitVectors(vAfter, vBefore);
 
         // --- FOV-based Spin Damping ---
-        const dampStartFov = 40;
-        const dampEndFov = 120;
+        const dampStartFov = 32;
+        const dampEndFov = 110;
         let spinAmount = 1.0;
 
         if (state.fov > dampStartFov) {
             const t = Math.max(0, Math.min(1, (state.fov - dampStartFov) / (dampEndFov - dampStartFov)));
-            // At fov=40, t=0, spin=1. At fov=120, t=1, spin=0.2
-            spinAmount = 1.0 - Math.pow(t, 1.5) * 0.8; // Use pow for a smoother falloff
+            // At wide FOV, strongly reduce zoom-induced spin.
+            spinAmount = 1.0 - Math.pow(t, 1.35) * 0.92;
         }
+
+        const blendForSpin = getBlendForZenithControl();
+        const blendSpinDamp = THREE.MathUtils.smoothstep(blendForSpin, 0.58, 0.90);
+        spinAmount *= (1.0 - 0.88 * blendSpinDamp);
+        if (zenithProjectionLockActive) spinAmount = Math.min(spinAmount, 0.02);
+        spinAmount = Math.max(0.02, Math.min(1.0, spinAmount));
 
         // Slerp towards identity quaternion to reduce the rotation amount
         if (spinAmount < 0.999) {
@@ -3109,9 +3322,14 @@ export function createEngine({
         const newUp = new THREE.Vector3(0, 1, 0).applyQuaternion(qNew);
         camera.up.copy(newUp);
         
-        if (!getSceneDebug()?.disableZenithBias && e.deltaY > 0 && state.fov > ENGINE_CONFIG.zenithStartFov) {
-            const range = ENGINE_CONFIG.maxFov - ENGINE_CONFIG.zenithStartFov;
-            let t = (state.fov - ENGINE_CONFIG.zenithStartFov) / range; t = Math.max(0, Math.min(1, t));
+        const zenithBiasStartFov = getZenithBiasStartFov();
+        if (!zenithProjectionLockActive &&
+            !getSceneDebug()?.disableZenithBias &&
+            !isInTransitionFreezeBand(state.fov) &&
+            e.deltaY > 0 &&
+            state.fov > zenithBiasStartFov) {
+            const range = ENGINE_CONFIG.maxFov - zenithBiasStartFov;
+            let t = (state.fov - zenithBiasStartFov) / range; t = Math.max(0, Math.min(1, t));
             const bias = ENGINE_CONFIG.zenithStrength * t; const zenithLat = Math.PI / 2 - 0.001;
             state.lat = mix(state.lat, zenithLat, bias);
         }
@@ -3226,14 +3444,16 @@ export function createEngine({
             }
 
             const speedScale = state.fov / ENGINE_CONFIG.defaultFov;
-            const rotLock = Math.max(0, Math.min(1, (state.fov - 100) / (ENGINE_CONFIG.maxFov - 100)));
-            const latFactor = 1.0 - rotLock * rotLock;
+            const latFactor = getVerticalPanFactor(state.fov, state.lat);
+            const massFactor = getMovementMassFactor(state.fov);
+            const moveX = compressInputDelta(deltaX) * massFactor;
+            const moveY = compressInputDelta(deltaY) * massFactor;
 
-            state.targetLon += deltaX * ENGINE_CONFIG.dragSpeed * speedScale;
-            state.targetLat += deltaY * ENGINE_CONFIG.dragSpeed * speedScale * latFactor;
+            state.targetLon += moveX * ENGINE_CONFIG.dragSpeed * speedScale;
+            state.targetLat += moveY * ENGINE_CONFIG.dragSpeed * speedScale * latFactor;
             state.targetLat = Math.max(-Math.PI / 2 + 0.01, Math.min(Math.PI / 2 - 0.01, state.targetLat));
-            state.velocityX = deltaX * ENGINE_CONFIG.dragSpeed * speedScale;
-            state.velocityY = deltaY * ENGINE_CONFIG.dragSpeed * speedScale * latFactor;
+            state.velocityX = moveX * ENGINE_CONFIG.dragSpeed * speedScale;
+            state.velocityY = moveY * ENGINE_CONFIG.dragSpeed * speedScale * latFactor;
             state.lon = state.targetLon;
             state.lat = state.targetLat;
         } else if (touches.length === 2) {
@@ -3248,9 +3468,14 @@ export function createEngine({
             handlers.onFovChange?.(state.fov);
 
             // Zenith pull-up when zooming out (FOV increasing)
-            if (!getSceneDebug()?.disableZenithBias && state.fov > prevFov && state.fov > ENGINE_CONFIG.zenithStartFov) {
-                const range = ENGINE_CONFIG.maxFov - ENGINE_CONFIG.zenithStartFov;
-                let t = (state.fov - ENGINE_CONFIG.zenithStartFov) / range;
+            const zenithBiasStartFov = getZenithBiasStartFov();
+            if (!zenithProjectionLockActive &&
+                !getSceneDebug()?.disableZenithBias &&
+                !isInTransitionFreezeBand(state.fov) &&
+                state.fov > prevFov &&
+                state.fov > zenithBiasStartFov) {
+                const range = ENGINE_CONFIG.maxFov - zenithBiasStartFov;
+                let t = (state.fov - zenithBiasStartFov) / range;
                 t = Math.max(0, Math.min(1, t));
                 const bias = ENGINE_CONFIG.zenithStrength * t;
                 const zenithLat = Math.PI / 2 - 0.001;
@@ -3266,8 +3491,12 @@ export function createEngine({
             state.lastMouseY = center.y;
 
             const speedScale = state.fov / ENGINE_CONFIG.defaultFov;
-            state.targetLon += deltaX * ENGINE_CONFIG.dragSpeed * speedScale * 0.5;
-            state.targetLat += deltaY * ENGINE_CONFIG.dragSpeed * speedScale * 0.5;
+            const latFactor = getVerticalPanFactor(state.fov, state.lat);
+            const massFactor = getMovementMassFactor(state.fov);
+            const moveX = compressInputDelta(deltaX) * massFactor;
+            const moveY = compressInputDelta(deltaY) * massFactor;
+            state.targetLon += moveX * ENGINE_CONFIG.dragSpeed * speedScale * 0.5;
+            state.targetLat += moveY * ENGINE_CONFIG.dragSpeed * speedScale * 0.5 * latFactor;
             state.targetLat = Math.max(-Math.PI / 2 + 0.01, Math.min(Math.PI / 2 - 0.01, state.targetLat));
             state.lon = state.targetLon;
             state.lat = state.targetLat;
@@ -3481,11 +3710,13 @@ export function createEngine({
                 
                 // Only pan if delay exceeded
                 if (performance.now() - edgeHoverStart > ENGINE_CONFIG.edgePanDelay) {
-                    const speedBase = ENGINE_CONFIG.edgePanMaxSpeed * (state.fov / ENGINE_CONFIG.defaultFov);
+                    const edgeMassFactor = getMovementMassFactor(state.fov, ENGINE_CONFIG.edgePanMassWideFov);
+                    const speedBase = ENGINE_CONFIG.edgePanMaxSpeed * (state.fov / ENGINE_CONFIG.defaultFov) * edgeMassFactor;
+                    const verticalPanFactor = getVerticalPanFactor(state.fov, state.lat);
                     if (mouseNDC.x < -1 + t) { const s = (-1 + t - mouseNDC.x) / t; panX = -s * s * speedBase; }
                     else if (mouseNDC.x > 1 - t) { const s = (mouseNDC.x - (1 - t)) / t; panX = s * s * speedBase; }
-                    if (mouseNDC.y < -1 + t) { const s = (-1 + t - mouseNDC.y) / t; panY = -s * s * speedBase; }
-                    else if (mouseNDC.y > 1 - t) { const s = (mouseNDC.y - (1 - t)) / t; panY = s * s * speedBase; }
+                    if (mouseNDC.y < -1 + t) { const s = (-1 + t - mouseNDC.y) / t; panY = -s * s * speedBase * verticalPanFactor; }
+                    else if (mouseNDC.y > 1 - t) { const s = (mouseNDC.y - (1 - t)) / t; panY = s * s * speedBase * verticalPanFactor; }
                 }
             } else {
                 edgeHoverStart = 0;
@@ -3520,15 +3751,21 @@ export function createEngine({
             state.lon += panX; state.lat += panY; state.targetLon = state.lon; state.targetLat = state.lat;
         } else if (!state.isDragging && !flyToActive) {
              state.lon += state.velocityX;
+             state.velocityY *= getVerticalPanFactor(state.fov, state.lat);
              state.lat += state.velocityY;
-             const damping = isTouchDevice ? ENGINE_CONFIG.touchInertiaDamping : ENGINE_CONFIG.inertiaDamping;
+             const baseDamping = isTouchDevice ? ENGINE_CONFIG.touchInertiaDamping : ENGINE_CONFIG.inertiaDamping;
+             const speed = Math.hypot(state.velocityX, state.velocityY);
+             const damping = speed < ENGINE_CONFIG.lowSpeedVelocityThreshold
+                 ? Math.min(baseDamping, ENGINE_CONFIG.lowSpeedInertiaDamping)
+                 : baseDamping;
              state.velocityX *= damping;
              state.velocityY *= damping;
-             if (Math.abs(state.velocityX) < 0.000001) state.velocityX = 0;
-             if (Math.abs(state.velocityY) < 0.000001) state.velocityY = 0;
+             if (Math.abs(state.velocityX) < ENGINE_CONFIG.velocityStopThreshold) state.velocityX = 0;
+             if (Math.abs(state.velocityY) < ENGINE_CONFIG.velocityStopThreshold) state.velocityY = 0;
         }
 
         state.lat = Math.max(-Math.PI / 2 + 0.01, Math.min(Math.PI / 2 - 0.01, state.lat));
+        applyZenithAutoCenter();
         const y = Math.sin(state.lat); const r = Math.cos(state.lat);
         const x = r * Math.sin(state.lon); const z = -r * Math.cos(state.lon);
         const target = new THREE.Vector3(x, y, z);
@@ -3539,13 +3776,17 @@ export function createEngine({
         camera.updateMatrixWorld();
         camera.matrixWorldInverse.copy(camera.matrixWorld).invert();
         if (groundMaterial?.uniforms?.uZenithFlatten) {
-            const flatten = getSceneDebug()?.disableZenithFlatten
+            const targetFlatten = getSceneDebug()?.disableZenithFlatten
                 ? 0
                 : THREE.MathUtils.smoothstep(
                     state.lat,
                     THREE.MathUtils.degToRad(68),
                     THREE.MathUtils.degToRad(88)
                 );
+            const prevFlatten = Number(groundMaterial.uniforms.uZenithFlatten.value ?? 0);
+            const flatten = isInTransitionFreezeBand(state.fov)
+                ? THREE.MathUtils.clamp(targetFlatten, prevFlatten - 0.01, prevFlatten + 0.01)
+                : targetFlatten;
             groundMaterial.uniforms.uZenithFlatten.value = flatten;
         }
         updateUniforms();
@@ -3566,6 +3807,18 @@ export function createEngine({
         const baseArtOpacity = THREE.MathUtils.clamp(currentConfig?.constellationBaseOpacity ?? 1.0, 0, 300);
         constellationLayer.setGlobalOpacity?.(artFader.eased * baseArtOpacity);
         backdropGroup.visible = currentConfig?.showBackdropStars ?? true;
+
+        // Zoom reveal: linear ramp from wideFov→narrowFov, then passed to GLSL for
+        // non-linear mapping. When starZoomReveal is false, pass 1.0 so every
+        // smoothstep evaluates to 1 and all stars are always fully visible.
+        const revealZoom = (currentConfig?.starZoomReveal ?? true)
+            ? THREE.MathUtils.clamp(
+                (ZOOM_REVEAL_CONFIG.wideFov - state.fov) /
+                (ZOOM_REVEAL_CONFIG.wideFov - ZOOM_REVEAL_CONFIG.narrowFov),
+                0, 1
+              )
+            : 1.0;
+
         if (backdropStarsMaterial?.uniforms) {
             const minGain = THREE.MathUtils.clamp(currentConfig?.backdropWideFovGain ?? 0.42, 0, 1);
             const fovT = THREE.MathUtils.smoothstep(state.fov, 24, 100);
@@ -3573,6 +3826,11 @@ export function createEngine({
             backdropStarsMaterial.uniforms.uBackdropGain.value = gain;
             backdropStarsMaterial.uniforms.uBackdropEnergy.value = THREE.MathUtils.clamp(currentConfig?.backdropEnergy ?? 2.2, 0.2, 5.0);
             backdropStarsMaterial.uniforms.uBackdropSizeExp.value = THREE.MathUtils.clamp(currentConfig?.backdropSizeExponent ?? 0.9, 0.4, 1.4);
+            backdropStarsMaterial.uniforms.uRevealZoom.value = revealZoom;
+        }
+        if (starPoints?.material) {
+            const sm = starPoints.material as THREE.ShaderMaterial;
+            if (sm.uniforms.uRevealZoom) sm.uniforms.uRevealZoom.value = revealZoom;
         }
         if (skyBackgroundMesh) skyBackgroundMesh.visible = currentConfig?.background !== "transparent";
         if (atmosphereMesh) atmosphereMesh.visible = currentConfig?.showAtmosphere ?? false;
@@ -3583,35 +3841,6 @@ export function createEngine({
         if (sunHaloMesh) sunHaloMesh.visible = showSun;
         if (milkyWayMesh) milkyWayMesh.visible = currentConfig?.showMilkyWay ?? true;
 
-        // Edit hover ring animation
-        if (editHoverMesh) {
-            const ringMat = editHoverMesh.material as THREE.ShaderMaterial;
-            const isEditing = currentConfig?.editable ?? false;
-            const isDraggingStar = state.dragMode === 'node' && state.draggedStarIndex !== -1;
-            const hasTarget = isEditing && editHoverTargetPos !== null;
-            if (hasTarget) {
-                editHoverMesh.position.copy(editHoverTargetPos!);
-                const pulseBoost = editDropFlash * 1.8;
-                const targetAlpha = 0.80 + pulseBoost;
-                ringMat.uniforms.uRingAlpha.value = THREE.MathUtils.lerp(ringMat.uniforms.uRingAlpha.value, targetAlpha, 0.15);
-                // Gold while dragging, cyan when hovering; flash gold on drop
-                const tGold = isDraggingStar ? 1.0 : editDropFlash;
-                const targetColor = new THREE.Color(
-                    THREE.MathUtils.lerp(0.55, 1.00, tGold),
-                    THREE.MathUtils.lerp(0.88, 0.82, tGold),
-                    THREE.MathUtils.lerp(1.00, 0.18, tGold),
-                );
-                (ringMat.uniforms.uRingColor.value as THREE.Color).lerp(targetColor, 0.18);
-                // Slightly larger ring while dragging (landing zone indicator)
-                const baseSize = isDraggingStar ? 0.075 : 0.060;
-                const targetSize = baseSize * (1.0 + editDropFlash * 0.7);
-                ringMat.uniforms.uRingSize.value = THREE.MathUtils.lerp(ringMat.uniforms.uRingSize.value, targetSize, 0.18);
-                editDropFlash = Math.max(0, editDropFlash - dt * 3.0);
-            } else {
-                ringMat.uniforms.uRingAlpha.value = THREE.MathUtils.lerp(ringMat.uniforms.uRingAlpha.value, 0.0, 0.15);
-                ringMat.uniforms.uRingSize.value = THREE.MathUtils.lerp(ringMat.uniforms.uRingSize.value, 0.060, 0.2);
-            }
-        }
 
         const DIVISION_THRESHOLD = 60;
         const showDivisions = state.fov > DIVISION_THRESHOLD;
@@ -3702,7 +3931,6 @@ export function createEngine({
         if (sunHaloMesh) { scene.remove(sunHaloMesh); sunHaloMesh.geometry.dispose(); (sunHaloMesh.material as THREE.ShaderMaterial).dispose(); sunHaloMesh = null; }
         if (milkyWayMesh) { scene.remove(milkyWayMesh); milkyWayMesh.geometry.dispose(); (milkyWayMesh.material as THREE.ShaderMaterial).dispose(); milkyWayMesh = null; }
         if (skyBackgroundMesh) { scene.remove(skyBackgroundMesh); skyBackgroundMesh.geometry.dispose(); (skyBackgroundMesh.material as THREE.ShaderMaterial).dispose(); skyBackgroundMesh = null; }
-        if (editHoverMesh) { scene.remove(editHoverMesh); editHoverMesh.geometry.dispose(); (editHoverMesh.material as THREE.ShaderMaterial).dispose(); editHoverMesh = null; }
         renderer.dispose();
         renderer.domElement.remove();
     }
