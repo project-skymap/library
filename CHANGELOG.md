@@ -8,10 +8,15 @@
 - `0.5.x`  : Constellation Art
 - `0.6.x`  : Selection Filtering
 - `0.7.x`  : Mobile
+- `0.8.x`  : Engine Rebuild
 
 ## Releases
 <!-- @LatestFirst -->
 `🟪 epic` `🟩 story` `🟦 task` `🟥 bug`
+
+## [0.8.0]
+🟪 [Engine Rebuild](https://jrsmth.atlassian.net/browse/SKY-27) (23/03/2026)
+- 🟩 `#28` Paul is a player who wants an even more engaging planetarium experience
 
 ## [0.7.2] &rarr; [0.7.5]
 🟪 [Mobile](https://jrsmth.atlassian.net/browse/SKY-22) (07/02/2026)
@@ -61,3 +66,4 @@
 [0.7.1]: https://github.com/project-skymap/library/compare/v0.7.0...v0.7.1
 [0.7.2]: https://github.com/project-skymap/library/compare/v0.7.1...v0.7.2
 [0.7.5]: https://github.com/project-skymap/library/compare/v0.7.2...v0.7.5
+[0.8.0]: https://github.com/project-skymap/library/compare/v0.7.2...v0.7.5
