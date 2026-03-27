@@ -20,8 +20,8 @@ export type { BibleJSON } from "./adapters/bible";
 
 export { default as defaultStars } from "./assets/default-stars.json";
 
-export { generateArrangement, defaultGenerateOptions } from "./generateArrangement";
-export type { GenerateOptions } from "./generateArrangement";
+export { generateArrangement, defaultGenerateOptions, spineNoiseStrategy } from "./arrangement";
+export type { GenerateOptions, ArrangementStrategy, ArrangementInput } from "./arrangement";
 
 export { PROJECTIONS } from "./engine/projections";
 export type { Projection, ProjectionId } from "./engine/projections";

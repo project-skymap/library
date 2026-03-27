@@ -110,6 +110,19 @@ export type HorizonThemeConfig = {
     notes?: string;
 };
 
+export type ArrangementDebugConfig = {
+    /**
+     * Draw a thin line from each chapter to the next in canonical order (C:BOOK:N → C:BOOK:N+1).
+     * Reveals whether the layout preserves reading order spatially.
+     */
+    showChapterOrder?: boolean;
+    /**
+     * Mark each book's chapter centroid with a bright point.
+     * Useful for inspecting cluster positions independent of the label system.
+     */
+    showBookCentroids?: boolean;
+};
+
 export type SceneMechanicsDebugConfig = {
     projectionBlendOverride?: number | null; // null = normal, 0..1 forces blended projection factor
     disableZenithBias?: boolean;
@@ -173,6 +186,7 @@ export type StarMapConfig = {
     fitProjection?: boolean;
     debug?: {
         sceneMechanics?: SceneMechanicsDebugConfig;
+        arrangement?: ArrangementDebugConfig;
     };
 };
 

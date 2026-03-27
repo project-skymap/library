@@ -1,0 +1,2169 @@
+{
+  "a": {
+    "strategy": "spine-noise",
+    "config": {
+      "strategy": "spine-noise",
+      "seed": 12345,
+      "discRadius": 2000,
+      "clusterSpread": 0.07,
+      "bookSizeAware": true,
+      "divisionBiasStrength": 0,
+      "globalFlowStrength": 0
+    },
+    "positionedNodes": 1265,
+    "byLevel": {
+      "1": 10,
+      "2": 66,
+      "3": 1189
+    },
+    "elapsedMs": 1.7658330000000007
+  },
+  "b": {
+    "strategy": "spine-noise",
+    "config": {
+      "strategy": "spine-noise",
+      "seed": 12345,
+      "discRadius": 2000,
+      "clusterSpread": 0.07,
+      "bookSizeAware": true,
+      "divisionBiasStrength": 0.9,
+      "globalFlowStrength": 0.5
+    },
+    "positionedNodes": 1265,
+    "byLevel": {
+      "1": 10,
+      "2": 66,
+      "3": 1189
+    },
+    "elapsedMs": 0.8437919999999934
+  },
+  "metricsA": {
+    "orderContinuity": 82.98749561069793,
+    "clusterTightness": 55.01451660964537,
+    "clusterSeparation": 2173.770647279992,
+    "divisionSeparation": 2097.4031492784516,
+    "chapterSpread": 504.080562673614,
+    "missingChapters": 0,
+    "books": [
+      {
+        "id": "B:GEN",
+        "label": "Genesis",
+        "chapterCount": 50,
+        "centroid": [
+          -1436.1853936201671,
+          1383.1423844069861,
+          -119.05146346318674
+        ],
+        "clusterRadius": 183.51145512237943,
+        "clusterTightness": 86.87825678248485,
+        "orderContinuity": 136.1664541280429,
+        "missingChapters": 0
+      },
+      {
+        "id": "B:EXO",
+        "label": "Exodus",
+        "chapterCount": 40,
+        "centroid": [
+          -1657.5660673329191,
+          1063.3468029666715,
+          -338.5541582947804
+        ],
+        "clusterRadius": 175.7445332147712,
+        "clusterTightness": 72.41169550496296,
+        "orderContinuity": 108.04445903180091,
+        "missingChapters": 0
+      },
+      {
+        "id": "B:LEV",
+        "label": "Leviticus",
+        "chapterCount": 27,
+        "centroid": [
+          -1718.4834269220485,
+          886.2119201801602,
+          -504.0043297677822
+        ],
+        "clusterRadius": 166.4473969419159,
+        "clusterTightness": 74.65470121579231,
+        "orderContinuity": 104.2399637255775,
+        "missingChapters": 0
+      },
+      {
+        "id": "B:NUM",
+        "label": "Numbers",
+        "chapterCount": 36,
+        "centroid": [
+          -991.3251334845671,
+          1639.344542228523,
+          -561.1533272685297
+        ],
+        "clusterRadius": 238.03008042201273,
+        "clusterTightness": 104.57129411563162,
+        "orderContinuity": 159.60923455299667,
+        "missingChapters": 0
+      },
+      {
+        "id": "B:DEU",
+        "label": "Deuteronomy",
+        "chapterCount": 34,
+        "centroid": [
+          -1379.382742508302,
+          1037.1137038004024,
+          -1006.9826571383829
+        ],
+        "clusterRadius": 170.96825890295628,
+        "clusterTightness": 75.47411958534614,
+        "orderContinuity": 111.7770776590891,
+        "missingChapters": 0
+      },
+      {
+        "id": "B:JOS",
+        "label": "Joshua",
+        "chapterCount": 24,
+        "centroid": [
+          -883.8754440308835,
+          1569.9697306940955,
+          -862.0183798910995
+        ],
+        "clusterRadius": 182.08161746877607,
+        "clusterTightness": 91.15529948208138,
+        "orderContinuity": 130.83088251574907,
+        "missingChapters": 0
+      },
+      {
+        "id": "B:JDG",
+        "label": "Judges",
+        "chapterCount": 21,
+        "centroid": [
+          -998.6243127139621,
+          1380.2253984855927,
+          -1046.0562774960622
+        ],
+        "clusterRadius": 117.52913335182981,
+        "clusterTightness": 51.35146066030197,
+        "orderContinuity": 87.11861005245414,
+        "missingChapters": 0
+      },
+      {
+        "id": "B:RUT",
+        "label": "Ruth",
+        "chapterCount": 4,
+        "centroid": [
+          -636.2129069377265,
+          1729.044226418396,
+          -776.5525203660306
+        ],
+        "clusterRadius": 68.98009135370762,
+        "clusterTightness": 49.05629333241222,
+        "orderContinuity": 78.30487099638013,
+        "missingChapters": 0
+      },
+      {
+        "id": "B:1SA",
+        "label": "1 Samuel",
+        "chapterCount": 31,
+        "centroid": [
+          -964.4409703746898,
+          1232.106872050133,
+          -1240.677752986223
+        ],
+        "clusterRadius": 224.03348870167005,
+        "clusterTightness": 93.89181633185254,
+        "orderContinuity": 146.99333563380364,
+        "missingChapters": 0
+      },
+      {
+        "id": "B:2SA",
+        "label": "2 Samuel",
+        "chapterCount": 24,
+        "centroid": [
+          -1161.616001352256,
+          472.2355821122844,
+          -1555.6759735246762
+        ],
+        "clusterRadius": 164.1239092520184,
+        "clusterTightness": 73.54542745547641,
+        "orderContinuity": 112.44789305862356,
+        "missingChapters": 0
+      },
+      {
+        "id": "B:1KI",
+        "label": "1 Kings",
+        "chapterCount": 22,
+        "centroid": [
+          -461.815360278227,
+          1841.1065791894905,
+          -622.2543027819911
+        ],
+        "clusterRadius": 182.21892220242086,
+        "clusterTightness": 83.05959881317315,
+        "orderContinuity": 116.55276531700206,
+        "missingChapters": 0
+      },
+      {
+        "id": "B:2KI",
+        "label": "2 Kings",
+        "chapterCount": 25,
+        "centroid": [
+          -839.3841447415896,
+          925.9538070676913,
+          -1559.565620817775
+        ],
+        "clusterRadius": 159.61747853332938,
+        "clusterTightness": 63.76823137018183,
+        "orderContinuity": 94.192854059814,
+        "missingChapters": 0
+      },
+      {
+        "id": "B:1CH",
+        "label": "1 Chronicles",
+        "chapterCount": 29,
+        "centroid": [
+          -346.8273570015546,
+          1827.9868627149501,
+          -730.1750999619443
+        ],
+        "clusterRadius": 136.532111604945,
+        "clusterTightness": 59.88829105757627,
+        "orderContinuity": 81.17408400678487,
+        "missingChapters": 0
+      },
+      {
+        "id": "B:2CH",
+        "label": "2 Chronicles",
+        "chapterCount": 36,
+        "centroid": [
+          -835.470720432391,
+          670.588033020424,
+          -1685.225826526991
+        ],
+        "clusterRadius": 194.88506095909116,
+        "clusterTightness": 99.43430286740951,
+        "orderContinuity": 147.29211724873662,
+        "missingChapters": 0
+      },
+      {
+        "id": "B:EZR",
+        "label": "Ezra",
+        "chapterCount": 10,
+        "centroid": [
+          -833.9883371071788,
+          585.7110500877012,
+          -1720.1030062001598
+        ],
+        "clusterRadius": 97.58654866058701,
+        "clusterTightness": 41.498330812848174,
+        "orderContinuity": 63.75481832931277,
+        "missingChapters": 0
+      },
+      {
+        "id": "B:NEH",
+        "label": "Nehemiah",
+        "chapterCount": 13,
+        "centroid": [
+          -438.42960712464367,
+          1696.9212642918176,
+          -961.2482405864586
+        ],
+        "clusterRadius": 100.76028400612289,
+        "clusterTightness": 59.51260850655679,
+        "orderContinuity": 91.99616729681992,
+        "missingChapters": 0
+      },
+      {
+        "id": "B:EST",
+        "label": "Esther",
+        "chapterCount": 10,
+        "centroid": [
+          -463.2123597949141,
+          732.0694459781705,
+          -1801.2617687954967
+        ],
+        "clusterRadius": 108.0318710426065,
+        "clusterTightness": 63.22162961315471,
+        "orderContinuity": 93.84051127769348,
+        "missingChapters": 0
+      },
+      {
+        "id": "B:JOB",
+        "label": "Job",
+        "chapterCount": 42,
+        "centroid": [
+          -324.4209987162601,
+          1365.106402968198,
+          -1422.7496236652767
+        ],
+        "clusterRadius": 167.09133472690064,
+        "clusterTightness": 71.46726258548168,
+        "orderContinuity": 98.91486036687974,
+        "missingChapters": 0
+      },
+      {
+        "id": "B:PSA",
+        "label": "Psalms",
+        "chapterCount": 150,
+        "centroid": [
+          -153.05775442016758,
+          321.79727612202936,
+          -1965.8414745392781
+        ],
+        "clusterRadius": 189.1821381635427,
+        "clusterTightness": 79.5041922968385,
+        "orderContinuity": 119.19088955002688,
+        "missingChapters": 0
+      },
+      {
+        "id": "B:PRO",
+        "label": "Proverbs",
+        "chapterCount": 31,
+        "centroid": [
+          16.26525178166372,
+          1418.9428701382828,
+          -1405.4982825280238
+        ],
+        "clusterRadius": 206.20533109161136,
+        "clusterTightness": 85.40479119326055,
+        "orderContinuity": 118.42594829908545,
+        "missingChapters": 0
+      },
+      {
+        "id": "B:ECC",
+        "label": "Ecclesiastes",
+        "chapterCount": 12,
+        "centroid": [
+          16.374240013502543,
+          1870.8824201922246,
+          -704.2099650076433
+        ],
+        "clusterRadius": 117.96541644496021,
+        "clusterTightness": 49.07740765822408,
+        "orderContinuity": 71.54111599699928,
+        "missingChapters": 0
+      },
+      {
+        "id": "B:SNG",
+        "label": "Song of Songs",
+        "chapterCount": 8,
+        "centroid": [
+          199.8003975551799,
+          915.010746789197,
+          -1766.2992193794655
+        ],
+        "clusterRadius": 100.38659156450967,
+        "clusterTightness": 46.73287078471051,
+        "orderContinuity": 59.935766357687484,
+        "missingChapters": 0
+      },
+      {
+        "id": "B:ISA",
+        "label": "Isaiah",
+        "chapterCount": 66,
+        "centroid": [
+          689.5921778286396,
+          354.66493217607365,
+          -1839.52968093505
+        ],
+        "clusterRadius": 223.96712588174836,
+        "clusterTightness": 102.38582499151025,
+        "orderContinuity": 162.05572824756808,
+        "missingChapters": 0
+      },
+      {
+        "id": "B:JER",
+        "label": "Jeremiah",
+        "chapterCount": 52,
+        "centroid": [
+          956.2633661058261,
+          1218.2656527501126,
+          -1261.3004716595121
+        ],
+        "clusterRadius": 219.00349434136132,
+        "clusterTightness": 84.1551476565028,
+        "orderContinuity": 127.28037049715846,
+        "missingChapters": 0
+      },
+      {
+        "id": "B:LAM",
+        "label": "Lamentations",
+        "chapterCount": 5,
+        "centroid": [
+          1562.7759803681456,
+          765.3580944866193,
+          -985.4344544695401
+        ],
+        "clusterRadius": 56.099989727194,
+        "clusterTightness": 23.672901618390828,
+        "orderContinuity": 27.774494285931667,
+        "missingChapters": 0
+      },
+      {
+        "id": "B:EZK",
+        "label": "Ezekiel",
+        "chapterCount": 48,
+        "centroid": [
+          1840.184889139178,
+          190.10299476572519,
+          -752.743319834951
+        ],
+        "clusterRadius": 214.50318622494555,
+        "clusterTightness": 88.81964299070694,
+        "orderContinuity": 129.057298157826,
+        "missingChapters": 0
+      },
+      {
+        "id": "B:DAN",
+        "label": "Daniel",
+        "chapterCount": 12,
+        "centroid": [
+          1447.7193906339205,
+          1271.5309654922169,
+          -532.5354822033506
+        ],
+        "clusterRadius": 100.36428609802552,
+        "clusterTightness": 55.070666228612396,
+        "orderContinuity": 84.79705083286007,
+        "missingChapters": 0
+      },
+      {
+        "id": "B:HOS",
+        "label": "Hosea",
+        "chapterCount": 14,
+        "centroid": [
+          920.8621884778805,
+          1765.5456787837088,
+          -169.5253432603852
+        ],
+        "clusterRadius": 147.3527191164216,
+        "clusterTightness": 61.695140684278094,
+        "orderContinuity": 97.27377653821608,
+        "missingChapters": 0
+      },
+      {
+        "id": "B:JOL",
+        "label": "Joel",
+        "chapterCount": 4,
+        "centroid": [
+          1631.2520905890015,
+          1148.6800451047252,
+          135.59738800620914
+        ],
+        "clusterRadius": 52.07236150572811,
+        "clusterTightness": 29.871782841317632,
+        "orderContinuity": 45.40454161301227,
+        "missingChapters": 0
+      },
+      {
+        "id": "B:AMO",
+        "label": "Amos",
+        "chapterCount": 9,
+        "centroid": [
+          1815.7382630615239,
+          826.1874873941086,
+          130.8124674316199
+        ],
+        "clusterRadius": 99.50423116810279,
+        "clusterTightness": 53.10963261360767,
+        "orderContinuity": 80.55030027697565,
+        "missingChapters": 0
+      },
+      {
+        "id": "B:OBA",
+        "label": "Obadiah",
+        "chapterCount": 1,
+        "centroid": [
+          1367.9580393187455,
+          1453.1269158760629,
+          130.8165471939065
+        ],
+        "clusterRadius": 0,
+        "clusterTightness": 0,
+        "orderContinuity": 0,
+        "missingChapters": 0
+      },
+      {
+        "id": "B:JON",
+        "label": "Jonah",
+        "chapterCount": 4,
+        "centroid": [
+          1042.9604524243919,
+          1634.7714695520203,
+          488.9392188750793
+        ],
+        "clusterRadius": 43.470900487006425,
+        "clusterTightness": 22.56377490510284,
+        "orderContinuity": 42.86491161264055,
+        "missingChapters": 0
+      },
+      {
+        "id": "B:MIC",
+        "label": "Micah",
+        "chapterCount": 7,
+        "centroid": [
+          1164.484891085776,
+          1473.5776564668754,
+          686.5096809520975
+        ],
+        "clusterRadius": 61.73460500217027,
+        "clusterTightness": 28.767517988738657,
+        "orderContinuity": 46.98546289696122,
+        "missingChapters": 0
+      },
+      {
+        "id": "B:NAM",
+        "label": "Nahum",
+        "chapterCount": 3,
+        "centroid": [
+          880.6316256264846,
+          53.63647967138519,
+          1794.6850077900824
+        ],
+        "clusterRadius": 37.02808042345933,
+        "clusterTightness": 25.123893653948183,
+        "orderContinuity": 55.75209475730912,
+        "missingChapters": 0
+      },
+      {
+        "id": "B:HAB",
+        "label": "Habakkuk",
+        "chapterCount": 3,
+        "centroid": [
+          716.1388887756899,
+          937.4713677075979,
+          1614.8175496332244
+        ],
+        "clusterRadius": 30.03459869116308,
+        "clusterTightness": 25.03680985573619,
+        "orderContinuity": 37.85366809751428,
+        "missingChapters": 0
+      },
+      {
+        "id": "B:ZEP",
+        "label": "Zephaniah",
+        "chapterCount": 3,
+        "centroid": [
+          702.7148289156852,
+          838.0861088087808,
+          1674.094535206413
+        ],
+        "clusterRadius": 42.937784660808575,
+        "clusterTightness": 34.1270984530826,
+        "orderContinuity": 52.377933700132495,
+        "missingChapters": 0
+      },
+      {
+        "id": "B:HAG",
+        "label": "Haggai",
+        "chapterCount": 2,
+        "centroid": [
+          575.1539342102939,
+          383.62954790579323,
+          1876.6142133346248
+        ],
+        "clusterRadius": 18.585377222018074,
+        "clusterTightness": 18.585377222018074,
+        "orderContinuity": 37.17075444403615,
+        "missingChapters": 0
+      },
+      {
+        "id": "B:ZEC",
+        "label": "Zechariah",
+        "chapterCount": 14,
+        "centroid": [
+          494.7562525274495,
+          87.60093646235724,
+          1934.4080732176703
+        ],
+        "clusterRadius": 146.0765558080691,
+        "clusterTightness": 63.319450000604704,
+        "orderContinuity": 101.017367856981,
+        "missingChapters": 0
+      },
+      {
+        "id": "B:MAL",
+        "label": "Malachi",
+        "chapterCount": 3,
+        "centroid": [
+          118.50925087473293,
+          1008.9145488538088,
+          1722.3810756408027
+        ],
+        "clusterRadius": 46.53534988026377,
+        "clusterTightness": 35.10000013795878,
+        "orderContinuity": 49.71797231006537,
+        "missingChapters": 0
+      },
+      {
+        "id": "B:MAT",
+        "label": "Mathew",
+        "chapterCount": 28,
+        "centroid": [
+          -183.28792776085038,
+          435.3132496540147,
+          1941.1817323252599
+        ],
+        "clusterRadius": 188.3216659556309,
+        "clusterTightness": 80.49905617071899,
+        "orderContinuity": 117.63967402007245,
+        "missingChapters": 0
+      },
+      {
+        "id": "B:MRK",
+        "label": "Mark",
+        "chapterCount": 16,
+        "centroid": [
+          -214.20185969961304,
+          135.43365683896855,
+          1982.442904531979
+        ],
+        "clusterRadius": 122.34643345261753,
+        "clusterTightness": 67.66027639424487,
+        "orderContinuity": 78.70212512371685,
+        "missingChapters": 0
+      },
+      {
+        "id": "B:LUK",
+        "label": "Luke",
+        "chapterCount": 24,
+        "centroid": [
+          -170.24862234486253,
+          1501.6700201177237,
+          1306.5082161137445
+        ],
+        "clusterRadius": 193.43009751276864,
+        "clusterTightness": 80.2868659737851,
+        "orderContinuity": 120.50568080471066,
+        "missingChapters": 0
+      },
+      {
+        "id": "B:JHN",
+        "label": "John",
+        "chapterCount": 21,
+        "centroid": [
+          -196.27076336701654,
+          1184.0596394307258,
+          1597.9376258994384
+        ],
+        "clusterRadius": 143.74548721043246,
+        "clusterTightness": 66.97476541625548,
+        "orderContinuity": 104.10343909955179,
+        "missingChapters": 0
+      },
+      {
+        "id": "B:ACT",
+        "label": "Acts",
+        "chapterCount": 28,
+        "centroid": [
+          -255.9237273023467,
+          576.8596454511505,
+          1896.2289637528559
+        ],
+        "clusterRadius": 175.67600871258105,
+        "clusterTightness": 68.46622172038964,
+        "orderContinuity": 78.6108659996543,
+        "missingChapters": 0
+      },
+      {
+        "id": "B:ROM",
+        "label": "Romans",
+        "chapterCount": 16,
+        "centroid": [
+          -296.513865739951,
+          252.0029299702608,
+          1960.222675624818
+        ],
+        "clusterRadius": 167.63586337761993,
+        "clusterTightness": 60.394954405877186,
+        "orderContinuity": 109.43634361476829,
+        "missingChapters": 0
+      },
+      {
+        "id": "B:1CO",
+        "label": "1 Corinthians",
+        "chapterCount": 16,
+        "centroid": [
+          -260.89071773879937,
+          1113.5646905539613,
+          1639.5476821611073
+        ],
+        "clusterRadius": 135.41448201208036,
+        "clusterTightness": 52.59596618446983,
+        "orderContinuity": 75.6245629114418,
+        "missingChapters": 0
+      },
+      {
+        "id": "B:2CO",
+        "label": "2 Corinthians",
+        "chapterCount": 13,
+        "centroid": [
+          -448.765057954188,
+          1167.5462859921709,
+          1559.1608870829
+        ],
+        "clusterRadius": 111.22280281066554,
+        "clusterTightness": 60.9907606637616,
+        "orderContinuity": 88.12005482533532,
+        "missingChapters": 0
+      },
+      {
+        "id": "B:EPH",
+        "label": "Ephesians",
+        "chapterCount": 6,
+        "centroid": [
+          -483.10410886654364,
+          1033.1972768185312,
+          1642.303632867431
+        ],
+        "clusterRadius": 75.5631659285329,
+        "clusterTightness": 38.641517251578584,
+        "orderContinuity": 64.2724535560787,
+        "missingChapters": 0
+      },
+      {
+        "id": "B:GAL",
+        "label": "Galatians",
+        "chapterCount": 6,
+        "centroid": [
+          -521.4725392420646,
+          1210.700242941677,
+          1503.745971745452
+        ],
+        "clusterRadius": 62.549070590564554,
+        "clusterTightness": 23.99963326016953,
+        "orderContinuity": 38.9692446707889,
+        "missingChapters": 0
+      },
+      {
+        "id": "B:PHP",
+        "label": "Philippians",
+        "chapterCount": 4,
+        "centroid": [
+          -455.32281935218674,
+          1497.040218557596,
+          1245.4931179623104
+        ],
+        "clusterRadius": 27.991948251096712,
+        "clusterTightness": 15.480737400133972,
+        "orderContinuity": 28.357319827240968,
+        "missingChapters": 0
+      },
+      {
+        "id": "B:COL",
+        "label": "Colossians",
+        "chapterCount": 4,
+        "centroid": [
+          -789.4093717286607,
+          560.9212919323112,
+          1749.1904122140756
+        ],
+        "clusterRadius": 76.86677510029632,
+        "clusterTightness": 43.1671925553228,
+        "orderContinuity": 69.50905930378522,
+        "missingChapters": 0
+      },
+      {
+        "id": "B:1TH",
+        "label": "1 Thessalonians",
+        "chapterCount": 5,
+        "centroid": [
+          -192.38130504493188,
+          1947.973954333056,
+          409.2877146367467
+        ],
+        "clusterRadius": 45.61942848928205,
+        "clusterTightness": 24.770768195496718,
+        "orderContinuity": 50.524218943002694,
+        "missingChapters": 0
+      },
+      {
+        "id": "B:2TH",
+        "label": "2 Thessalonians",
+        "chapterCount": 3,
+        "centroid": [
+          -855.6579591457858,
+          518.5969119065697,
+          1731.5781549255819
+        ],
+        "clusterRadius": 32.44152092066266,
+        "clusterTightness": 21.715428695026134,
+        "orderContinuity": 27.119138805103795,
+        "missingChapters": 0
+      },
+      {
+        "id": "B:1TI",
+        "label": "1 Timothy",
+        "chapterCount": 6,
+        "centroid": [
+          -886.8239530270413,
+          536.8834946206514,
+          1710.019692213761
+        ],
+        "clusterRadius": 51.88468734757398,
+        "clusterTightness": 31.708578576962967,
+        "orderContinuity": 43.78555373391441,
+        "missingChapters": 0
+      },
+      {
+        "id": "B:2TI",
+        "label": "2 Timothy",
+        "chapterCount": 4,
+        "centroid": [
+          -965.3820121113358,
+          1012.0478728708233,
+          1429.303322788454
+        ],
+        "clusterRadius": 42.19263657119824,
+        "clusterTightness": 27.770990847506276,
+        "orderContinuity": 50.706168753046775,
+        "missingChapters": 0
+      },
+      {
+        "id": "B:TIT",
+        "label": "Titus",
+        "chapterCount": 3,
+        "centroid": [
+          -1186.9815564865291,
+          106.19402526257336,
+          1606.1565220013626
+        ],
+        "clusterRadius": 9.612042915239838,
+        "clusterTightness": 7.460722887464551,
+        "orderContinuity": 14.991059223531902,
+        "missingChapters": 0
+      },
+      {
+        "id": "B:PHM",
+        "label": "Philemon",
+        "chapterCount": 1,
+        "centroid": [
+          -1325.2352351815464,
+          1179.2566293143514,
+          923.6370356646952
+        ],
+        "clusterRadius": 0,
+        "clusterTightness": 0,
+        "orderContinuity": 0,
+        "missingChapters": 0
+      },
+      {
+        "id": "B:HEB",
+        "label": "Hebrews",
+        "chapterCount": 13,
+        "centroid": [
+          -1427.7415852857619,
+          1083.2423108284854,
+          886.6499294469056
+        ],
+        "clusterRadius": 90.61483720722654,
+        "clusterTightness": 39.22288897606734,
+        "orderContinuity": 58.174358716153726,
+        "missingChapters": 0
+      },
+      {
+        "id": "B:JAS",
+        "label": "James",
+        "chapterCount": 5,
+        "centroid": [
+          -913.3215703063768,
+          1688.2555849814592,
+          561.0060339837328
+        ],
+        "clusterRadius": 41.418418241655374,
+        "clusterTightness": 28.990102870529633,
+        "orderContinuity": 53.14659721739995,
+        "missingChapters": 0
+      },
+      {
+        "id": "B:1PE",
+        "label": "1 Peter",
+        "chapterCount": 5,
+        "centroid": [
+          -1611.234824508006,
+          862.156149208008,
+          812.1011170715376
+        ],
+        "clusterRadius": 49.99546109293465,
+        "clusterTightness": 29.958436809565114,
+        "orderContinuity": 50.13310045764548,
+        "missingChapters": 0
+      },
+      {
+        "id": "B:2PE",
+        "label": "2 Peter",
+        "chapterCount": 3,
+        "centroid": [
+          -1763.0260942384505,
+          391.6276898994518,
+          858.4248159773274
+        ],
+        "clusterRadius": 44.66141991338068,
+        "clusterTightness": 38.106317119083364,
+        "orderContinuity": 62.838196106559806,
+        "missingChapters": 0
+      },
+      {
+        "id": "B:1JN",
+        "label": "1 John",
+        "chapterCount": 5,
+        "centroid": [
+          -1051.0111535346489,
+          1624.491827599745,
+          505.6602845456572
+        ],
+        "clusterRadius": 48.392102889309285,
+        "clusterTightness": 21.478924207747966,
+        "orderContinuity": 29.17048930898884,
+        "missingChapters": 0
+      },
+      {
+        "id": "B:2JN",
+        "label": "2 John",
+        "chapterCount": 1,
+        "centroid": [
+          -1354.1482151678795,
+          1344.1563847801856,
+          599.6050571937405
+        ],
+        "clusterRadius": 0,
+        "clusterTightness": 0,
+        "orderContinuity": 0,
+        "missingChapters": 0
+      },
+      {
+        "id": "B:3JN",
+        "label": "3 John",
+        "chapterCount": 1,
+        "centroid": [
+          -1590.8982463646582,
+          1161.6827149663989,
+          345.7398436138823
+        ],
+        "clusterRadius": 0,
+        "clusterTightness": 0,
+        "orderContinuity": 0,
+        "missingChapters": 0
+      },
+      {
+        "id": "B:JUD",
+        "label": "Jude",
+        "chapterCount": 1,
+        "centroid": [
+          -1857.6318054824785,
+          729.2721303156145,
+          131.78101230766254
+        ],
+        "clusterRadius": 0,
+        "clusterTightness": 0,
+        "orderContinuity": 0,
+        "missingChapters": 0
+      },
+      {
+        "id": "B:REV",
+        "label": "Revelation",
+        "chapterCount": 22,
+        "centroid": [
+          -1485.4745809280348,
+          1332.270956355813,
+          75.73834763813554
+        ],
+        "clusterRadius": 173.41186732311894,
+        "clusterTightness": 98.57986273833468,
+        "orderContinuity": 137.51912164353357,
+        "missingChapters": 0
+      }
+    ],
+    "divisions": [
+      {
+        "id": "D:Old:The Law",
+        "label": "The Law",
+        "bookCount": 5,
+        "centroid": [
+          -1436.5885527736007,
+          1201.8318707165488,
+          -505.94918718653236
+        ]
+      },
+      {
+        "id": "D:Old:History",
+        "label": "History",
+        "bookCount": 12,
+        "centroid": [
+          -738.6581268241681,
+          1221.9932376758954,
+          -1213.4012308279089
+        ]
+      },
+      {
+        "id": "D:Old:Wisdom",
+        "label": "Wisdom",
+        "bookCount": 5,
+        "centroid": [
+          -49.007772757216316,
+          1178.3479432419863,
+          -1452.9197130239374
+        ]
+      },
+      {
+        "id": "D:Old:Major Prophets",
+        "label": "Major Prophets",
+        "bookCount": 5,
+        "centroid": [
+          1299.307160815142,
+          759.9845279341496,
+          -1074.3086818204806
+        ]
+      },
+      {
+        "id": "D:Old:Minor Prophets",
+        "label": "Minor Prophets",
+        "bookCount": 12,
+        "centroid": [
+          952.5967254906378,
+          967.6023535489354,
+          1001.6792011684453
+        ]
+      },
+      {
+        "id": "D:New:Gospels",
+        "label": "Gospels",
+        "bookCount": 4,
+        "centroid": [
+          -191.00229329308561,
+          814.1191415103582,
+          1707.0176197176056
+        ]
+      },
+      {
+        "id": "D:New:Early Church",
+        "label": "Early Church",
+        "bookCount": 1,
+        "centroid": [
+          -255.9237273023467,
+          576.8596454511505,
+          1896.2289637528559
+        ]
+      },
+      {
+        "id": "D:New:Paul's Letters",
+        "label": "Paul's Letters",
+        "bookCount": 14,
+        "centroid": [
+          -721.1201490646662,
+          944.2262954216443,
+          1428.3069108096859
+        ]
+      },
+      {
+        "id": "D:New:General Letters",
+        "label": "General Letters",
+        "bookCount": 7,
+        "centroid": [
+          -1448.753129943214,
+          1114.5203545358377,
+          544.90259495622
+        ]
+      },
+      {
+        "id": "D:New:Prophecy",
+        "label": "Prophecy",
+        "bookCount": 1,
+        "centroid": [
+          -1485.4745809280348,
+          1332.270956355813,
+          75.73834763813554
+        ]
+      }
+    ]
+  },
+  "metricsB": {
+    "orderContinuity": 77.35155251271581,
+    "clusterTightness": 52.507476019784804,
+    "clusterSeparation": 2123.43251613241,
+    "divisionSeparation": 2356.2607706719787,
+    "chapterSpread": 546.7583795533241,
+    "missingChapters": 0,
+    "books": [
+      {
+        "id": "B:GEN",
+        "label": "Genesis",
+        "chapterCount": 50,
+        "centroid": [
+          1597.921503619693,
+          1018.913576487443,
+          631.8904840216072
+        ],
+        "clusterRadius": 165.49753433745707,
+        "clusterTightness": 80.793783105244,
+        "orderContinuity": 124.13869093602541,
+        "missingChapters": 0
+      },
+      {
+        "id": "B:EXO",
+        "label": "Exodus",
+        "chapterCount": 40,
+        "centroid": [
+          1587.6321198127584,
+          1013.7477920464044,
+          666.8150144963786
+        ],
+        "clusterRadius": 151.05785693195276,
+        "clusterTightness": 72.75665998148875,
+        "orderContinuity": 115.07214387107125,
+        "missingChapters": 0
+      },
+      {
+        "id": "B:LEV",
+        "label": "Leviticus",
+        "chapterCount": 27,
+        "centroid": [
+          1568.9442552272671,
+          1009.8664983537196,
+          715.4464608721115
+        ],
+        "clusterRadius": 180.80378572813194,
+        "clusterTightness": 70.74780450891352,
+        "orderContinuity": 100.94896575854635,
+        "missingChapters": 0
+      },
+      {
+        "id": "B:NUM",
+        "label": "Numbers",
+        "chapterCount": 36,
+        "centroid": [
+          1534.5366775441935,
+          1038.6117975788493,
+          741.3254052141435
+        ],
+        "clusterRadius": 229.0285861154381,
+        "clusterTightness": 110.54315243323444,
+        "orderContinuity": 168.2685517727153,
+        "missingChapters": 0
+      },
+      {
+        "id": "B:DEU",
+        "label": "Deuteronomy",
+        "chapterCount": 34,
+        "centroid": [
+          1522.162109019491,
+          1017.2623215578781,
+          799.6441228878851
+        ],
+        "clusterRadius": 166.31318673422592,
+        "clusterTightness": 79.95950867947151,
+        "orderContinuity": 116.88608139305202,
+        "missingChapters": 0
+      },
+      {
+        "id": "B:JOS",
+        "label": "Joshua",
+        "chapterCount": 24,
+        "centroid": [
+          1175.4981811465434,
+          1038.525767638811,
+          1236.7445832429337
+        ],
+        "clusterRadius": 183.2021220698024,
+        "clusterTightness": 87.16270772726175,
+        "orderContinuity": 122.24113329944035,
+        "missingChapters": 0
+      },
+      {
+        "id": "B:JDG",
+        "label": "Judges",
+        "chapterCount": 21,
+        "centroid": [
+          1132.0085318823058,
+          1047.8116526241024,
+          1271.620120699605
+        ],
+        "clusterRadius": 118.52764933401133,
+        "clusterTightness": 53.43278414717262,
+        "orderContinuity": 83.97462550097202,
+        "missingChapters": 0
+      },
+      {
+        "id": "B:RUT",
+        "label": "Ruth",
+        "chapterCount": 4,
+        "centroid": [
+          1079.084160249225,
+          1039.7610713095123,
+          1323.8896558862511
+        ],
+        "clusterRadius": 62.27642123862212,
+        "clusterTightness": 35.4303166370029,
+        "orderContinuity": 64.79801911325262,
+        "missingChapters": 0
+      },
+      {
+        "id": "B:1SA",
+        "label": "1 Samuel",
+        "chapterCount": 31,
+        "centroid": [
+          1035.8400467237666,
+          1041.7594814503686,
+          1353.4592661884658
+        ],
+        "clusterRadius": 225.01768707005095,
+        "clusterTightness": 82.1182274427325,
+        "orderContinuity": 122.59948330406704,
+        "missingChapters": 0
+      },
+      {
+        "id": "B:2SA",
+        "label": "2 Samuel",
+        "chapterCount": 24,
+        "centroid": [
+          1008.975670923363,
+          983.9410798500066,
+          1416.3543735602523
+        ],
+        "clusterRadius": 177.29040137017972,
+        "clusterTightness": 75.0008664735069,
+        "orderContinuity": 114.69091088379987,
+        "missingChapters": 0
+      },
+      {
+        "id": "B:1KI",
+        "label": "1 Kings",
+        "chapterCount": 22,
+        "centroid": [
+          919.1634138063863,
+          1047.4883348337855,
+          1431.6895642914499
+        ],
+        "clusterRadius": 177.76903982188048,
+        "clusterTightness": 75.15426056359176,
+        "orderContinuity": 111.14800350076493,
+        "missingChapters": 0
+      },
+      {
+        "id": "B:2KI",
+        "label": "2 Kings",
+        "chapterCount": 25,
+        "centroid": [
+          887.3097371715963,
+          1011.7694265454418,
+          1476.8640731094722
+        ],
+        "clusterRadius": 157.47394207227077,
+        "clusterTightness": 75.36664446801181,
+        "orderContinuity": 100.0093476520616,
+        "missingChapters": 0
+      },
+      {
+        "id": "B:1CH",
+        "label": "1 Chronicles",
+        "chapterCount": 29,
+        "centroid": [
+          836.979411242252,
+          1042.2341588370427,
+          1485.9870601148855
+        ],
+        "clusterRadius": 148.96220020361534,
+        "clusterTightness": 60.596090507881485,
+        "orderContinuity": 81.90561034211191,
+        "missingChapters": 0
+      },
+      {
+        "id": "B:2CH",
+        "label": "2 Chronicles",
+        "chapterCount": 36,
+        "centroid": [
+          766.3546899913839,
+          989.6482414690322,
+          1556.1898833910811
+        ],
+        "clusterRadius": 192.14967040306132,
+        "clusterTightness": 95.47605332438287,
+        "orderContinuity": 128.6933147667252,
+        "missingChapters": 0
+      },
+      {
+        "id": "B:EZR",
+        "label": "Ezra",
+        "chapterCount": 10,
+        "centroid": [
+          695.4913571997213,
+          980.5458479391215,
+          1597.6531362629285
+        ],
+        "clusterRadius": 87.3549093149335,
+        "clusterTightness": 38.03946230653605,
+        "orderContinuity": 59.68355435313327,
+        "missingChapters": 0
+      },
+      {
+        "id": "B:NEH",
+        "label": "Nehemiah",
+        "chapterCount": 13,
+        "centroid": [
+          639.3070449149383,
+          1035.0636154972042,
+          1586.961828894982
+        ],
+        "clusterRadius": 69.37418943431169,
+        "clusterTightness": 34.39600007650876,
+        "orderContinuity": 42.20012450676405,
+        "missingChapters": 0
+      },
+      {
+        "id": "B:EST",
+        "label": "Esther",
+        "chapterCount": 10,
+        "centroid": [
+          606.4631118411837,
+          971.4032881064616,
+          1638.187251815934
+        ],
+        "clusterRadius": 115.06682044876194,
+        "clusterTightness": 64.23627981310267,
+        "orderContinuity": 77.98506434429102,
+        "missingChapters": 0
+      },
+      {
+        "id": "B:JOB",
+        "label": "Job",
+        "chapterCount": 42,
+        "centroid": [
+          25.050190744445565,
+          1037.532782371834,
+          1707.8984220044435
+        ],
+        "clusterRadius": 164.67923777356256,
+        "clusterTightness": 65.31282873692197,
+        "orderContinuity": 90.39470834045207,
+        "missingChapters": 0
+      },
+      {
+        "id": "B:PSA",
+        "label": "Psalms",
+        "chapterCount": 150,
+        "centroid": [
+          -21.181623213959472,
+          972.1299525574385,
+          1745.2865704274245
+        ],
+        "clusterRadius": 184.3758071389704,
+        "clusterTightness": 78.27115656126786,
+        "orderContinuity": 118.10836627118002,
+        "missingChapters": 0
+      },
+      {
+        "id": "B:PRO",
+        "label": "Proverbs",
+        "chapterCount": 31,
+        "centroid": [
+          -70.60940086631223,
+          1028.0969485914125,
+          1711.4637469548486
+        ],
+        "clusterRadius": 200.40712386230342,
+        "clusterTightness": 79.52723864133701,
+        "orderContinuity": 110.31801703581446,
+        "missingChapters": 0
+      },
+      {
+        "id": "B:ECC",
+        "label": "Ecclesiastes",
+        "chapterCount": 12,
+        "centroid": [
+          -128.11428138342328,
+          1028.2306056633818,
+          1709.5957929843
+        ],
+        "clusterRadius": 106.04206732294554,
+        "clusterTightness": 48.91474942197603,
+        "orderContinuity": 63.98765256553766,
+        "missingChapters": 0
+      },
+      {
+        "id": "B:SNG",
+        "label": "Song of Songs",
+        "chapterCount": 8,
+        "centroid": [
+          -196.55801157402004,
+          1015.0798980674447,
+          1711.0947191664313
+        ],
+        "clusterRadius": 91.36727222585314,
+        "clusterTightness": 47.15914518014475,
+        "orderContinuity": 66.2182313468399,
+        "missingChapters": 0
+      },
+      {
+        "id": "B:ISA",
+        "label": "Isaiah",
+        "chapterCount": 66,
+        "centroid": [
+          -730.1879013567965,
+          959.1754188610496,
+          1591.484009915247
+        ],
+        "clusterRadius": 228.3966691413717,
+        "clusterTightness": 100.05888252866657,
+        "orderContinuity": 154.56926061921553,
+        "missingChapters": 0
+      },
+      {
+        "id": "B:JER",
+        "label": "Jeremiah",
+        "chapterCount": 52,
+        "centroid": [
+          -733.4909150586207,
+          1011.1358419890207,
+          1559.0731047609224
+        ],
+        "clusterRadius": 174.59477114238666,
+        "clusterTightness": 82.17706468259868,
+        "orderContinuity": 112.246853782891,
+        "missingChapters": 0
+      },
+      {
+        "id": "B:LAM",
+        "label": "Lamentations",
+        "chapterCount": 5,
+        "centroid": [
+          -737.7665141426494,
+          987.2784442260445,
+          1574.8074559214274
+        ],
+        "clusterRadius": 46.998628254574115,
+        "clusterTightness": 26.391460462545922,
+        "orderContinuity": 29.63038405270221,
+        "missingChapters": 0
+      },
+      {
+        "id": "B:EZK",
+        "label": "Ezekiel",
+        "chapterCount": 48,
+        "centroid": [
+          -770.4596519883129,
+          912.3069908567581,
+          1600.8209359201455
+        ],
+        "clusterRadius": 194.05389523226793,
+        "clusterTightness": 89.9400527798976,
+        "orderContinuity": 121.3867133146977,
+        "missingChapters": 0
+      },
+      {
+        "id": "B:DAN",
+        "label": "Daniel",
+        "chapterCount": 12,
+        "centroid": [
+          -835.4335758720755,
+          987.2300981428638,
+          1523.9305451033786
+        ],
+        "clusterRadius": 112.64276217337128,
+        "clusterTightness": 66.61648161993297,
+        "orderContinuity": 92.04297602295539,
+        "missingChapters": 0
+      },
+      {
+        "id": "B:HOS",
+        "label": "Hosea",
+        "chapterCount": 14,
+        "centroid": [
+          -1269.3462545377795,
+          1050.6862457134991,
+          1130.1782101979575
+        ],
+        "clusterRadius": 160.52537112244198,
+        "clusterTightness": 71.86305169323019,
+        "orderContinuity": 108.99140744796483,
+        "missingChapters": 0
+      },
+      {
+        "id": "B:JOL",
+        "label": "Joel",
+        "chapterCount": 4,
+        "centroid": [
+          -1292.2947916378896,
+          999.5489493407954,
+          1153.37623436886
+        ],
+        "clusterRadius": 38.301660747244796,
+        "clusterTightness": 21.568983233523007,
+        "orderContinuity": 38.540728466508924,
+        "missingChapters": 0
+      },
+      {
+        "id": "B:AMO",
+        "label": "Amos",
+        "chapterCount": 9,
+        "centroid": [
+          -1343.3722581915324,
+          992.9614911259952,
+          1098.4030259668014
+        ],
+        "clusterRadius": 95.14409267820707,
+        "clusterTightness": 47.21375266430498,
+        "orderContinuity": 69.84009747503865,
+        "missingChapters": 0
+      },
+      {
+        "id": "B:OBA",
+        "label": "Obadiah",
+        "chapterCount": 1,
+        "centroid": [
+          -1380.9922647944907,
+          1026.7317170923286,
+          1019.157664787162
+        ],
+        "clusterRadius": 0,
+        "clusterTightness": 0,
+        "orderContinuity": 0,
+        "missingChapters": 0
+      },
+      {
+        "id": "B:JON",
+        "label": "Jonah",
+        "chapterCount": 4,
+        "centroid": [
+          -1423.31932673688,
+          1022.9581545664373,
+          962.9414767201195
+        ],
+        "clusterRadius": 36.00033216964306,
+        "clusterTightness": 18.59737577444232,
+        "orderContinuity": 35.1574405616563,
+        "missingChapters": 0
+      },
+      {
+        "id": "B:MIC",
+        "label": "Micah",
+        "chapterCount": 7,
+        "centroid": [
+          -1442.6469588564244,
+          1005.4862873633427,
+          952.1873222341329
+        ],
+        "clusterRadius": 56.50960850915422,
+        "clusterTightness": 26.148573789149605,
+        "orderContinuity": 39.52207890945926,
+        "missingChapters": 0
+      },
+      {
+        "id": "B:NAM",
+        "label": "Nahum",
+        "chapterCount": 3,
+        "centroid": [
+          -1496.110620721255,
+          849.4264175525263,
+          1019.819798273454
+        ],
+        "clusterRadius": 12.201308089531187,
+        "clusterTightness": 8.944811677098025,
+        "orderContinuity": 12.600796676170155,
+        "missingChapters": 0
+      },
+      {
+        "id": "B:HAB",
+        "label": "Habakkuk",
+        "chapterCount": 3,
+        "centroid": [
+          -1531.6226154170954,
+          902.5383794791228,
+          915.9908082978949
+        ],
+        "clusterRadius": 29.485659570680692,
+        "clusterTightness": 19.977641134364735,
+        "orderContinuity": 27.9013177550469,
+        "missingChapters": 0
+      },
+      {
+        "id": "B:ZEP",
+        "label": "Zephaniah",
+        "chapterCount": 3,
+        "centroid": [
+          -1558.010100456476,
+          912.9828937462458,
+          859.4273894933473
+        ],
+        "clusterRadius": 26.418509919238044,
+        "clusterTightness": 18.993845980138968,
+        "orderContinuity": 39.996869848842906,
+        "missingChapters": 0
+      },
+      {
+        "id": "B:HAG",
+        "label": "Haggai",
+        "chapterCount": 2,
+        "centroid": [
+          -1607.955069372635,
+          865.8563398765401,
+          815.1664134790342
+        ],
+        "clusterRadius": 16.643674779766126,
+        "clusterTightness": 16.643674779766098,
+        "orderContinuity": 33.287349559532196,
+        "missingChapters": 0
+      },
+      {
+        "id": "B:ZEC",
+        "label": "Zechariah",
+        "chapterCount": 14,
+        "centroid": [
+          -1631.185475997067,
+          863.0397312752939,
+          768.2530852704538
+        ],
+        "clusterRadius": 142.21803102287066,
+        "clusterTightness": 51.51008397764021,
+        "orderContinuity": 70.55954226543487,
+        "missingChapters": 0
+      },
+      {
+        "id": "B:MAL",
+        "label": "Malachi",
+        "chapterCount": 3,
+        "centroid": [
+          -1643.6267819711547,
+          916.1600243515451,
+          677.031941335178
+        ],
+        "clusterRadius": 37.27265464399623,
+        "clusterTightness": 25.9527335413591,
+        "orderContinuity": 35.073319063098666,
+        "missingChapters": 0
+      },
+      {
+        "id": "B:MAT",
+        "label": "Mathew",
+        "chapterCount": 28,
+        "centroid": [
+          -1791.785897833811,
+          869.7261172477143,
+          157.73037249666004
+        ],
+        "clusterRadius": 163.4421901504622,
+        "clusterTightness": 76.8700162534003,
+        "orderContinuity": 119.334253570506,
+        "missingChapters": 0
+      },
+      {
+        "id": "B:MRK",
+        "label": "Mark",
+        "chapterCount": 16,
+        "centroid": [
+          -1807.9924040331744,
+          849.4438678600787,
+          67.38661996051492
+        ],
+        "clusterRadius": 117.8357399136981,
+        "clusterTightness": 62.11616001623308,
+        "orderContinuity": 83.50691323428865,
+        "missingChapters": 0
+      },
+      {
+        "id": "B:LUK",
+        "label": "Luke",
+        "chapterCount": 24,
+        "centroid": [
+          -1749.4687690618528,
+          962.9092544508067,
+          -46.15978563374793
+        ],
+        "clusterRadius": 198.41671865146236,
+        "clusterTightness": 86.53650867331281,
+        "orderContinuity": 126.78162055882812,
+        "missingChapters": 0
+      },
+      {
+        "id": "B:JHN",
+        "label": "John",
+        "chapterCount": 21,
+        "centroid": [
+          -1763.5586036467873,
+          935.5594761216945,
+          -87.29323219078417
+        ],
+        "clusterRadius": 147.25430863035146,
+        "clusterTightness": 73.39948177721942,
+        "orderContinuity": 110.994329408822,
+        "missingChapters": 0
+      },
+      {
+        "id": "B:ACT",
+        "label": "Acts",
+        "chapterCount": 28,
+        "centroid": [
+          -1670.1062222475236,
+          931.0812522712502,
+          -580.4772412323471
+        ],
+        "clusterRadius": 153.09617880053193,
+        "clusterTightness": 72.6328035207179,
+        "orderContinuity": 100.15048335356722,
+        "missingChapters": 0
+      },
+      {
+        "id": "B:ROM",
+        "label": "Romans",
+        "chapterCount": 16,
+        "centroid": [
+          -1413.0269023118979,
+          907.5752980773827,
+          -1085.1728399171725
+        ],
+        "clusterRadius": 85.57706297361278,
+        "clusterTightness": 37.357221837935924,
+        "orderContinuity": 55.515259441577136,
+        "missingChapters": 0
+      },
+      {
+        "id": "B:1CO",
+        "label": "1 Corinthians",
+        "chapterCount": 16,
+        "centroid": [
+          -1326.3811331481327,
+          967.5640382829199,
+          -1140.0814050229185
+        ],
+        "clusterRadius": 135.60652229509463,
+        "clusterTightness": 59.12773114235327,
+        "orderContinuity": 85.06292943166554,
+        "missingChapters": 0
+      },
+      {
+        "id": "B:2CO",
+        "label": "2 Corinthians",
+        "chapterCount": 13,
+        "centroid": [
+          -1286.340631167801,
+          969.8175004941144,
+          -1184.2060892855734
+        ],
+        "clusterRadius": 100.71498840190111,
+        "clusterTightness": 40.908539931190795,
+        "orderContinuity": 68.92941492654741,
+        "missingChapters": 0
+      },
+      {
+        "id": "B:EPH",
+        "label": "Ephesians",
+        "chapterCount": 6,
+        "centroid": [
+          -1226.2725832578815,
+          975.7698029869639,
+          -1241.9102309315874
+        ],
+        "clusterRadius": 67.65519089019547,
+        "clusterTightness": 38.98450464019218,
+        "orderContinuity": 58.38713402527619,
+        "missingChapters": 0
+      },
+      {
+        "id": "B:GAL",
+        "label": "Galatians",
+        "chapterCount": 6,
+        "centroid": [
+          -1176.6665268646493,
+          994.7130109442172,
+          -1274.748655944595
+        ],
+        "clusterRadius": 67.40833638922321,
+        "clusterTightness": 24.226446398556746,
+        "orderContinuity": 29.319730623958606,
+        "missingChapters": 0
+      },
+      {
+        "id": "B:PHP",
+        "label": "Philippians",
+        "chapterCount": 4,
+        "centroid": [
+          -1096.1887668109443,
+          1000.5932215191302,
+          -1340.5072967446638
+        ],
+        "clusterRadius": 18.021109222071722,
+        "clusterTightness": 14.74809787661119,
+        "orderContinuity": 21.854116313404678,
+        "missingChapters": 0
+      },
+      {
+        "id": "B:COL",
+        "label": "Colossians",
+        "chapterCount": 4,
+        "centroid": [
+          -1119.1474885145165,
+          938.3956813367347,
+          -1366.2225658421403
+        ],
+        "clusterRadius": 28.262870401487692,
+        "clusterTightness": 16.732192400001892,
+        "orderContinuity": 32.29532067347573,
+        "missingChapters": 0
+      },
+      {
+        "id": "B:1TH",
+        "label": "1 Thessalonians",
+        "chapterCount": 5,
+        "centroid": [
+          -925.2793626592236,
+          1022.4383142484672,
+          -1448.3237850932007
+        ],
+        "clusterRadius": 47.30860757310677,
+        "clusterTightness": 21.928425314339304,
+        "orderContinuity": 38.94274768045223,
+        "missingChapters": 0
+      },
+      {
+        "id": "B:2TH",
+        "label": "2 Thessalonians",
+        "chapterCount": 3,
+        "centroid": [
+          -1009.9739390389473,
+          928.129485490546,
+          -1455.272090768319
+        ],
+        "clusterRadius": 34.008813499484766,
+        "clusterTightness": 24.979959231416938,
+        "orderContinuity": 35.19449525226378,
+        "missingChapters": 0
+      },
+      {
+        "id": "B:1TI",
+        "label": "1 Timothy",
+        "chapterCount": 6,
+        "centroid": [
+          -949.3802941235514,
+          950.4073348131215,
+          -1481.353072599496
+        ],
+        "clusterRadius": 44.854753865654146,
+        "clusterTightness": 29.565741172285414,
+        "orderContinuity": 46.490679063695005,
+        "missingChapters": 0
+      },
+      {
+        "id": "B:2TI",
+        "label": "2 Timothy",
+        "chapterCount": 4,
+        "centroid": [
+          -891.9497272701374,
+          971.8945178967534,
+          -1503.0804636082403
+        ],
+        "clusterRadius": 33.98602946903315,
+        "clusterTightness": 21.886586504942148,
+        "orderContinuity": 37.27703761826073,
+        "missingChapters": 0
+      },
+      {
+        "id": "B:TIT",
+        "label": "Titus",
+        "chapterCount": 3,
+        "centroid": [
+          -873.1049710286012,
+          886.644743499268,
+          -1565.7084843358798
+        ],
+        "clusterRadius": 12.497465151817961,
+        "clusterTightness": 10.039303836749239,
+        "orderContinuity": 17.43090051452872,
+        "missingChapters": 0
+      },
+      {
+        "id": "B:PHM",
+        "label": "Philemon",
+        "chapterCount": 1,
+        "centroid": [
+          -755.2871046239145,
+          972.3085561392109,
+          -1576.1210173230058
+        ],
+        "clusterRadius": 0,
+        "clusterTightness": 0,
+        "orderContinuity": 0,
+        "missingChapters": 0
+      },
+      {
+        "id": "B:HEB",
+        "label": "Hebrews",
+        "chapterCount": 13,
+        "centroid": [
+          -725.8676077745114,
+          975.6585526709284,
+          -1586.7236767148493
+        ],
+        "clusterRadius": 105.64771019947312,
+        "clusterTightness": 53.86767370027624,
+        "orderContinuity": 86.37717273336078,
+        "missingChapters": 0
+      },
+      {
+        "id": "B:JAS",
+        "label": "James",
+        "chapterCount": 5,
+        "centroid": [
+          -105.78469842611237,
+          1035.5833226822906,
+          -1707.3453913680926
+        ],
+        "clusterRadius": 50.44539020009941,
+        "clusterTightness": 35.60742939643781,
+        "orderContinuity": 67.89380598276738,
+        "missingChapters": 0
+      },
+      {
+        "id": "B:1PE",
+        "label": "1 Peter",
+        "chapterCount": 5,
+        "centroid": [
+          -132.47943384526152,
+          964.6789604605832,
+          -1746.4672439065205
+        ],
+        "clusterRadius": 54.967686916321405,
+        "clusterTightness": 40.339440647269655,
+        "orderContinuity": 67.18116820434872,
+        "missingChapters": 0
+      },
+      {
+        "id": "B:2PE",
+        "label": "2 Peter",
+        "chapterCount": 3,
+        "centroid": [
+          -76.15028997650253,
+          920.8950448513928,
+          -1773.0827193075686
+        ],
+        "clusterRadius": 52.52825096991165,
+        "clusterTightness": 48.06285306028338,
+        "orderContinuity": 87.14363409862729,
+        "missingChapters": 0
+      },
+      {
+        "id": "B:1JN",
+        "label": "1 John",
+        "chapterCount": 5,
+        "centroid": [
+          72.1264294208913,
+          1045.9071051370408,
+          -1702.8747391462398
+        ],
+        "clusterRadius": 49.25635353483303,
+        "clusterTightness": 28.097884898221093,
+        "orderContinuity": 40.84440890559802,
+        "missingChapters": 0
+      },
+      {
+        "id": "B:2JN",
+        "label": "2 John",
+        "chapterCount": 1,
+        "centroid": [
+          112.51931523763288,
+          996.9614305989842,
+          -1730.1466150579497
+        ],
+        "clusterRadius": 0,
+        "clusterTightness": 0,
+        "orderContinuity": 0,
+        "missingChapters": 0
+      },
+      {
+        "id": "B:3JN",
+        "label": "3 John",
+        "chapterCount": 1,
+        "centroid": [
+          157.09601582031547,
+          968.1628207658478,
+          -1742.9806637768818
+        ],
+        "clusterRadius": 0,
+        "clusterTightness": 0,
+        "orderContinuity": 0,
+        "missingChapters": 0
+      },
+      {
+        "id": "B:JUD",
+        "label": "Jude",
+        "chapterCount": 1,
+        "centroid": [
+          206.74161908116199,
+          904.4635753146686,
+          -1771.7797673155394
+        ],
+        "clusterRadius": 0,
+        "clusterTightness": 0,
+        "orderContinuity": 0,
+        "missingChapters": 0
+      },
+      {
+        "id": "B:REV",
+        "label": "Revelation",
+        "chapterCount": 22,
+        "centroid": [
+          742.3321689069761,
+          1000.122376333203,
+          -1562.023483557037
+        ],
+        "clusterRadius": 172.1705682026299,
+        "clusterTightness": 81.94684392057562,
+        "orderContinuity": 95.91941098001142,
+        "missingChapters": 0
+      }
+    ],
+    "divisions": [
+      {
+        "id": "D:Old:The Law",
+        "label": "The Law",
+        "bookCount": 5,
+        "centroid": [
+          1562.2393330446807,
+          1019.6803972048589,
+          711.0242974984251
+        ]
+      },
+      {
+        "id": "D:Old:History",
+        "label": "History",
+        "bookCount": 12,
+        "centroid": [
+          898.5396130910557,
+          1019.1626638417409,
+          1447.9667331215203
+        ]
+      },
+      {
+        "id": "D:Old:Wisdom",
+        "label": "Wisdom",
+        "bookCount": 5,
+        "centroid": [
+          -78.2826252586539,
+          1016.2140374503022,
+          1717.0678503074894
+        ]
+      },
+      {
+        "id": "D:Old:Major Prophets",
+        "label": "Major Prophets",
+        "bookCount": 5,
+        "centroid": [
+          -761.4677116836909,
+          971.4253588151474,
+          1570.0232103242242
+        ]
+      },
+      {
+        "id": "D:Old:Minor Prophets",
+        "label": "Minor Prophets",
+        "bookCount": 12,
+        "centroid": [
+          -1468.373543224223,
+          950.6980526236395,
+          947.6611142020328
+        ]
+      },
+      {
+        "id": "D:New:Gospels",
+        "label": "Gospels",
+        "bookCount": 4,
+        "centroid": [
+          -1778.2014186439064,
+          904.4096789200735,
+          22.915993658160712
+        ]
+      },
+      {
+        "id": "D:New:Early Church",
+        "label": "Early Church",
+        "bookCount": 1,
+        "centroid": [
+          -1670.1062222475236,
+          931.0812522712502,
+          -580.4772412323471
+        ]
+      },
+      {
+        "id": "D:New:Paul's Letters",
+        "label": "Paul's Letters",
+        "bookCount": 14,
+        "centroid": [
+          -1055.3476456139076,
+          961.5650041714113,
+          -1374.9594052951174
+        ]
+      },
+      {
+        "id": "D:New:General Letters",
+        "label": "General Letters",
+        "bookCount": 7,
+        "centroid": [
+          33.438422473160735,
+          976.6646085444012,
+          -1739.239591411256
+        ]
+      },
+      {
+        "id": "D:New:Prophecy",
+        "label": "Prophecy",
+        "bookCount": 1,
+        "centroid": [
+          742.3321689069761,
+          1000.122376333203,
+          -1562.023483557037
+        ]
+      }
+    ]
+  },
+  "metricDeltas": {
+    "orderContinuity": -5.635943097982121,
+    "clusterTightness": -2.5070405898605657,
+    "clusterSeparation": -50.33813114758186,
+    "divisionSeparation": 258.8576213935271,
+    "chapterSpread": 42.677816879710065
+  },
+  "shared": 1265,
+  "onlyInA": [],
+  "onlyInB": [],
+  "distances": {
+    "mean": 3175.8311384016242,
+    "median": 3215.582284506728,
+    "max": 3867.2182190063686,
+    "outliers": [
+      {
+        "id": "C:ISA:52",
+        "distance": 3867.2182190063686
+      },
+      {
+        "id": "C:PSA:22",
+        "distance": 3865.4009254568728
+      },
+      {
+        "id": "C:ISA:3",
+        "distance": 3863.6319825215137
+      },
+      {
+        "id": "C:PSA:144",
+        "distance": 3858.790568871742
+      },
+      {
+        "id": "C:ISA:4",
+        "distance": 3848.5944929268553
+      },
+      {
+        "id": "C:PSA:26",
+        "distance": 3843.345802922083
+      },
+      {
+        "id": "C:ISA:15",
+        "distance": 3842.8824411073183
+      },
+      {
+        "id": "C:PSA:77",
+        "distance": 3841.08651232098
+      },
+      {
+        "id": "C:PSA:79",
+        "distance": 3840.881328458066
+      },
+      {
+        "id": "C:PSA:142",
+        "distance": 3839.7858348408727
+      }
+    ]
+  }
+}

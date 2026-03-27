@@ -1,6 +1,6 @@
 import * as THREE from "three";
 import type { StarMapConfig, SceneModel, SceneNode, StarArrangement, HorizonThemeConfig } from "../types";
-import { computeLayoutPositions } from "./layout";
+import { computeSphericalArrangement } from "../arrangement/strategies/spherical";
 import { createSmartMaterial, globalUniforms } from "./materials";
 import { ConstellationArtworkLayer } from "./ConstellationArtworkLayer";
 import { PROJECTIONS, BlendedProjection } from "./projections";
@@ -242,6 +242,13 @@ export function createEngine({
 
     let handlers: Handlers = { onSelect, onHover, onArrangementChange, onFovChange, onLongPress };
     let currentConfig: StarMapConfig | undefined;
+    // Single-source arrangement: populated by buildFromModel from the computed strategy
+    // (spherical or radial), then merged with any user-supplied cfg.arrangement overrides.
+    let currentArrangement: StarArrangement = {};
+    // Computed-only arrangement (pre-merge): used by getLayoutPosition for constellation
+    // artwork orientation so that dragging a book anchor doesn't reorient artwork.
+    let currentComputedArrangement: StarArrangement = {};
+    let currentDivisionBoundaries: number[] = [];
 
     function getSceneDebug() {
         return currentConfig?.debug?.sceneMechanics;
@@ -1620,33 +1627,36 @@ export function createEngine({
         return { tex, aspect: w / h };
     }
 
+    // SINGLE-SOURCE ARRANGEMENT
+    // currentArrangement is the single source of truth for node positions.
+    // It is populated in buildFromModel by the chosen strategy (spherical/radial),
+    // then merged with any user-supplied cfg.arrangement overrides (user wins per-node).
+    // See: misc/docs/procedural-arrangement.md
     function getPosition(n: SceneNode) {
-        if (currentConfig?.arrangement) {
-             const arr = currentConfig.arrangement[n.id];
-             if (arr?.position) {
-                const [px, py, pz] = arr.position;
-                // Only reproject when position is clearly a 2D disc point (z=0 AND not already
-                // on the sphere surface). Drag-dropped positions have length ≈ radius, so they
-                // pass through as-is even when pz happens to be 0 (equatorial drop).
-                if (pz === 0) {
-                    const radius = currentConfig.layout?.radius ?? 2000;
-                    const len3d = Math.sqrt(px * px + py * py);
-                    if (len3d < radius * 0.99) {
-                        // Genuine 2D interior disc point — project onto sphere
-                        const r_norm = Math.min(1.0, len3d / radius);
-                        const phi = Math.atan2(py, px);
-                        const theta = r_norm * (Math.PI / 2);
-                        return new THREE.Vector3(
-                            Math.sin(theta) * Math.cos(phi),
-                            Math.cos(theta),
-                            Math.sin(theta) * Math.sin(phi)
-                        ).multiplyScalar(radius);
-                    }
+        const entry = currentArrangement[n.id];
+        if (entry?.position) {
+            const [px, py, pz] = entry.position;
+            // Only reproject when position is clearly a 2D disc point (z=0 AND not already
+            // on the sphere surface). Drag-dropped positions have length ≈ radius, so they
+            // pass through as-is even when pz happens to be 0 (equatorial drop).
+            if (pz === 0) {
+                const radius = currentConfig?.layout?.radius ?? 2000;
+                const len3d = Math.sqrt(px * px + py * py);
+                if (len3d < radius * 0.99) {
+                    // Genuine 2D interior disc point — project onto sphere
+                    const r_norm = Math.min(1.0, len3d / radius);
+                    const phi = Math.atan2(py, px);
+                    const theta = r_norm * (Math.PI / 2);
+                    return new THREE.Vector3(
+                        Math.sin(theta) * Math.cos(phi),
+                        Math.cos(theta),
+                        Math.sin(theta) * Math.sin(phi)
+                    ).multiplyScalar(radius);
                 }
-                return new THREE.Vector3(px, py, pz);
-             }
+            }
+            return new THREE.Vector3(px, py, pz);
         }
-        return new THREE.Vector3((n.meta?.x as number) ?? 0, (n.meta?.y as number) ?? 0, (n.meta?.z as number) ?? 0);
+        return new THREE.Vector3(0, 0, 0);
     }
     
     function getBoundaryPoint(angle: number, t: number, radius: number) {
@@ -1764,32 +1774,22 @@ export function createEngine({
         // Sky background is handled by skyBackgroundMesh; use null (clear to black) as fallback.
         scene.background = (cfg.background && cfg.background !== "transparent") ? new THREE.Color(cfg.background) : null;
 
-        const layoutCfg = { ...cfg.layout, radius: cfg.layout?.radius ?? 2000 };
-        const laidOut = computeLayoutPositions(model, layoutCfg);
+        const radius = cfg.layout?.radius ?? 2000;
 
-        // Pre-calculate Division centroids from actual Book positions (always, not just when arrangement exists)
-        const divisionPositions = new Map<string, THREE.Vector3>();
+        // Compute the canonical spherical arrangement for all nodes.
+        // currentComputedArrangement holds the strategy output before user overrides are applied.
         {
-            const divMap = new Map<string, SceneNode[]>();
-            for (const n of laidOut.nodes) {
-                if (n.level === 2 && n.parent) {
-                    const list = divMap.get(n.parent) ?? [];
-                    list.push(n);
-                    divMap.set(n.parent, list);
-                }
-            }
-            for (const [divId, books] of divMap.entries()) {
-                const centroid = new THREE.Vector3();
-                let count = 0;
-                for (const b of books) {
-                    const p = getPosition(b);
-                    centroid.add(p);
-                    count++;
-                }
-                if (count > 0) {
-                    centroid.divideScalar(count);
-                    divisionPositions.set(divId, centroid);
-                }
+            const result = computeSphericalArrangement(model, { radius });
+            currentComputedArrangement = result.arrangement;
+            currentDivisionBoundaries = result.divisionBoundaries;
+        }
+
+        // Merge user-supplied arrangement on top — user wins per-node.
+        // currentComputedArrangement is preserved for constellation orientation lookup (getLayoutPosition).
+        currentArrangement = { ...currentComputedArrangement };
+        if (cfg.arrangement) {
+            for (const [id, entry] of Object.entries(cfg.arrangement)) {
+                currentArrangement[id] = { ...currentArrangement[id], ...entry };
             }
         }
 
@@ -1822,7 +1822,7 @@ export function createEngine({
         let minWeight = Infinity;
         let maxWeight = -Infinity;
         
-        for (const n of laidOut.nodes) {
+        for (const n of model.nodes) {
             nodeById.set(n.id, n);
             if (n.level === 3 && typeof n.weight === "number") {
                 if (n.weight < minWeight) minWeight = n.weight;
@@ -1839,7 +1839,7 @@ export function createEngine({
         {
             const pctCap = THREE.MathUtils.clamp(cfg.starSizeWeightPercentile ?? 0.95, 0.5, 1.0);
             const allWeights: number[] = [];
-            for (const n of laidOut.nodes) {
+            for (const n of model.nodes) {
                 if (n.level === 3 && typeof n.weight === "number") allWeights.push(n.weight);
             }
             allWeights.sort((a, b) => a - b);
@@ -1848,7 +1848,7 @@ export function createEngine({
             if (cappedMax !== undefined && cappedMax > minWeight) maxWeight = cappedMax;
         }
 
-        for (const n of laidOut.nodes) {
+        for (const n of model.nodes) {
             if (n.level === 3) {
                 let baseSize = 3.5;
                 let weightNorm = 0;
@@ -1867,7 +1867,7 @@ export function createEngine({
         if (!Number.isFinite(minChapterStarSize)) { minChapterStarSize = 1; maxChapterStarSize = 2; }
         else if (minChapterStarSize === maxChapterStarSize) { maxChapterStarSize = minChapterStarSize + 1; }
 
-        for (const n of laidOut.nodes) {
+        for (const n of model.nodes) {
             if (n.level === 3) {
                 const p = getPosition(n);
                 starPositions.push(p.x, p.y, p.z);
@@ -2016,19 +2016,12 @@ export function createEngine({
 
                     const mesh = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), mat);
                     let p = getPosition(n);
-                    
-                    // Override for Division Labels
+
                     if (n.level === 1) {
-                        if (cfg.arrangement?.[n.id]) {
-                            // Explicit position set by the user via arrangement config
-                            const arr = cfg.arrangement[n.id];
-                            p.set(arr.position![0], arr.position![1], arr.position![2]);
-                        } else {
-                            // Auto: centroid of children projected onto the horizon ring
-                            if (divisionPositions.has(n.id)) {
-                                p.copy(divisionPositions.get(n.id)!);
-                            }
-                            const r = layoutCfg.radius * 0.95;
+                        // Division labels: arrangement (populated by spherical strategy at horizon height)
+                        // is already correct. Only apply horizon-ring fallback if the entry is missing.
+                        if (p.lengthSq() < 1) {
+                            const r = radius * 0.95;
                             const angle = Math.atan2(p.z, p.x);
                             p.set(r * Math.cos(angle), 150, r * Math.sin(angle));
                         }
@@ -2365,7 +2358,7 @@ export function createEngine({
             }
         }
 
-        for (const n of laidOut.nodes) {
+        for (const n of model.nodes) {
             if (n.level === 3 && n.parent) {
                 const list = bookMap.get(n.parent) ?? [];
                 list.push(n);
@@ -2527,7 +2520,7 @@ export function createEngine({
                         let p = new THREE.Vector3();
                         let count = 0;
                         
-                        // Check Arrangement First
+                        // User-supplied arrangement overrides the centroid for group labels.
                         if (cfg.arrangement && cfg.arrangement[groupId]) {
                             const arr = cfg.arrangement[groupId];
                             p.set(arr.position![0], arr.position![1], arr.position![2]);
@@ -2622,7 +2615,7 @@ export function createEngine({
             }
         }
 
-        const boundaries = (laidOut.meta?.divisionBoundaries as number[]) ?? [];
+        const boundaries = currentDivisionBoundaries;
         if (boundaries.length > 0) {
             const boundaryMat = createSmartMaterial({
                 uniforms: { color: { value: new THREE.Color(0x557799) } },
@@ -2636,7 +2629,7 @@ export function createEngine({
                 const steps = 32;
                 for (let i = 0; i < steps; i++) {
                     const t1 = i / steps; const t2 = (i + 1) / steps;
-                    const p1 = getBoundaryPoint(angle, t1, layoutCfg.radius!); const p2 = getBoundaryPoint(angle, t2, layoutCfg.radius!);
+                    const p1 = getBoundaryPoint(angle, t1, radius); const p2 = getBoundaryPoint(angle, t2, radius);
                     bPoints.push(p1.x, p1.y, p1.z); bPoints.push(p2.x, p2.y, p2.z);
                 }
             });
@@ -2649,7 +2642,7 @@ export function createEngine({
         // Render Voronoi Polygons (Cell Lines)
         if (cfg.polygons) {
             const polyPoints: number[] = [];
-            const rBase = layoutCfg.radius;
+            const rBase = radius;
             
             for (const pts of Object.values(cfg.polygons)) {
                 if (pts.length < 2) continue;
@@ -2700,6 +2693,75 @@ export function createEngine({
             }
         }
         
+        // Arrangement debug overlays
+        const arrDbg = cfg.debug?.arrangement;
+        if (arrDbg?.showChapterOrder || arrDbg?.showBookCentroids) {
+            // Group level-3 nodes by parent book, sorted by chapter number
+            const chaptersByBook = new Map<string, SceneNode[]>();
+            for (const n of model.nodes) {
+                if (n.level !== 3 || !n.parent) continue;
+                const list = chaptersByBook.get(n.parent) ?? [];
+                list.push(n);
+                chaptersByBook.set(n.parent, list);
+            }
+            for (const list of chaptersByBook.values()) {
+                list.sort((a, b) => ((a.meta?.chapter as number) || 0) - ((b.meta?.chapter as number) || 0));
+            }
+
+            if (arrDbg.showChapterOrder) {
+                const orderPoints: number[] = [];
+                for (const chapters of chaptersByBook.values()) {
+                    for (let i = 0; i + 1 < chapters.length; i++) {
+                        const p1 = getPosition(chapters[i]!);
+                        const p2 = getPosition(chapters[i + 1]!);
+                        orderPoints.push(p1.x, p1.y, p1.z, p2.x, p2.y, p2.z);
+                    }
+                }
+                if (orderPoints.length > 0) {
+                    const geo = new THREE.BufferGeometry();
+                    geo.setAttribute("position", new THREE.Float32BufferAttribute(orderPoints, 3));
+                    const mat = createSmartMaterial({
+                        uniforms: { color: { value: new THREE.Color(0x00ffcc) } },
+                        vertexShaderBody: `uniform vec3 color; varying vec3 vColor; void main() { vColor = color; vec4 mvPosition = modelViewMatrix * vec4(position, 1.0); gl_Position = smartProject(mvPosition); vScreenPos = gl_Position.xy / gl_Position.w; }`,
+                        fragmentShader: `varying vec3 vColor; void main() { float alphaMask = getMaskAlpha(); if (alphaMask < 0.01) discard; gl_FragColor = vec4(vColor, 0.35 * alphaMask); }`,
+                        transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
+                    });
+                    const mesh = new THREE.LineSegments(geo, mat);
+                    mesh.frustumCulled = false;
+                    root.add(mesh);
+                }
+            }
+
+            if (arrDbg.showBookCentroids) {
+                const centroidPoints: number[] = [];
+                for (const chapters of chaptersByBook.values()) {
+                    if (chapters.length === 0) continue;
+                    let cx = 0, cy = 0, cz = 0;
+                    for (const ch of chapters) {
+                        const p = getPosition(ch);
+                        cx += p.x; cy += p.y; cz += p.z;
+                    }
+                    centroidPoints.push(cx / chapters.length, cy / chapters.length, cz / chapters.length);
+                }
+                if (centroidPoints.length > 0) {
+                    const geo = new THREE.BufferGeometry();
+                    geo.setAttribute("position", new THREE.Float32BufferAttribute(centroidPoints, 3));
+                    const mat = createSmartMaterial({
+                        uniforms: {
+                            pixelRatio: { value: renderer.getPixelRatio() },
+                            uScale: globalUniforms.uScale,
+                        },
+                        vertexShaderBody: `uniform float pixelRatio; uniform float uScale; void main() { vec4 mvPos = modelViewMatrix * vec4(position, 1.0); gl_Position = smartProject(mvPos); vScreenPos = gl_Position.xy / gl_Position.w; gl_PointSize = 6.0 * pixelRatio; }`,
+                        fragmentShader: `void main() { vec2 uv = gl_PointCoord - 0.5; if (dot(uv, uv) > 0.25) discard; float alphaMask = getMaskAlpha(); if (alphaMask < 0.01) discard; gl_FragColor = vec4(1.0, 0.85, 0.1, 0.9 * alphaMask); }`,
+                        transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
+                    });
+                    const mesh = new THREE.Points(geo, mat);
+                    mesh.frustumCulled = false;
+                    root.add(mesh);
+                }
+            }
+        }
+
         labelManager.setLabels(dynamicLabels);
         resize();
     }
@@ -2763,29 +2825,26 @@ export function createEngine({
             shouldRebuild = true; lastData = undefined; lastAdapter = undefined; lastModel = model;
         }
         if (shouldRebuild && model) { buildFromModel(model, cfg); }
+        // Arrangement-only change (model unchanged): rebuild so getPosition() picks up new positions.
         else if (cfg.arrangement && starPoints) { if (lastModel) buildFromModel(lastModel, cfg); }
         
         if (cfg.constellations) {
-            // Orientation-only getter: reads raw layout positions from node meta,
-            // bypassing getPosition() which checks the arrangement first.
-            // This ensures moving anchor stars never rotates artwork — only
-            // rotationDeg in the constellation config controls orientation.
+            // Orientation-only getter: reads the computed arrangement position for constellation
+            // center/orientation. Uses currentArrangement (single source of truth).
             const getLayoutPosition = (id: string): THREE.Vector3 | null => {
-                const n = nodeById.get(id);
-                if (!n) return null;
-                const x = (n.meta?.x as number) ?? 0;
-                const y = (n.meta?.y as number) ?? 0;
-                const z = (n.meta?.z as number) ?? 0;
+                const pos = currentComputedArrangement[id]?.position;
+                if (!pos) return null;
+                const [x, y, z] = pos;
                 if (z === 0) {
-                    const radius = cfg.layout?.radius ?? 2000;
-                    const r_norm = Math.min(1.0, Math.sqrt(x * x + y * y) / radius);
+                    const r = cfg.layout?.radius ?? 2000;
+                    const r_norm = Math.min(1.0, Math.sqrt(x * x + y * y) / r);
                     const phi = Math.atan2(y, x);
                     const theta = r_norm * (Math.PI / 2);
                     return new THREE.Vector3(
                         Math.sin(theta) * Math.cos(phi),
                         Math.cos(theta),
                         Math.sin(theta) * Math.sin(phi)
-                    ).multiplyScalar(radius);
+                    ).multiplyScalar(r);
                 }
                 return new THREE.Vector3(x, y, z);
             };

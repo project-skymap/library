@@ -1,7 +1,7 @@
 import fs from "fs";
 import path from "path";
 import { bibleToSceneModel } from "../src/adapters/bible";
-import { computeLayoutPositions } from "../src/engine/layout";
+import { computeSphericalArrangement } from "../src/arrangement/strategies/spherical";
 import type { BibleJSON } from "../src/adapters/bible";
 
 // Minimal Bible Data (Protestant Canon)
@@ -143,43 +143,30 @@ async function main() {
     const model = bibleToSceneModel(DATA);
     console.log(`Model created with ${model.nodes.length} nodes.`);
 
-    // 2. Compute Layout
-    // We use a large radius for the "Sky" feel.
-    // The engine defaults to 2000, so let's match that.
-    const layoutConfig = {
-        mode: "spherical" as const,
-        radius: 2000,
-        chapterRingSpacing: 15
-    };
+    // 2. Compute spherical arrangement (matches engine default, radius 2000).
+    const { arrangement } = computeSphericalArrangement(model, { radius: 2000 });
 
-    const laidOutModel = computeLayoutPositions(model, layoutConfig);
-
-    // 3. Transform to a simplified configuration format?
-    // The user asked for a "configuration JSON file... which maps stars to their positions".
-    // We can export the full model, or just a map of ID -> {x,y,z}.
-    // Providing the full model allows the engine to skip the `bibleToSceneModel` and `computeLayoutPositions` steps
-    // if we update the engine to accept it.
-    
-    // Let's save the full SceneModel but maybe trim some undefined fields to save space.
+    // 3. Build output: node list augmented with positions from the arrangement.
     const output = {
         meta: {
             generatedAt: new Date().toISOString(),
-            layout: layoutConfig
+            radius: 2000,
+            strategy: "spherical"
         },
-        nodes: laidOutModel.nodes.map(n => ({
-            id: n.id,
-            // Keep label/level/parent for context, though strictly position is in meta
-            label: n.label,
-            level: n.level,
-            parent: n.parent,
-            // The important part: coordinates in meta
-            x: (n.meta as any).x,
-            y: (n.meta as any).y,
-            z: (n.meta as any).z,
-            // Keep other meta?
-            meta: n.meta
-        })),
-        links: laidOutModel.links // Links might be useful for lines
+        nodes: model.nodes.map(n => {
+            const pos = arrangement[n.id]?.position;
+            return {
+                id: n.id,
+                label: n.label,
+                level: n.level,
+                parent: n.parent,
+                x: pos ? pos[0] : undefined,
+                y: pos ? pos[1] : undefined,
+                z: pos ? pos[2] : undefined,
+                meta: n.meta
+            };
+        }),
+        links: model.links
     };
 
     const outPath = path.resolve(process.cwd(), "src/assets/default-stars.json");
