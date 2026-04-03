@@ -43,25 +43,65 @@ export function computeDensityAt(
   const bandShape = Math.exp(-0.5 * (perp * perp) / (params.bandWidth * params.bandWidth));
   const bandVal = params.bandStrength * bandShape;
 
-  // Edge falloff
+  // Edge falloff — domain extends to r=1.25, so falloff reaches 0 there
   const r = Math.sqrt(x * x + y * y);
-  const t = Math.max(0, (r - params.edgeFalloffStart) / (1.0 - params.edgeFalloffStart));
+  const t = Math.max(0, (r - params.edgeFalloffStart) / (1.25 - params.edgeFalloffStart));
   const edgeFalloff = 1 - t * t;
 
-  return Math.max(0, (base + bandVal) * edgeFalloff);
+  // Contrast gamma — amplifies bright regions, deepens sparse gaps
+  const raw = Math.max(0, (base + bandVal) * edgeFalloff);
+  return Math.pow(raw, params.contrastGamma);
+}
+
+// ---------------------------------------------------------------------------
+// Explicit voids — seeded low-density blobs multiplying field density
+// ---------------------------------------------------------------------------
+
+interface VoidBlob { cx: number; cy: number; radius: number; strength: number; }
+
+function generateVoids(seed: number, voidCount: number, voidStrength: number): VoidBlob[] {
+  const rng = makeRng(seed + 9000);
+  const blobs: VoidBlob[] = [];
+  for (let v = 0; v < voidCount; v++) {
+    const angle = rng() * Math.PI * 2;
+    const dist = 0.15 + rng() * 0.55;  // 0.15–0.70 from centre, never centred
+    blobs.push({
+      cx: Math.cos(angle) * dist,
+      cy: Math.sin(angle) * dist,
+      radius: 0.15 + rng() * 0.15,  // blob radius 0.15–0.30
+      strength: voidStrength,
+    });
+  }
+  return blobs;
+}
+
+function applyVoids(density: number, x: number, y: number, voids: VoidBlob[]): number {
+  let factor = 1.0;
+  for (const v of voids) {
+    const dx = x - v.cx;
+    const dy = y - v.cy;
+    const t = (dx * dx + dy * dy) / (v.radius * v.radius);
+    // Soft gaussian blob — 1 at centre, drops to ~0.02 at 2×radius
+    const blob = Math.exp(-t * 2.0);
+    factor *= 1.0 - v.strength * blob;
+  }
+  return density * Math.max(0, factor);
 }
 
 export function buildDensityField(params: SkyGenParams): Float32Array {
   const field = new Float32Array(GRID * GRID);
+  const voids = generateVoids(params.seed, params.voidCount, params.voidStrength);
   for (let iy = 0; iy < GRID; iy++) {
     for (let ix = 0; ix < GRID; ix++) {
-      const x = (ix / (GRID - 1)) * 2 - 1;
-      const y = (iy / (GRID - 1)) * 2 - 1;
+      // Grid covers [-1.25, 1.25] to match expanded sampling domain
+      const x = (ix / (GRID - 1)) * 2.5 - 1.25;
+      const y = (iy / (GRID - 1)) * 2.5 - 1.25;
       const r = Math.sqrt(x * x + y * y);
-      if (r > 1) {
+      if (r > 1.25) {
         field[iy * GRID + ix] = 0;
       } else {
-        field[iy * GRID + ix] = computeDensityAt(x, y, params, params.seed);
+        const d = computeDensityAt(x, y, params, params.seed);
+        field[iy * GRID + ix] = applyVoids(d, x, y, voids);
       }
     }
   }
@@ -188,17 +228,18 @@ function sampleFromCDF(cdf: Float32Array, rng: () => number): number {
 function diskXYFromCell(cellIdx: number, rng: () => number, jitter: number): [number, number] | null {
   const iy = Math.floor(cellIdx / GRID);
   const ix = cellIdx - iy * GRID;
-  const x = ((ix + rng() * jitter - jitter * 0.5) / (GRID - 1)) * 2 - 1;
-  const y = ((iy + rng() * jitter - jitter * 0.5) / (GRID - 1)) * 2 - 1;
-  if (x * x + y * y > 1) return null;
+  // Grid covers [-1.25, 1.25] — keep consistent with buildDensityField
+  const x = ((ix + rng() * jitter - jitter * 0.5) / (GRID - 1)) * 2.5 - 1.25;
+  const y = ((iy + rng() * jitter - jitter * 0.5) / (GRID - 1)) * 2.5 - 1.25;
+  if (x * x + y * y > 1.25 * 1.25) return null;
   return [x, y];
 }
 
 function randomDisk(rng: () => number): [number, number] {
   for (;;) {
-    const x = rng() * 2 - 1;
-    const y = rng() * 2 - 1;
-    if (x * x + y * y <= 1) return [x, y];
+    const x = rng() * 2.5 - 1.25;
+    const y = rng() * 2.5 - 1.25;
+    if (x * x + y * y <= 1.25 * 1.25) return [x, y];
   }
 }
 
@@ -254,7 +295,22 @@ export function generateSky(
   for (let i = 0; i < STAR_COUNT; i++) {
     const mag = magnitudes[i] as number;
     const pair = isPair[i] as boolean;
-    const excl = pair ? 0.2 * params.baseSeparation : exclusionRadius(mag, params.baseSeparation);
+    const baseSep = params.baseSeparation;
+
+    // Per-star ±spacingJitter variation on exclusion radius (default ±40%)
+    const jitterFactor = Math.max(0.2, 1.0 + (rng() * 2 - 1) * params.spacingJitter);
+
+    // ~1.5% of stars bypass exclusion entirely — breaks grid perfection
+    if (rng() < 0.015) {
+      const [rx, ry] = randomDisk(rng);
+      xs[placed] = rx;
+      ys[placed] = ry;
+      grid.add(placed, rx, ry);
+      placed++;
+      continue;
+    }
+
+    const excl = (pair ? 0.2 * baseSep : exclusionRadius(mag, baseSep)) * jitterFactor;
     const searchR = excl;
 
     let found = false;
@@ -346,9 +402,9 @@ export function generateSky(
       let nx = (xs[i] as number) + (fxBuf[i] as number) * STEP_SIZE;
       let ny = (ys[i] as number) + (fyBuf[i] as number) * STEP_SIZE;
       const r = Math.sqrt(nx * nx + ny * ny);
-      if (r > 0.98) {
-        nx = (nx / r) * 0.98;
-        ny = (ny / r) * 0.98;
+      if (r > 1.25) {
+        nx = (nx / r) * 1.25;
+        ny = (ny / r) * 1.25;
       }
       xs[i] = nx;
       ys[i] = ny;
