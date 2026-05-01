@@ -11,6 +11,8 @@ export type StarMapProps = {
     onArrangementChange?: (arrangement: StarArrangement) => void;
     onFovChange?: (fov: number) => void;
     onLongPress?: (node: SceneNode | null, x: number, y: number) => void;
+    /** Fired when the user clicks one of the `markerPositions` stars. Index into the markerPositions array. */
+    onMarkerSelect?: (index: number) => void;
 };
 
 export type StarMapHandle = {
@@ -24,7 +26,7 @@ export type StarMapHandle = {
 };
 
 export const StarMap = forwardRef<StarMapHandle, StarMapProps>(
-    ({ config, className, onSelect, onHover, onArrangementChange, onFovChange, onLongPress }, ref) => {
+    ({ config, className, onSelect, onHover, onArrangementChange, onFovChange, onLongPress, onMarkerSelect }, ref) => {
         const containerRef = useRef<HTMLDivElement | null>(null);
         const engineRef = useRef<any>(null);
 
@@ -52,7 +54,8 @@ export const StarMap = forwardRef<StarMapHandle, StarMapProps>(
                 onHover,
                 onArrangementChange,
                 onFovChange,
-                onLongPress
+                onLongPress,
+                onMarkerSelect,
             });
 
             engineRef.current.setConfig(config);
@@ -73,7 +76,7 @@ export const StarMap = forwardRef<StarMapHandle, StarMapProps>(
     }, [config]);
 
     useEffect(() => {
-        engineRef.current?.setHandlers?.({ onSelect, onHover, onArrangementChange, onFovChange, onLongPress });
+        engineRef.current?.setHandlers?.({ onSelect, onHover, onArrangementChange, onFovChange, onLongPress, onMarkerSelect });
     }, [onSelect, onHover, onArrangementChange, onFovChange, onLongPress]);
 
     return <div ref={containerRef} className={className} style={{ width: "100%", height: "100%" }} />;

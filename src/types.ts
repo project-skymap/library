@@ -166,6 +166,13 @@ export type StarMapConfig = {
     horizonTheme?: HorizonThemeConfig;
     horizonThemes?: HorizonThemeConfig[];
 
+    /**
+     * World-space positions of unassigned / marker stars to render as plain
+     * orange dots using the same camera and projection as the scene stars.
+     * Each entry is [x, y, z] at radius ~2000 (unit hemisphere × 2000).
+     */
+    markerPositions?: Array<[number, number, number]>;
+
     // Interaction & Camera
     editable?: boolean;
     projection?: "perspective" | "stereographic" | "blended";

@@ -23,6 +23,7 @@ type Handlers = {
     onArrangementChange?: (arrangement: StarArrangement) => void;
     onFovChange?: (fov: number) => void;
     onLongPress?: (node: SceneNode | null, x: number, y: number) => void;
+    onMarkerSelect?: (index: number) => void;
 };
 
 const ENGINE_CONFIG = {
@@ -129,6 +130,7 @@ export function createEngine({
                                  onArrangementChange,
                                  onFovChange,
                                  onLongPress,
+                                 onMarkerSelect,
                              }: {
     container: HTMLDivElement;
     onSelect?: Handlers["onSelect"];
@@ -136,6 +138,7 @@ export function createEngine({
     onArrangementChange?: Handlers["onArrangementChange"];
     onFovChange?: Handlers["onFovChange"];
     onLongPress?: Handlers["onLongPress"];
+    onMarkerSelect?: Handlers["onMarkerSelect"];
 }) {
     // ---------------------------
     // Interaction State
@@ -240,7 +243,7 @@ export function createEngine({
     let isTouchDevice = false;  // Set true on first touch
     let edgeHoverStart = 0;
 
-    let handlers: Handlers = { onSelect, onHover, onArrangementChange, onFovChange, onLongPress };
+    let handlers: Handlers = { onSelect, onHover, onArrangementChange, onFovChange, onLongPress, onMarkerSelect };
     let currentConfig: StarMapConfig | undefined;
 
     function getSceneDebug() {
@@ -1354,6 +1357,12 @@ export function createEngine({
     scene.add(backdropGroup);
     let backdropStarsMaterial: THREE.ShaderMaterial | null = null;
 
+    // Marker stars — unassigned positions rendered as orange dots
+    const markerGroup = new THREE.Group();
+    scene.add(markerGroup);
+    let markerPoints: THREE.Points | null = null;
+    let lastMarkerPositions: Array<[number, number, number]> | undefined;
+
     function createBackdropStars(count: number = 5000) {
         backdropGroup.clear();
         // Clear any existing children properly
@@ -1495,6 +1504,66 @@ export function createEngine({
         backdropGroup.add(points);
     }
     
+    function createMarkerStars(positions: Array<[number, number, number]>) {
+        while (markerGroup.children.length > 0) {
+            const c = markerGroup.children[0]!;
+            markerGroup.remove(c);
+            (c as any).geometry?.dispose();
+            (c as any).material?.dispose();
+        }
+        markerPoints = null;
+        if (positions.length === 0) return;
+
+        const posArr = new Float32Array(positions.length * 3);
+        for (let i = 0; i < positions.length; i++) {
+            posArr[i * 3]     = positions[i]![0];
+            posArr[i * 3 + 1] = positions[i]![1];
+            posArr[i * 3 + 2] = positions[i]![2];
+        }
+        const geo = new THREE.BufferGeometry();
+        geo.setAttribute('position', new THREE.Float32BufferAttribute(posArr, 3));
+
+        const mat = createSmartMaterial({
+            uniforms: {
+                pixelRatio: { value: renderer.getPixelRatio() },
+            },
+            vertexShaderBody: `
+                uniform float pixelRatio;
+                void main() {
+                    vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+                    vec4 projected = smartProject(mvPosition);
+                    vScreenPos = projected.xy / projected.w;
+                    if (projected.z > 4.0) {
+                        gl_Position = vec4(-10.0, -10.0, -10.0, 1.0);
+                        gl_PointSize = 0.0;
+                        return;
+                    }
+                    gl_Position = projected;
+                    gl_PointSize = 9.0 * uScale * pixelRatio;
+                }
+            `,
+            fragmentShader: `
+                void main() {
+                    vec2 uv = gl_PointCoord - 0.5;
+                    float r = length(uv) * 2.0;
+                    if (r > 1.0) discard;
+                    float alphaMask = getMaskAlpha();
+                    if (alphaMask < 0.01) discard;
+                    float alpha = smoothstep(1.0, 0.4, r) * alphaMask;
+                    gl_FragColor = vec4(1.0, 0.54, 0.094, alpha);
+                }
+            `,
+            transparent: true,
+            depthWrite: false,
+            depthTest: true,
+            blending: THREE.NormalBlending,
+        });
+
+        markerPoints = new THREE.Points(geo, mat);
+        markerPoints.frustumCulled = false;
+        markerGroup.add(markerPoints);
+    }
+
     createSkyBackground();
     createGround();
     createAtmosphere();
@@ -2751,6 +2820,12 @@ export function createEngine({
             lastBackdropCount = desiredBackdropCount;
         }
 
+        // Rebuild marker stars if positions array reference changed
+        if (cfg.markerPositions !== lastMarkerPositions) {
+            lastMarkerPositions = cfg.markerPositions;
+            createMarkerStars(cfg.markerPositions ?? []);
+        }
+
         let shouldRebuild = false;
         let model = cfg.model;
         if (!model && cfg.data && cfg.adapter) {
@@ -3026,6 +3101,32 @@ export function createEngine({
         };
     }
 
+    /** Screen-space pick against marker points. Returns the marker array index or null. */
+    function screenSpacePickMarker(mx: number, my: number, maxPx = 14): number | null {
+        if (!markerPoints) return null;
+        const attr = markerPoints.geometry.attributes.position as THREE.BufferAttribute;
+        const rect = renderer.domElement.getBoundingClientRect();
+        const w = rect.width;
+        const h = rect.height;
+        const uScale = globalUniforms.uScale.value;
+        const uAspect = globalUniforms.uAspect.value;
+        let bestIdx = -1;
+        let bestDist2 = maxPx * maxPx;
+        const worldPos = new THREE.Vector3();
+        for (let i = 0; i < attr.count; i++) {
+            worldPos.set(attr.getX(i), attr.getY(i), attr.getZ(i));
+            const proj = smartProjectJS(worldPos);
+            if (currentProjection.isClipped(proj.z)) continue;
+            const sx = ((proj.x * uScale / uAspect) * 0.5 + 0.5) * w;
+            const sy = (-(proj.y * uScale) * 0.5 + 0.5) * h;
+            const dx = mx - sx;
+            const dy = my - sy;
+            const d2 = dx * dx + dy * dy;
+            if (d2 < bestDist2) { bestDist2 = d2; bestIdx = i; }
+        }
+        return bestIdx >= 0 ? bestIdx : null;
+    }
+
     function onMouseDown(e: MouseEvent) {
         state.lastMouseX = e.clientX;
         state.lastMouseY = e.clientY;
@@ -3255,8 +3356,14 @@ export function createEngine({
                     if (hit.node.level === 2) setFocusedBook(hit.node.id);
                     else if (hit.node.level === 3 && hit.node.parent) setFocusedBook(hit.node.parent);
                 } else {
-                    setFocusedBook(null);
-                    focusedNodeId = null;
+                    const rect = renderer.domElement.getBoundingClientRect();
+                    const markerIdx = screenSpacePickMarker(e.clientX - rect.left, e.clientY - rect.top);
+                    if (markerIdx !== null) {
+                        handlers.onMarkerSelect?.(markerIdx);
+                    } else {
+                        setFocusedBook(null);
+                        focusedNodeId = null;
+                    }
                 }
             }
         } else {
@@ -3271,13 +3378,19 @@ export function createEngine({
                 else if (hit.node.level === 3 && hit.node.parent) setFocusedBook(hit.node.parent);
 
             } else {
-                // Background click clears focus
-                setFocusedBook(null);
-                focusedNodeId = null;
+                const rect = renderer.domElement.getBoundingClientRect();
+                const markerIdx = screenSpacePickMarker(e.clientX - rect.left, e.clientY - rect.top);
+                if (markerIdx !== null) {
+                    handlers.onMarkerSelect?.(markerIdx);
+                } else {
+                    // Background click clears focus
+                    setFocusedBook(null);
+                    focusedNodeId = null;
+                }
             }
         }
     }
-    
+
     function onWheel(e: WheelEvent) {
         e.preventDefault();
         flyToActive = false; // Cancel any fly-to animation
@@ -3585,7 +3698,13 @@ export function createEngine({
                         if (hit.node.level === 2) setFocusedBook(hit.node.id);
                         else if (hit.node.level === 3 && hit.node.parent) setFocusedBook(hit.node.parent);
                     } else {
-                        setFocusedBook(null);
+                        const rect = renderer.domElement.getBoundingClientRect();
+                        const markerIdx = screenSpacePickMarker(state.touchStartX - rect.left, state.touchStartY - rect.top);
+                        if (markerIdx !== null) {
+                            handlers.onMarkerSelect?.(markerIdx);
+                        } else {
+                            setFocusedBook(null);
+                        }
                     }
                     // Record this tap for double-tap detection
                     state.lastTapTime = now;
