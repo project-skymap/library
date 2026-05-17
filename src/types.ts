@@ -143,6 +143,7 @@ export type StarMapConfig = {
     showConstellationArt?: boolean;
     constellationBaseOpacity?: number; // Multiplier for all constellation artwork opacity (default 1.0).
     showConstellationLines?: boolean;
+    constellationLineMode?: "off" | "focused" | "full";
     showDivisionBoundaries?: boolean;
     showBackdropStars?: boolean;
     backdropStarsCount?: number;
@@ -201,14 +202,17 @@ export type ConstellationConfig = {
         radius: number;
         rotationDeg: number;
         aspectRatio?: number;
+        lineColor?: string;
         opacity: number;
         blend: string;
         zBias: number;
         linePaths?: {
+            color?: string;
             weight?: "thin" | "normal" | "bold";
             nodes: string[];
         }[];
         lineSegments?: {
+            color?: string;
             weight?: "thin" | "normal" | "bold";
             from: string;
             to: string;
