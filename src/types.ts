@@ -143,6 +143,7 @@ export type StarMapConfig = {
     showConstellationArt?: boolean;
     constellationBaseOpacity?: number; // Multiplier for all constellation artwork opacity (default 1.0).
     showConstellationLines?: boolean;
+    constellationLineMode?: "off" | "focused" | "full";
     showDivisionBoundaries?: boolean;
     showBackdropStars?: boolean;
     backdropStarsCount?: number;
@@ -165,6 +166,13 @@ export type StarMapConfig = {
     groups?: Record<string, { name: string, start: number, end: number }[]>;
     horizonTheme?: HorizonThemeConfig;
     horizonThemes?: HorizonThemeConfig[];
+
+    /**
+     * World-space positions of unassigned / marker stars to render as plain
+     * orange dots using the same camera and projection as the scene stars.
+     * Each entry is [x, y, z] at radius ~2000 (unit hemisphere × 2000).
+     */
+    markerPositions?: Array<[number, number, number]>;
 
     // Interaction & Camera
     editable?: boolean;
@@ -194,14 +202,17 @@ export type ConstellationConfig = {
         radius: number;
         rotationDeg: number;
         aspectRatio?: number;
+        lineColor?: string;
         opacity: number;
         blend: string;
         zBias: number;
         linePaths?: {
+            color?: string;
             weight?: "thin" | "normal" | "bold";
             nodes: string[];
         }[];
         lineSegments?: {
+            color?: string;
             weight?: "thin" | "normal" | "bold";
             from: string;
             to: string;

@@ -25,3 +25,6 @@ export type { GenerateOptions } from "./generateArrangement";
 
 export { PROJECTIONS } from "./engine/projections";
 export type { Projection, ProjectionId } from "./engine/projections";
+
+export { generateSky, DEFAULT_SKY_PARAMS } from "./sim";
+export type { SkyGenParams, StarOutput, SkyField, SkyMetrics } from "./sim";

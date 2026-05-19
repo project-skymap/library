@@ -23,6 +23,7 @@ type Handlers = {
     onArrangementChange?: (arrangement: StarArrangement) => void;
     onFovChange?: (fov: number) => void;
     onLongPress?: (node: SceneNode | null, x: number, y: number) => void;
+    onMarkerSelect?: (index: number) => void;
 };
 
 const ENGINE_CONFIG = {
@@ -74,6 +75,14 @@ const ORDER_REVEAL_CONFIG = {
     pulseAmplitude: 0.12,
     pulseDuration: 2,
     delayPerChapter: 0.1
+};
+
+const TRIANGULATION_FOCUS_CONFIG = {
+    focusedMaxFov: 60,
+    wholeSkyEnterFov: 72,
+    wholeSkyExitFov: 64,
+    zenithEnterLatDeg: 72,
+    zenithExitLatDeg: 62,
 };
 
 // --- Zoom-based Star Reveal ---
@@ -129,6 +138,7 @@ export function createEngine({
                                  onArrangementChange,
                                  onFovChange,
                                  onLongPress,
+                                 onMarkerSelect,
                              }: {
     container: HTMLDivElement;
     onSelect?: Handlers["onSelect"];
@@ -136,6 +146,7 @@ export function createEngine({
     onArrangementChange?: Handlers["onArrangementChange"];
     onFovChange?: Handlers["onFovChange"];
     onLongPress?: Handlers["onLongPress"];
+    onMarkerSelect?: Handlers["onMarkerSelect"];
 }) {
     // ---------------------------
     // Interaction State
@@ -164,6 +175,8 @@ export function createEngine({
     // Cooldown management
     const hoverCooldowns = new Map<string, number>();
     const COOLDOWN_MS = 2000;
+    const lineBookFocusFaders = new Map<string, Fader>();
+    const lineBookCenters = new Map<string, THREE.Vector3>();
     
     // Map Book ID (string) to shader-friendly index (float)
     const bookIdToIndex = new Map<string, number>();
@@ -239,12 +252,23 @@ export function createEngine({
     let isMouseInWindow = false;
     let isTouchDevice = false;  // Set true on first touch
     let edgeHoverStart = 0;
+    let interactionEnabled = true;
 
-    let handlers: Handlers = { onSelect, onHover, onArrangementChange, onFovChange, onLongPress };
+    let handlers: Handlers = { onSelect, onHover, onArrangementChange, onFovChange, onLongPress, onMarkerSelect };
     let currentConfig: StarMapConfig | undefined;
+    let wholeSkyTriangulationActive = false;
+    let constellationLineFocusAttr: THREE.BufferAttribute | null = null;
+    let constellationLineSegmentBookIds: string[] = [];
 
     function getSceneDebug() {
         return currentConfig?.debug?.sceneMechanics;
+    }
+
+    function getOrCreateBookIndex(bookId: string): number {
+        if (!bookIdToIndex.has(bookId)) {
+            bookIdToIndex.set(bookId, bookIdToIndex.size + 1.0);
+        }
+        return bookIdToIndex.get(bookId)!;
     }
 
     function getFreezeBand() {
@@ -1354,6 +1378,12 @@ export function createEngine({
     scene.add(backdropGroup);
     let backdropStarsMaterial: THREE.ShaderMaterial | null = null;
 
+    // Marker stars — unassigned positions rendered as orange dots
+    const markerGroup = new THREE.Group();
+    scene.add(markerGroup);
+    let markerPoints: THREE.Points | null = null;
+    let lastMarkerPositions: Array<[number, number, number]> | undefined;
+
     function createBackdropStars(count: number = 5000) {
         backdropGroup.clear();
         // Clear any existing children properly
@@ -1495,6 +1525,66 @@ export function createEngine({
         backdropGroup.add(points);
     }
     
+    function createMarkerStars(positions: Array<[number, number, number]>) {
+        while (markerGroup.children.length > 0) {
+            const c = markerGroup.children[0]!;
+            markerGroup.remove(c);
+            (c as any).geometry?.dispose();
+            (c as any).material?.dispose();
+        }
+        markerPoints = null;
+        if (positions.length === 0) return;
+
+        const posArr = new Float32Array(positions.length * 3);
+        for (let i = 0; i < positions.length; i++) {
+            posArr[i * 3]     = positions[i]![0];
+            posArr[i * 3 + 1] = positions[i]![1];
+            posArr[i * 3 + 2] = positions[i]![2];
+        }
+        const geo = new THREE.BufferGeometry();
+        geo.setAttribute('position', new THREE.Float32BufferAttribute(posArr, 3));
+
+        const mat = createSmartMaterial({
+            uniforms: {
+                pixelRatio: { value: renderer.getPixelRatio() },
+            },
+            vertexShaderBody: `
+                uniform float pixelRatio;
+                void main() {
+                    vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+                    vec4 projected = smartProject(mvPosition);
+                    vScreenPos = projected.xy / projected.w;
+                    if (projected.z > 4.0) {
+                        gl_Position = vec4(-10.0, -10.0, -10.0, 1.0);
+                        gl_PointSize = 0.0;
+                        return;
+                    }
+                    gl_Position = projected;
+                    gl_PointSize = 9.0 * uScale * pixelRatio;
+                }
+            `,
+            fragmentShader: `
+                void main() {
+                    vec2 uv = gl_PointCoord - 0.5;
+                    float r = length(uv) * 2.0;
+                    if (r > 1.0) discard;
+                    float alphaMask = getMaskAlpha();
+                    if (alphaMask < 0.01) discard;
+                    float alpha = smoothstep(1.0, 0.4, r) * alphaMask;
+                    gl_FragColor = vec4(1.0, 0.54, 0.094, alpha);
+                }
+            `,
+            transparent: true,
+            depthWrite: false,
+            depthTest: true,
+            blending: THREE.NormalBlending,
+        });
+
+        markerPoints = new THREE.Points(geo, mat);
+        markerPoints.frustumCulled = false;
+        markerGroup.add(markerPoints);
+    }
+
     createSkyBackground();
     createGround();
     createAtmosphere();
@@ -1593,6 +1683,10 @@ export function createEngine({
         dynamicLabels.length = 0;
         labelManager.clear();
         constellationLines = null;
+        constellationLineFocusAttr = null;
+        constellationLineSegmentBookIds = [];
+        lineBookFocusFaders.clear();
+        lineBookCenters.clear();
         boundaryLines = null;
         starPoints = null;
     }
@@ -1618,6 +1712,102 @@ export function createEngine({
         const tex = new THREE.CanvasTexture(canvas);
         tex.minFilter = THREE.LinearFilter;
         return { tex, aspect: w / h };
+    }
+
+    function getConstellationLineMode(): "off" | "focused" | "full" {
+        if (currentConfig?.constellationLineMode) return currentConfig.constellationLineMode;
+        return currentConfig?.showConstellationLines ? "full" : "off";
+    }
+
+    function shouldUseFocusedTriangulation(fov: number, latRad: number): boolean {
+        if (getConstellationLineMode() !== "focused") {
+            wholeSkyTriangulationActive = false;
+            return false;
+        }
+
+        const latDeg = Math.abs(THREE.MathUtils.radToDeg(latRad));
+
+        if (wholeSkyTriangulationActive) {
+            const keepWholeSky =
+                fov >= TRIANGULATION_FOCUS_CONFIG.wholeSkyExitFov &&
+                latDeg >= TRIANGULATION_FOCUS_CONFIG.zenithExitLatDeg;
+            if (!keepWholeSky) wholeSkyTriangulationActive = false;
+        } else {
+            const enterWholeSky =
+                fov >= TRIANGULATION_FOCUS_CONFIG.wholeSkyEnterFov &&
+                latDeg >= TRIANGULATION_FOCUS_CONFIG.zenithEnterLatDeg;
+            if (enterWholeSky) wholeSkyTriangulationActive = true;
+        }
+
+        if (wholeSkyTriangulationActive) return false;
+        return fov <= TRIANGULATION_FOCUS_CONFIG.focusedMaxFov || latDeg < TRIANGULATION_FOCUS_CONFIG.zenithExitLatDeg;
+    }
+
+    function getCenteredBookId(target: THREE.Vector3): string | null {
+        if (lineBookCenters.size > 0) {
+            let bestId: string | null = null;
+            let bestDot = -Infinity;
+            for (const [bookId, center] of lineBookCenters.entries()) {
+                const dot = center.clone().normalize().dot(target);
+                if (dot > bestDot) {
+                    bestDot = dot;
+                    bestId = bookId;
+                }
+            }
+            return bestDot > 0 ? bestId : null;
+        }
+
+        let bestId: string | null = null;
+        let bestDot = -Infinity;
+        for (const node of nodeById.values()) {
+            if (node.level !== 2) continue;
+            const position = getPosition(node).normalize();
+            const dot = position.dot(target);
+            if (dot > bestDot) {
+                bestDot = dot;
+                bestId = node.id;
+            }
+        }
+        return bestDot > 0 ? bestId : null;
+    }
+
+    function updateTriangulationFocus(
+        dt: number,
+        target: THREE.Vector3,
+        focusedModeOverride?: boolean,
+        centeredBookIdOverride?: string | null
+    ) {
+        if (!constellationLineFocusAttr || constellationLineSegmentBookIds.length === 0) return;
+
+        const mode = getConstellationLineMode();
+        const focusedMode = focusedModeOverride ?? shouldUseFocusedTriangulation(state.fov, state.lat);
+        const centeredBookId = centeredBookIdOverride === undefined
+            ? (focusedMode ? getCenteredBookId(target) : null)
+            : centeredBookIdOverride;
+        const targetAlphaByBook = new Map<string, number>();
+
+        for (const [bookId, fader] of lineBookFocusFaders.entries()) {
+            const shouldShow = mode === "full" || (focusedMode ? bookId === centeredBookId : mode !== "off");
+            fader.target = shouldShow;
+            fader.update(dt);
+            targetAlphaByBook.set(bookId, fader.eased);
+        }
+
+        const array = constellationLineFocusAttr.array as Float32Array;
+        let dirty = false;
+        for (let segmentIndex = 0; segmentIndex < constellationLineSegmentBookIds.length; segmentIndex++) {
+            const bookId = constellationLineSegmentBookIds[segmentIndex]!;
+            const alpha = mode === "off" ? 0 : (bookId ? (targetAlphaByBook.get(bookId) ?? (focusedMode ? 0 : 1)) : 1);
+            const base = segmentIndex * 4;
+            for (let offset = 0; offset < 4; offset++) {
+                const idx = base + offset;
+                if (Math.abs(array[idx]! - alpha) > 1e-5) {
+                    array[idx] = alpha;
+                    dirty = true;
+                }
+            }
+        }
+        if (dirty) constellationLineFocusAttr.needsUpdate = true;
     }
 
     function getPosition(n: SceneNode) {
@@ -1910,10 +2100,7 @@ export function createEngine({
                 // Book & Chapter Indices for Interaction
                 let bIdx = -1.0;
                 if (n.parent) {
-                    if (!bookIdToIndex.has(n.parent)) {
-                         bookIdToIndex.set(n.parent, bookIdToIndex.size + 1.0); 
-                    }
-                    bIdx = bookIdToIndex.get(n.parent)!;
+                    bIdx = getOrCreateBookIndex(n.parent);
                 }
                 starBookIndices.push(bIdx);
                 
@@ -1955,7 +2142,8 @@ export function createEngine({
                 
                 let labelText = n.label;
                 if (n.level === 3 && n.meta?.chapter) {
-                    labelText = String(n.meta.chapter);
+                    const bookKey = n.meta?.bookKey as string | undefined;
+                    labelText = bookKey ? `${bookKey} ${n.meta.chapter}` : String(n.meta.chapter);
                 }
                 
                 const texRes = createTextTexture(labelText, color);
@@ -2242,6 +2430,8 @@ export function createEngine({
 
         const linePoints: number[] = [];
         const lineWeights: number[] = [];
+        const lineColors: number[] = [];
+        const lineBookIndices: number[] = [];
         const seenEdges = new Set<string>();
         const bookMap = new Map<string, SceneNode[]>();
         const parseBookKeyFromChapterId = (id: string | undefined): string | null => {
@@ -2257,7 +2447,7 @@ export function createEngine({
         };
         const edgeKey = (aNodeId: string, bNodeId: string) =>
             aNodeId < bNodeId ? `${aNodeId}|${bNodeId}` : `${bNodeId}|${aNodeId}`;
-        const addTruncatedSegment = (aNodeId: string, bNodeId: string, weightScale: number) => {
+        const addTruncatedSegment = (aNodeId: string, bNodeId: string, weightScale: number, colorHex?: string, explicitBookId?: string | null) => {
             if (aNodeId === bNodeId) return;
             const k = edgeKey(aNodeId, bNodeId);
             if (seenEdges.has(k)) return;
@@ -2290,6 +2480,19 @@ export function createEngine({
             const b = p2.clone().addScaledVector(dir, -cutB);
             linePoints.push(a.x, a.y, a.z); linePoints.push(b.x, b.y, b.z);
             lineWeights.push(weightScale);
+            const color = new THREE.Color(colorHex ?? 0xaaccff);
+            lineColors.push(color.r, color.g, color.b);
+            const inferredBookId =
+                explicitBookId ??
+                aNode.parent ??
+                bNode.parent ??
+                ((aNode.meta?.bookKey as string | undefined) ? `B:${aNode.meta?.bookKey as string}` : null) ??
+                ((bNode.meta?.bookKey as string | undefined) ? `B:${bNode.meta?.bookKey as string}` : null);
+            lineBookIndices.push(inferredBookId ? getOrCreateBookIndex(inferredBookId) : -1.0);
+            if (inferredBookId && !lineBookFocusFaders.has(inferredBookId)) {
+                lineBookFocusFaders.set(inferredBookId, new Fader(0.22));
+            }
+            constellationLineSegmentBookIds.push(inferredBookId ?? "");
         };
 
         // Parse custom line topology from constellation config (Stellarium-style).
@@ -2302,6 +2505,7 @@ export function createEngine({
             const linePaths = Array.isArray(c?.linePaths) ? c.linePaths : [];
             const lineSegments = Array.isArray(c?.lineSegments) ? c.lineSegments : [];
             if (linePaths.length === 0 && lineSegments.length === 0) continue;
+            const defaultLineColor = typeof c?.lineColor === "string" ? c.lineColor : undefined;
 
             const anchorBookKey = parseBookKeyFromChapterId(c?.anchors?.[0]);
             if (anchorBookKey) customBooks.add(anchorBookKey);
@@ -2333,7 +2537,9 @@ export function createEngine({
                 if (k1) customBooks.add(k1);
                 if (k2) customBooks.add(k2);
 
-                addTruncatedSegment(from, to, weightScaleFromLabel(weightLabel));
+                const segmentColor = typeof (segDef as any)?.color === "string" ? (segDef as any).color : defaultLineColor;
+                const explicitBookId = k1 ? `B:${k1}` : (anchorBookKey ? `B:${anchorBookKey}` : null);
+                addTruncatedSegment(from, to, weightScaleFromLabel(weightLabel), segmentColor, explicitBookId);
             }
 
             for (const pathDef of linePaths) {
@@ -2359,8 +2565,9 @@ export function createEngine({
                 if (inferredBookKey) customBooks.add(inferredBookKey);
 
                 const w = weightScaleFromLabel(weightLabel);
+                const pathColor = typeof (pathDef as any)?.color === "string" ? (pathDef as any).color : defaultLineColor;
                 for (let i = 0; i < nodes.length - 1; i++) {
-                    addTruncatedSegment(nodes[i], nodes[i + 1], w);
+                    addTruncatedSegment(nodes[i], nodes[i + 1], w, pathColor, inferredBookKey ? `B:${inferredBookKey}` : null);
                 }
             }
         }
@@ -2376,11 +2583,25 @@ export function createEngine({
             chapters.sort((a, b) => ((a.meta?.chapter as number) || 0) - ((b.meta?.chapter as number) || 0));
             if (chapters.length < 2) continue;
             const bookKey = (chapters[0]?.meta?.bookKey as string | undefined) ?? null;
+            if (bookKey) {
+                const bookId = `B:${bookKey}`;
+                const centroid = new THREE.Vector3();
+                let centroidCount = 0;
+                for (const chapter of chapters) {
+                    const p = getPosition(chapter);
+                    centroid.add(p);
+                    centroidCount++;
+                }
+                if (centroidCount > 0) {
+                    centroid.divideScalar(centroidCount);
+                    lineBookCenters.set(bookId, centroid);
+                }
+            }
             if (bookKey && customBooks.has(bookKey)) continue;
             for (let i = 0; i < chapters.length - 1; i++) {
                 const c1 = chapters[i]; const c2 = chapters[i+1];
                 if (!c1 || !c2) continue;
-                addTruncatedSegment(c1.id, c2.id, 1.0);
+                addTruncatedSegment(c1.id, c2.id, 1.0, undefined, bookKey ? `B:${bookKey}` : null);
             }
         }
         if (linePoints.length > 0) {
@@ -2389,6 +2610,8 @@ export function createEngine({
             const quadUvs: number[] = [];
             const quadLineWeight: number[] = [];
             const quadSegmentIndex: number[] = [];
+            const quadColors: number[] = [];
+            const quadFocusAlpha: number[] = [];
             const quadIndices: number[] = [];
             const lineWidth = 8.0; // world-space half-width for glow region
             const segmentCount = linePoints.length / 6;
@@ -2421,6 +2644,11 @@ export function createEngine({
                 const w = lineWeights[segIndex] ?? 1.0;
                 quadLineWeight.push(w, w, w, w);
                 quadSegmentIndex.push(segIndex, segIndex, segIndex, segIndex);
+                const cr = lineColors[segIndex * 3] ?? 0.6666666667;
+                const cg = lineColors[segIndex * 3 + 1] ?? 0.8;
+                const cb = lineColors[segIndex * 3 + 2] ?? 1.0;
+                quadColors.push(cr, cg, cb, cr, cg, cb, cr, cg, cb, cr, cg, cb);
+                quadFocusAlpha.push(1, 1, 1, 1);
 
                 quadIndices.push(baseIdx, baseIdx+1, baseIdx+2, baseIdx+1, baseIdx+3, baseIdx+2);
             }
@@ -2430,11 +2658,13 @@ export function createEngine({
             lineGeo.setAttribute('lineUv', new THREE.Float32BufferAttribute(quadUvs, 2));
             lineGeo.setAttribute('lineWeight', new THREE.Float32BufferAttribute(quadLineWeight, 1));
             lineGeo.setAttribute('segmentIndex', new THREE.Float32BufferAttribute(quadSegmentIndex, 1));
+            lineGeo.setAttribute('lineColor', new THREE.Float32BufferAttribute(quadColors, 3));
+            constellationLineFocusAttr = new THREE.Float32BufferAttribute(quadFocusAlpha, 1);
+            lineGeo.setAttribute('lineFocusAlpha', constellationLineFocusAttr);
             lineGeo.setIndex(quadIndices);
 
             const lineMat = createSmartMaterial({
                 uniforms: {
-                    color: { value: new THREE.Color(0xaaccff) },
                     uLineWidth: { value: 1.5 },
                     uGlowIntensity: { value: 0.3 },
                     uReveal: { value: 0.0 },
@@ -2444,20 +2674,25 @@ export function createEngine({
                     attribute vec2 lineUv;
                     attribute float lineWeight;
                     attribute float segmentIndex;
+                    attribute vec3 lineColor;
+                    attribute float lineFocusAlpha;
                     varying vec2 vLineUv;
                     varying float vLineWeight;
                     varying float vSegmentIndex;
+                    varying vec3 vLineColor;
+                    varying float vLineFocusAlpha;
                     void main() {
                         vLineUv = lineUv;
                         vLineWeight = lineWeight;
                         vSegmentIndex = segmentIndex;
+                        vLineColor = lineColor;
+                        vLineFocusAlpha = lineFocusAlpha;
                         vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
                         gl_Position = smartProject(mvPosition);
                         vScreenPos = gl_Position.xy / gl_Position.w;
                     }
                 `,
                 fragmentShader: `
-                    uniform vec3 color;
                     uniform float uLineWidth;
                     uniform float uGlowIntensity;
                     uniform float uReveal;
@@ -2465,6 +2700,8 @@ export function createEngine({
                     varying vec2 vLineUv;
                     varying float vLineWeight;
                     varying float vSegmentIndex;
+                    varying vec3 vLineColor;
+                    varying float vLineFocusAlpha;
                     void main() {
                         float alphaMask = getMaskAlpha();
                         if (alphaMask < 0.01) discard;
@@ -2498,7 +2735,7 @@ export function createEngine({
                         float alpha = max(glow, base);
                         if (alpha < 0.005) discard;
 
-                        gl_FragColor = vec4(color, alpha * alphaMask * drawMask);
+                        gl_FragColor = vec4(vLineColor, alpha * alphaMask * drawMask * vLineFocusAlpha);
                     }
                 `,
                 transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
@@ -2749,6 +2986,12 @@ export function createEngine({
         if (lastBackdropCount !== desiredBackdropCount) {
             createBackdropStars(desiredBackdropCount);
             lastBackdropCount = desiredBackdropCount;
+        }
+
+        // Rebuild marker stars if positions array reference changed
+        if (cfg.markerPositions !== lastMarkerPositions) {
+            lastMarkerPositions = cfg.markerPositions;
+            createMarkerStars(cfg.markerPositions ?? []);
         }
 
         let shouldRebuild = false;
@@ -3026,7 +3269,34 @@ export function createEngine({
         };
     }
 
+    /** Screen-space pick against marker points. Returns the marker array index or null. */
+    function screenSpacePickMarker(mx: number, my: number, maxPx = 14): number | null {
+        if (!markerPoints) return null;
+        const attr = markerPoints.geometry.attributes.position as THREE.BufferAttribute;
+        const rect = renderer.domElement.getBoundingClientRect();
+        const w = rect.width;
+        const h = rect.height;
+        const uScale = globalUniforms.uScale.value;
+        const uAspect = globalUniforms.uAspect.value;
+        let bestIdx = -1;
+        let bestDist2 = maxPx * maxPx;
+        const worldPos = new THREE.Vector3();
+        for (let i = 0; i < attr.count; i++) {
+            worldPos.set(attr.getX(i), attr.getY(i), attr.getZ(i));
+            const proj = smartProjectJS(worldPos);
+            if (currentProjection.isClipped(proj.z)) continue;
+            const sx = ((proj.x * uScale / uAspect) * 0.5 + 0.5) * w;
+            const sy = (-(proj.y * uScale) * 0.5 + 0.5) * h;
+            const dx = mx - sx;
+            const dy = my - sy;
+            const d2 = dx * dx + dy * dy;
+            if (d2 < bestDist2) { bestDist2 = d2; bestIdx = i; }
+        }
+        return bestIdx >= 0 ? bestIdx : null;
+    }
+
     function onMouseDown(e: MouseEvent) {
+        if (!interactionEnabled) return;
         state.lastMouseX = e.clientX;
         state.lastMouseY = e.clientY;
         
@@ -3105,6 +3375,10 @@ export function createEngine({
     }
 
     function onMouseMove(e: MouseEvent) {
+        if (!interactionEnabled) {
+            onWindowBlur();
+            return;
+        }
         const rect = renderer.domElement.getBoundingClientRect();
         const mX = e.clientX - rect.left;
         const mY = e.clientY - rect.top;
@@ -3231,6 +3505,17 @@ export function createEngine({
     }
 
     function onMouseUp(e: MouseEvent) {
+        if (!interactionEnabled) {
+            if (state.dragMode === 'camera' || state.dragMode === 'node') {
+                state.isDragging = false;
+                state.dragMode = 'none';
+                state.draggedNodeId = null;
+                state.draggedStarIndex = -1;
+                state.draggedGroup = null;
+                document.body.style.cursor = 'default';
+            }
+            return;
+        }
         const dx = e.clientX - state.lastMouseX;
         const dy = e.clientY - state.lastMouseY;
         const movedDist = Math.sqrt(dx * dx + dy * dy);
@@ -3255,8 +3540,14 @@ export function createEngine({
                     if (hit.node.level === 2) setFocusedBook(hit.node.id);
                     else if (hit.node.level === 3 && hit.node.parent) setFocusedBook(hit.node.parent);
                 } else {
-                    setFocusedBook(null);
-                    focusedNodeId = null;
+                    const rect = renderer.domElement.getBoundingClientRect();
+                    const markerIdx = screenSpacePickMarker(e.clientX - rect.left, e.clientY - rect.top);
+                    if (markerIdx !== null) {
+                        handlers.onMarkerSelect?.(markerIdx);
+                    } else {
+                        setFocusedBook(null);
+                        focusedNodeId = null;
+                    }
                 }
             }
         } else {
@@ -3271,14 +3562,21 @@ export function createEngine({
                 else if (hit.node.level === 3 && hit.node.parent) setFocusedBook(hit.node.parent);
 
             } else {
-                // Background click clears focus
-                setFocusedBook(null);
-                focusedNodeId = null;
+                const rect = renderer.domElement.getBoundingClientRect();
+                const markerIdx = screenSpacePickMarker(e.clientX - rect.left, e.clientY - rect.top);
+                if (markerIdx !== null) {
+                    handlers.onMarkerSelect?.(markerIdx);
+                } else {
+                    // Background click clears focus
+                    setFocusedBook(null);
+                    focusedNodeId = null;
+                }
             }
         }
     }
-    
+
     function onWheel(e: WheelEvent) {
+        if (!interactionEnabled) return;
         e.preventDefault();
         flyToActive = false; // Cancel any fly-to animation
         const aspect = container.clientWidth / container.clientHeight;
@@ -3372,6 +3670,7 @@ export function createEngine({
     }
 
     function onTouchStart(e: TouchEvent) {
+        if (!interactionEnabled) return;
         e.preventDefault();
         isTouchDevice = true;
 
@@ -3438,6 +3737,7 @@ export function createEngine({
     }
 
     function onTouchMove(e: TouchEvent) {
+        if (!interactionEnabled) return;
         e.preventDefault();
 
         const touches = e.touches;
@@ -3523,6 +3823,7 @@ export function createEngine({
     }
 
     function onTouchEnd(e: TouchEvent) {
+        if (!interactionEnabled) return;
         e.preventDefault();
 
         // Clear long-press timer
@@ -3585,7 +3886,13 @@ export function createEngine({
                         if (hit.node.level === 2) setFocusedBook(hit.node.id);
                         else if (hit.node.level === 3 && hit.node.parent) setFocusedBook(hit.node.parent);
                     } else {
-                        setFocusedBook(null);
+                        const rect = renderer.domElement.getBoundingClientRect();
+                        const markerIdx = screenSpacePickMarker(state.touchStartX - rect.left, state.touchStartY - rect.top);
+                        if (markerIdx !== null) {
+                            handlers.onMarkerSelect?.(markerIdx);
+                        } else {
+                            setFocusedBook(null);
+                        }
                     }
                     // Record this tap for double-tap detection
                     state.lastTapTime = now;
@@ -3611,6 +3918,7 @@ export function createEngine({
     }
 
     function onTouchCancel(e: TouchEvent) {
+        if (!interactionEnabled) return;
         e.preventDefault();
         // Clear long-press timer
         if (state.longPressTimer) {
@@ -3839,7 +4147,12 @@ export function createEngine({
         const dt = lastTickTime > 0 ? Math.min(nowSec - lastTickTime, 0.1) : 0.016;
         lastTickTime = nowSec;
 
-        linesFader.target = currentConfig?.showConstellationLines ?? false;
+        const focusedTriangulationMode = shouldUseFocusedTriangulation(state.fov, state.lat);
+        const centeredTriangulationBookId = focusedTriangulationMode ? getCenteredBookId(target) : null;
+
+        updateTriangulationFocus(dt, target, focusedTriangulationMode, centeredTriangulationBookId);
+
+        linesFader.target = getConstellationLineMode() !== "off";
         linesFader.update(dt);
         artFader.target = currentConfig?.showConstellationArt ?? false;
         artFader.update(dt);
@@ -3891,11 +4204,8 @@ export function createEngine({
             constellationLines.visible = linesFader.eased > 0.01;
             if (constellationLines.visible && (constellationLines as THREE.Mesh).material) {
                 const mat = (constellationLines as THREE.Mesh).material as THREE.ShaderMaterial;
-                if (mat.uniforms?.color) {
-                    mat.uniforms.color.value.setHex(0xaaccff);
-                    if (mat.uniforms.uReveal) mat.uniforms.uReveal.value = linesFader.eased;
-                    mat.opacity = 1.0;
-                }
+                if (mat.uniforms?.uReveal) mat.uniforms.uReveal.value = linesFader.eased;
+                mat.opacity = 1.0;
             }
         }
         if (boundaryLines) {
@@ -3923,6 +4233,8 @@ export function createEngine({
             hoverId,
             selectedId,
             focusedId: focusedNodeId,
+            focusedBookId: centeredTriangulationBookId,
+            restrictChapterLabelsToFocusedBook: focusedTriangulationMode,
             shouldFilter: !!currentFilter && filterStrength > 0.01,
             isNodeFiltered: (node) => {
                 const nodeToCheck = node.level === 2.5 && node.parent ? nodeById.get(node.parent) : node;
@@ -4019,5 +4331,25 @@ export function createEngine({
         }
     }
 
-    return { setConfig, start, stop, dispose, setHandlers, getFullArrangement, setHoveredBook, setFocusedBook, setOrderRevealEnabled, setHierarchyFilter, flyTo, setProjection };
+    function setInteractionEnabled(enabled: boolean) {
+        interactionEnabled = enabled;
+        if (enabled) return;
+        if (state.longPressTimer) {
+            clearTimeout(state.longPressTimer);
+            state.longPressTimer = null;
+        }
+        state.longPressTriggered = false;
+        state.isDragging = false;
+        state.dragMode = 'none';
+        state.draggedNodeId = null;
+        state.draggedStarIndex = -1;
+        state.draggedGroup = null;
+        state.touchCount = 0;
+        state.velocityX = 0;
+        state.velocityY = 0;
+        document.body.style.cursor = 'default';
+        onWindowBlur();
+    }
+
+    return { setConfig, start, stop, dispose, setHandlers, getFullArrangement, setHoveredBook, setFocusedBook, setOrderRevealEnabled, setHierarchyFilter, flyTo, setProjection, setInteractionEnabled };
 }

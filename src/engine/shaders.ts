@@ -69,13 +69,9 @@ uniform float uBlend;
 uniform int uProjectionType;
 varying vec2 vScreenPos;
 float getMaskAlpha() {
-    // No artificial circular mask — the horizon, atmosphere, and ground
-    // define the dome boundary naturally (as Stellarium does).
-    // Only apply a minimal edge softening to catch stray back-face artifacts.
     vec2 p = vScreenPos;
     p.x *= uAspect;
     float dist = length(p);
-    // Gentle falloff only at extreme screen edges (beyond NDC ~1.8)
     return 1.0 - smoothstep(1.8, 2.0, dist);
 }
 `;
