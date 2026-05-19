@@ -1771,12 +1771,19 @@ export function createEngine({
         return bestDot > 0 ? bestId : null;
     }
 
-    function updateTriangulationFocus(dt: number, target: THREE.Vector3) {
+    function updateTriangulationFocus(
+        dt: number,
+        target: THREE.Vector3,
+        focusedModeOverride?: boolean,
+        centeredBookIdOverride?: string | null
+    ) {
         if (!constellationLineFocusAttr || constellationLineSegmentBookIds.length === 0) return;
 
         const mode = getConstellationLineMode();
-        const focusedMode = shouldUseFocusedTriangulation(state.fov, state.lat);
-        const centeredBookId = focusedMode ? getCenteredBookId(target) : null;
+        const focusedMode = focusedModeOverride ?? shouldUseFocusedTriangulation(state.fov, state.lat);
+        const centeredBookId = centeredBookIdOverride === undefined
+            ? (focusedMode ? getCenteredBookId(target) : null)
+            : centeredBookIdOverride;
         const targetAlphaByBook = new Map<string, number>();
 
         for (const [bookId, fader] of lineBookFocusFaders.entries()) {
@@ -2135,7 +2142,8 @@ export function createEngine({
                 
                 let labelText = n.label;
                 if (n.level === 3 && n.meta?.chapter) {
-                    labelText = String(n.meta.chapter);
+                    const bookKey = n.meta?.bookKey as string | undefined;
+                    labelText = bookKey ? `${bookKey} ${n.meta.chapter}` : String(n.meta.chapter);
                 }
                 
                 const texRes = createTextTexture(labelText, color);
@@ -4139,7 +4147,10 @@ export function createEngine({
         const dt = lastTickTime > 0 ? Math.min(nowSec - lastTickTime, 0.1) : 0.016;
         lastTickTime = nowSec;
 
-        updateTriangulationFocus(dt, target);
+        const focusedTriangulationMode = shouldUseFocusedTriangulation(state.fov, state.lat);
+        const centeredTriangulationBookId = focusedTriangulationMode ? getCenteredBookId(target) : null;
+
+        updateTriangulationFocus(dt, target, focusedTriangulationMode, centeredTriangulationBookId);
 
         linesFader.target = getConstellationLineMode() !== "off";
         linesFader.update(dt);
@@ -4222,6 +4233,8 @@ export function createEngine({
             hoverId,
             selectedId,
             focusedId: focusedNodeId,
+            focusedBookId: centeredTriangulationBookId,
+            restrictChapterLabelsToFocusedBook: focusedTriangulationMode,
             shouldFilter: !!currentFilter && filterStrength > 0.01,
             isNodeFiltered: (node) => {
                 const nodeToCheck = node.level === 2.5 && node.parent ? nodeById.get(node.parent) : node;

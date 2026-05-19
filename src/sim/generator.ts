@@ -7,6 +7,18 @@ import type { SkyGenParams, StarOutput, SkyMetrics, SkyField } from "./types";
 
 const GRID = 256;
 
+function clamp(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, value));
+}
+
+function getGenerationRadius(params: SkyGenParams): number {
+  return clamp(params.maxProjectionRadius, 0.1, 1.25);
+}
+
+function getEdgeFalloffStart(params: SkyGenParams, maxRadius: number): number {
+  return clamp(params.edgeFalloffStart, 0, Math.max(0.01, maxRadius - 0.01));
+}
+
 export function computeDensityAt(
   x: number,
   y: number,
@@ -43,9 +55,12 @@ export function computeDensityAt(
   const bandShape = Math.exp(-0.5 * (perp * perp) / (params.bandWidth * params.bandWidth));
   const bandVal = params.bandStrength * bandShape;
 
-  // Edge falloff — domain extends to r=1.25, so falloff reaches 0 there
+  // Edge falloff — density tapers to zero at the configured generation radius.
+  const maxRadius = getGenerationRadius(params);
+  const edgeFalloffStart = getEdgeFalloffStart(params, maxRadius);
   const r = Math.sqrt(x * x + y * y);
-  const t = Math.max(0, (r - params.edgeFalloffStart) / (1.25 - params.edgeFalloffStart));
+  const denom = Math.max(0.001, maxRadius - edgeFalloffStart);
+  const t = Math.max(0, (r - edgeFalloffStart) / denom);
   const edgeFalloff = 1 - t * t;
 
   // Contrast gamma — amplifies bright regions, deepens sparse gaps
@@ -91,13 +106,14 @@ function applyVoids(density: number, x: number, y: number, voids: VoidBlob[]): n
 export function buildDensityField(params: SkyGenParams): Float32Array {
   const field = new Float32Array(GRID * GRID);
   const voids = generateVoids(params.seed, params.voidCount, params.voidStrength);
+  const maxRadius = getGenerationRadius(params);
   for (let iy = 0; iy < GRID; iy++) {
     for (let ix = 0; ix < GRID; ix++) {
-      // Grid covers [-1.25, 1.25] to match expanded sampling domain
-      const x = (ix / (GRID - 1)) * 2.5 - 1.25;
-      const y = (iy / (GRID - 1)) * 2.5 - 1.25;
+      // Grid covers [-maxRadius, maxRadius].
+      const x = (ix / (GRID - 1)) * 2 * maxRadius - maxRadius;
+      const y = (iy / (GRID - 1)) * 2 * maxRadius - maxRadius;
       const r = Math.sqrt(x * x + y * y);
-      if (r > 1.25) {
+      if (r > maxRadius) {
         field[iy * GRID + ix] = 0;
       } else {
         const d = computeDensityAt(x, y, params, params.seed);
@@ -225,21 +241,25 @@ function sampleFromCDF(cdf: Float32Array, rng: () => number): number {
   return lo;
 }
 
-function diskXYFromCell(cellIdx: number, rng: () => number, jitter: number): [number, number] | null {
+function diskXYFromCell(
+  cellIdx: number,
+  rng: () => number,
+  jitter: number,
+  maxRadius: number,
+): [number, number] | null {
   const iy = Math.floor(cellIdx / GRID);
   const ix = cellIdx - iy * GRID;
-  // Grid covers [-1.25, 1.25] — keep consistent with buildDensityField
-  const x = ((ix + rng() * jitter - jitter * 0.5) / (GRID - 1)) * 2.5 - 1.25;
-  const y = ((iy + rng() * jitter - jitter * 0.5) / (GRID - 1)) * 2.5 - 1.25;
-  if (x * x + y * y > 1.25 * 1.25) return null;
+  const x = ((ix + rng() * jitter - jitter * 0.5) / (GRID - 1)) * 2 * maxRadius - maxRadius;
+  const y = ((iy + rng() * jitter - jitter * 0.5) / (GRID - 1)) * 2 * maxRadius - maxRadius;
+  if (x * x + y * y > maxRadius * maxRadius) return null;
   return [x, y];
 }
 
-function randomDisk(rng: () => number): [number, number] {
+function randomDisk(rng: () => number, maxRadius: number): [number, number] {
   for (;;) {
-    const x = rng() * 2.5 - 1.25;
-    const y = rng() * 2.5 - 1.25;
-    if (x * x + y * y <= 1.25 * 1.25) return [x, y];
+    const x = rng() * 2 * maxRadius - maxRadius;
+    const y = rng() * 2 * maxRadius - maxRadius;
+    if (x * x + y * y <= maxRadius * maxRadius) return [x, y];
   }
 }
 
@@ -256,6 +276,7 @@ export function generateSky(
 ): SkyField {
   const rng = makeRng(params.seed);
   const STAR_COUNT = 1189;
+  const maxRadius = getGenerationRadius(params);
 
   // Stage A
   onProgress?.("density", 0);
@@ -302,7 +323,7 @@ export function generateSky(
 
     // ~1.5% of stars bypass exclusion entirely — breaks grid perfection
     if (rng() < 0.015) {
-      const [rx, ry] = randomDisk(rng);
+      const [rx, ry] = randomDisk(rng, maxRadius);
       xs[placed] = rx;
       ys[placed] = ry;
       grid.add(placed, rx, ry);
@@ -318,7 +339,7 @@ export function generateSky(
     // Try up to 800 candidates from CDF
     for (let attempt = 0; attempt < 800; attempt++) {
       const cellIdx = sampleFromCDF(cdf, rng);
-      const pt = diskXYFromCell(cellIdx, rng, 1.5);
+      const pt = diskXYFromCell(cellIdx, rng, 1.5, maxRadius);
       if (!pt) continue;
       const [cx, cy] = pt;
 
@@ -338,7 +359,7 @@ export function generateSky(
       const halfExcl = excl * 0.5;
       for (let attempt = 0; attempt < 200; attempt++) {
         const cellIdx = sampleFromCDF(cdf, rng);
-        const pt = diskXYFromCell(cellIdx, rng, 1.5);
+        const pt = diskXYFromCell(cellIdx, rng, 1.5, maxRadius);
         if (!pt) continue;
         const [cx, cy] = pt;
         const dsq = grid.nearestDistanceSq(cx, cy, xs, ys, halfExcl * 2);
@@ -355,7 +376,7 @@ export function generateSky(
 
     if (!found) {
       // Absolute fallback: random disk position
-      const [rx, ry] = randomDisk(rng);
+      const [rx, ry] = randomDisk(rng, maxRadius);
       xs[placed] = rx;
       ys[placed] = ry;
       grid.add(placed, rx, ry);
@@ -402,9 +423,9 @@ export function generateSky(
       let nx = (xs[i] as number) + (fxBuf[i] as number) * STEP_SIZE;
       let ny = (ys[i] as number) + (fyBuf[i] as number) * STEP_SIZE;
       const r = Math.sqrt(nx * nx + ny * ny);
-      if (r > 1.25) {
-        nx = (nx / r) * 1.25;
-        ny = (ny / r) * 1.25;
+      if (r > maxRadius) {
+        nx = (nx / r) * maxRadius;
+        ny = (ny / r) * maxRadius;
       }
       xs[i] = nx;
       ys[i] = ny;

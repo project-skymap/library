@@ -91,6 +91,8 @@ export type LabelManagerContext = {
     hoverId: string | null;
     selectedId: string | null;
     focusedId?: string | null;
+    focusedBookId?: string | null;
+    restrictChapterLabelsToFocusedBook?: boolean;
     isNodeFiltered: (node: SceneNode) => boolean;
     shouldFilter: boolean;
     toggles: LabelManagerToggles;
@@ -323,6 +325,15 @@ export class LabelManager {
                             const pixelW = uniforms.uSize.value.x * ctx.screenH * 0.8;
 
                             targetAlpha = 1;
+
+                            if (targetAlpha > 0 && record.classKey === "chapter" && !isSpecial) {
+                                if (ctx.restrictChapterLabelsToFocusedBook) {
+                                    const chapterBookId = record.label.node.parent ?? null;
+                                    if (!ctx.focusedBookId || chapterBookId !== ctx.focusedBookId) {
+                                        targetAlpha = 0;
+                                    }
+                                }
+                            }
 
                             if (targetAlpha > 0 && record.classKey === "chapter" && !isSpecial) {
                                 // Center-weighted reveal: wide/medium zoom favors center labels.
