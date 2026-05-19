@@ -9,10 +9,15 @@
 - `0.6.x`  : Selection Filtering
 - `0.7.x`  : Mobile
 - `0.8.x`  : Engine Rebuild
+- `0.9.x`  : Procedural Layout
 
 ## Releases
 <!-- @LatestFirst -->
 `🟪 epic` `🟩 story` `🟦 task` `🟥 bug`
+
+## [0.9.0]
+🟪 [Procedural Layout](https://jrsmth.atlassian.net/browse/SKY-29) (19/05/2026)
+- 🟩 `#30` Paul wants the Bible to be arranged like a realistic, immersive night sky
 
 ## [0.8.0]
 🟪 [Engine Rebuild](https://jrsmth.atlassian.net/browse/SKY-27) (23/03/2026)
@@ -66,4 +71,5 @@
 [0.7.1]: https://github.com/project-skymap/library/compare/v0.7.0...v0.7.1
 [0.7.2]: https://github.com/project-skymap/library/compare/v0.7.1...v0.7.2
 [0.7.5]: https://github.com/project-skymap/library/compare/v0.7.2...v0.7.5
-[0.8.0]: https://github.com/project-skymap/library/compare/v0.7.2...v0.7.5
+[0.8.0]: https://github.com/project-skymap/library/compare/v0.7.5...v0.8.0
+[0.9.0]: https://github.com/project-skymap/library/compare/v0.8.0...v0.9.0
