@@ -98,12 +98,21 @@ export type HorizonAtmosphereConfig = {
     minimalAltitudeDeg?: number;
 };
 
+export type HorizonGroundGradientConfig = {
+    type: "radial";
+    innerColor: string;
+    outerColor: string;
+    radius?: number;
+    intensity?: number;
+};
+
 export type HorizonThemeConfig = {
     id: string;
     label: string;
     source: "procedural" | "polygonal" | "fisheye" | "spherical";
     profile?: HorizonProfile;
     groundColor?: string;
+    groundGradient?: HorizonGroundGradientConfig;
     horizonLineColor?: string;
     horizonLineThickness?: number;
     atmosphere?: HorizonAtmosphereConfig;
