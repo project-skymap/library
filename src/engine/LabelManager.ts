@@ -123,15 +123,18 @@ const DEFAULT_LABEL_BEHAVIOR: ResolvedLabelBehavior = {
             fovFadeFeatherDeg: 20,
         },
         book: {
+            // Hands off from divisions exactly where their tint/labels fade out
+            // (smoothstep(fov, 48, 68) in createEngine.ts), so book labels fade in as
+            // division content fades out instead of leaving a dead zone at FOV 22-48.
             minFov: 0,
-            maxFov: 22,
+            maxFov: 48,
             priority: 60,
             mode: "pinned",
             maxOverlapPx: 999,
             radialFadeStart: 1.0,
             radialFadeEnd: 1.2,
             fadeDuration: 0.22,
-            fovFadeFeatherDeg: 0,
+            fovFadeFeatherDeg: 20,
         },
         group: {
             minFov: 0,
@@ -313,7 +316,8 @@ export class LabelManager {
             if (isEnabled) {
                 const maxFov = classBehavior.maxFov + (record.label.maxFovBias ?? 0);
                 const minFovGate = classBehavior.minFov - classBehavior.fovFadeFeatherDeg;
-                const inFovRange = ctx.fov >= minFovGate && ctx.fov <= maxFov;
+                const maxFovGate = maxFov + classBehavior.fovFadeFeatherDeg;
+                const inFovRange = ctx.fov >= minFovGate && ctx.fov <= maxFovGate;
                 if (inFovRange || isSpecial) {
                     const pWorld = record.label.obj.position;
                     const pProj = ctx.project(pWorld);
@@ -345,9 +349,10 @@ export class LabelManager {
                             targetAlpha = 1;
 
                             if (targetAlpha > 0 && classBehavior.fovFadeFeatherDeg > 0 && !isSpecial) {
-                                // Ease out gradually below minFov instead of popping to alpha=0
-                                // the instant fov crosses the threshold.
+                                // Ease in/out gradually around the minFov/maxFov edges instead of
+                                // popping to alpha=0 the instant fov crosses the threshold.
                                 targetAlpha *= THREE.MathUtils.smoothstep(ctx.fov, minFovGate, classBehavior.minFov);
+                                targetAlpha *= 1 - THREE.MathUtils.smoothstep(ctx.fov, maxFov, maxFovGate);
                             }
 
                             if (targetAlpha > 0 && record.classKey === "chapter" && !isSpecial) {

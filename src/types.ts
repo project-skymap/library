@@ -155,6 +155,10 @@ export type StarMapConfig = {
     // When present, this is used instead of the runtime book-anchor approximation for both
     // division label placement and the deep-space tint disc.
     divisionRegions?: Record<string, { direction: [number, number, number]; angularRadiusRad: number }>;
+    // Precomputed book regions (see builder/app/skymap/shared.ts computeBookRegions) — the
+    // true centroid direction and angular extent of a book's chapters, derived from the
+    // live arrangement. Used to anchor book label placement.
+    bookRegions?: Record<string, { direction: [number, number, number]; angularRadiusRad: number }>;
     constellations?: any; // constellation data
     showConstellationArt?: boolean;
     constellationBaseOpacity?: number; // Multiplier for all constellation artwork opacity (default 1.0).
