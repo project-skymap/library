@@ -139,11 +139,21 @@ export type StarMapConfig = {
     // Visuals
     background?: string; // "transparent" or hex color
     labelColors?: Record<string, string>; // key: book id (e.g. "GEN"), value: hex color
+    divisionColors?: Record<string, string>; // key: division name, value: hex color
+    // Precomputed division regions (see scripts/analyze-divisions.ts) — the true centroid
+    // direction and angular extent of a division's stars, derived from the static arrangement.
+    // When present, this is used instead of the runtime book-anchor approximation for both
+    // division label placement and the deep-space tint disc.
+    divisionRegions?: Record<string, { direction: [number, number, number]; angularRadiusRad: number }>;
     constellations?: any; // constellation data
     showConstellationArt?: boolean;
     constellationBaseOpacity?: number; // Multiplier for all constellation artwork opacity (default 1.0).
     showConstellationLines?: boolean;
     constellationLineMode?: "off" | "focused" | "full";
+    constellationLineOpacity?: number; // Overall constellation line opacity. Default 0.42.
+    constellationLineWidth?: number; // Core constellation line width multiplier. Default 3.0.
+    constellationLineGlowIntensity?: number; // Soft line halo strength. Default 0.0.
+    constellationLineStarPadding?: number; // World-space gap between chapter stars and line endpoints. Default 18.
     showDivisionBoundaries?: boolean;
     showBackdropStars?: boolean;
     backdropStarsCount?: number;
@@ -155,12 +165,14 @@ export type StarMapConfig = {
     showSunrise?: boolean;       // Procedural sun at horizon (default: true)
     showMilkyWay?: boolean;      // Procedural galactic band (default: true)
     starSizeExponent?: number; // Power curve exponent for weight→size mapping. Default 2.8. Higher = more dramatic spread.
-    starSizeScale?: number;    // Uniform multiplier applied to all star sizes. Default 1.0.
+    starSizeScale?: number;    // Uniform multiplier applied to all star sizes. Values below 1.0 intentionally shrink stars.
     starSizeWeightPercentile?: number; // Percentile (0–1) used as the effective max weight for size normalisation. Default 0.95. Lower → outliers capped sooner, distribution spreads more evenly.
+    starSizeOutlierCapMultiplier?: number; // Final base-size cap as a multiple of the largest non-outlier chapter. Default 2.0. Preserves the normal curve while limiting extreme chapters.
     starZoomReveal?: boolean;          // Zoom-based star reveal system. Default true. Set false to show all stars at all zoom levels.
     showBookLabels?: boolean;
     showChapterLabels?: boolean;
     showDivisionLabels?: boolean;
+    showDivisionTint?: boolean; // Soft per-division colour wash painted behind the stars (default true)
     showGroupLabels?: boolean;
     labelBehavior?: LabelBehaviorConfig;
     groups?: Record<string, { name: string, start: number, end: number }[]>;

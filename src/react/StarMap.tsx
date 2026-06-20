@@ -10,6 +10,8 @@ export type StarMapProps = {
     onHover?: (node?: SceneNode) => void;
     onArrangementChange?: (arrangement: StarArrangement) => void;
     onFovChange?: (fov: number) => void;
+    /** Fired on every frame where lon, lat, or fov shifts by ≥0.03°. Values are in radians. */
+    onCameraChange?: (lon: number, lat: number, fov: number) => void;
     onLongPress?: (node: SceneNode | null, x: number, y: number) => void;
     /** Fired when the user clicks one of the `markerPositions` stars. Index into the markerPositions array. */
     onMarkerSelect?: (index: number) => void;
@@ -24,10 +26,11 @@ export type StarMapHandle = {
     flyTo: (nodeId: string, targetFov?: number) => void;
     setProjection: (id: "perspective" | "stereographic" | "blended") => void;
     setInteractionEnabled: (enabled: boolean) => void;
+    resize: () => void;
 };
 
 export const StarMap = forwardRef<StarMapHandle, StarMapProps>(
-    ({ config, className, onSelect, onHover, onArrangementChange, onFovChange, onLongPress, onMarkerSelect }, ref) => {
+    ({ config, className, onSelect, onHover, onArrangementChange, onFovChange, onCameraChange, onLongPress, onMarkerSelect }, ref) => {
         const containerRef = useRef<HTMLDivElement | null>(null);
         const engineRef = useRef<any>(null);
 
@@ -40,6 +43,7 @@ export const StarMap = forwardRef<StarMapHandle, StarMapProps>(
             flyTo: (nodeId, targetFov) => engineRef.current?.flyTo?.(nodeId, targetFov),
             setProjection: (id) => engineRef.current?.setProjection?.(id),
             setInteractionEnabled: (enabled) => engineRef.current?.setInteractionEnabled?.(enabled),
+            resize: () => engineRef.current?.resize?.(),
         }));
 
         useEffect(() => {
@@ -56,6 +60,7 @@ export const StarMap = forwardRef<StarMapHandle, StarMapProps>(
                 onHover,
                 onArrangementChange,
                 onFovChange,
+                onCameraChange,
                 onLongPress,
                 onMarkerSelect,
             });
@@ -78,8 +83,8 @@ export const StarMap = forwardRef<StarMapHandle, StarMapProps>(
     }, [config]);
 
     useEffect(() => {
-        engineRef.current?.setHandlers?.({ onSelect, onHover, onArrangementChange, onFovChange, onLongPress, onMarkerSelect });
-    }, [onSelect, onHover, onArrangementChange, onFovChange, onLongPress]);
+        engineRef.current?.setHandlers?.({ onSelect, onHover, onArrangementChange, onFovChange, onCameraChange, onLongPress, onMarkerSelect });
+    }, [onSelect, onHover, onArrangementChange, onFovChange, onCameraChange, onLongPress]);
 
     return <div ref={containerRef} className={className} style={{ width: "100%", height: "100%" }} />;
     }

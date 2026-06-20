@@ -408,7 +408,17 @@ export class LabelManager {
                                 if (ctx.projectionId !== "perspective") {
                                     const dx = sX - ctx.screenW / 2;
                                     const dy = sY - ctx.screenH / 2;
-                                    angleTarget = Math.atan2(-dy, -dx) - Math.PI / 2;
+                                    const tangentAngle = Math.atan2(-dy, -dx) - Math.PI / 2;
+                                    // Keep text upright and legible: snap the tangent rotation
+                                    // back within +/-90 degrees of level so it never reads
+                                    // upside down, while still swivelling smoothly as the
+                                    // label moves around the screen (or the view rotates).
+                                    const wrapped = Math.atan2(Math.sin(tangentAngle), Math.cos(tangentAngle));
+                                    angleTarget = wrapped > Math.PI / 2
+                                        ? wrapped - Math.PI
+                                        : wrapped < -Math.PI / 2
+                                            ? wrapped + Math.PI
+                                            : wrapped;
                                 }
                             }
 
