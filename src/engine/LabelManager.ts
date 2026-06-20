@@ -28,6 +28,9 @@ type ResolvedLabelClassBehavior = {
     radialFadeStart: number;
     radialFadeEnd: number;
     fadeDuration: number;
+    // Degrees of FOV below minFov over which the label eases out, instead of
+    // popping to alpha=0 the instant fov crosses minFov.
+    fovFadeFeatherDeg: number;
 };
 
 type ResolvedLabelBehavior = {
@@ -106,14 +109,18 @@ const DEFAULT_LABEL_BEHAVIOR: ResolvedLabelBehavior = {
     reappearDelayMs: 60,
     classes: {
         division: {
-            minFov: 55,
+            // Matches the deep-space tint disc's reveal window exactly
+            // (smoothstep(fov, 48, 68) in createEngine.ts) so labels and tints
+            // fade out together instead of the label lingering after the tint is gone.
+            minFov: 68,
             maxFov: 180,
             priority: 70,
             mode: "floating",
-            maxOverlapPx: 10,
+            maxOverlapPx: 40,
             radialFadeStart: 1.0,
             radialFadeEnd: 1.2,
             fadeDuration: 0.28,
+            fovFadeFeatherDeg: 20,
         },
         book: {
             minFov: 0,
@@ -124,6 +131,7 @@ const DEFAULT_LABEL_BEHAVIOR: ResolvedLabelBehavior = {
             radialFadeStart: 1.0,
             radialFadeEnd: 1.2,
             fadeDuration: 0.22,
+            fovFadeFeatherDeg: 0,
         },
         group: {
             minFov: 0,
@@ -134,6 +142,7 @@ const DEFAULT_LABEL_BEHAVIOR: ResolvedLabelBehavior = {
             radialFadeStart: 1.0,
             radialFadeEnd: 1.2,
             fadeDuration: 0.22,
+            fovFadeFeatherDeg: 0,
         },
         chapter: {
             minFov: 0,
@@ -144,6 +153,7 @@ const DEFAULT_LABEL_BEHAVIOR: ResolvedLabelBehavior = {
             radialFadeStart: 0.55,
             radialFadeEnd: 0.95,
             fadeDuration: 0.16,
+            fovFadeFeatherDeg: 0,
         },
     },
 };
@@ -183,6 +193,7 @@ function resolveLabelBehavior(config?: LabelBehaviorConfig): ResolvedLabelBehavi
             radialFadeStart: source?.radialFadeStart ?? base.radialFadeStart,
             radialFadeEnd: source?.radialFadeEnd ?? base.radialFadeEnd,
             fadeDuration: source?.fadeDuration ?? base.fadeDuration,
+            fovFadeFeatherDeg: source?.fovFadeFeatherDeg ?? base.fovFadeFeatherDeg,
         };
     };
 
@@ -301,14 +312,21 @@ export class LabelManager {
 
             if (isEnabled) {
                 const maxFov = classBehavior.maxFov + (record.label.maxFovBias ?? 0);
-                const inFovRange = ctx.fov >= classBehavior.minFov && ctx.fov <= maxFov;
+                const minFovGate = classBehavior.minFov - classBehavior.fovFadeFeatherDeg;
+                const inFovRange = ctx.fov >= minFovGate && ctx.fov <= maxFov;
                 if (inFovRange || isSpecial) {
                     const pWorld = record.label.obj.position;
                     const pProj = ctx.project(pWorld);
                     const frontVisible = pProj.z <= 0.2;
 
                     let backFacing = false;
-                    if (behavior.hideBackFacing) {
+                    // Division labels are a wide-angle region overview, not a literal star
+                    // position — their anchors get spread well away from the true centroid by
+                    // the repulsion relaxation (see createEngine.ts), so the camera-forward
+                    // dot-product heuristic below (tuned for tightly-clustered star labels)
+                    // would otherwise falsely cull them in and out as the view rotates.
+                    // frontVisible (the projected clip-space check) is sufficient on its own.
+                    if (behavior.hideBackFacing && record.classKey !== "division") {
                         const worldDir = pWorld.clone().normalize();
                         backFacing = worldDir.dot(cameraForward) < -0.2;
                     }
@@ -325,6 +343,12 @@ export class LabelManager {
                             const pixelW = uniforms.uSize.value.x * ctx.screenH * 0.8;
 
                             targetAlpha = 1;
+
+                            if (targetAlpha > 0 && classBehavior.fovFadeFeatherDeg > 0 && !isSpecial) {
+                                // Ease out gradually below minFov instead of popping to alpha=0
+                                // the instant fov crosses the threshold.
+                                targetAlpha *= THREE.MathUtils.smoothstep(ctx.fov, minFovGate, classBehavior.minFov);
+                            }
 
                             if (targetAlpha > 0 && record.classKey === "chapter" && !isSpecial) {
                                 if (ctx.restrictChapterLabelsToFocusedBook) {
@@ -404,22 +428,9 @@ export class LabelManager {
                             }
 
                             if (record.classKey === "division" && uniforms.uAngle) {
+                                // Always level with the bottom of the screen, regardless of
+                                // projection or where the label sits — no tangent rotation.
                                 angleTarget = 0;
-                                if (ctx.projectionId !== "perspective") {
-                                    const dx = sX - ctx.screenW / 2;
-                                    const dy = sY - ctx.screenH / 2;
-                                    const tangentAngle = Math.atan2(-dy, -dx) - Math.PI / 2;
-                                    // Keep text upright and legible: snap the tangent rotation
-                                    // back within +/-90 degrees of level so it never reads
-                                    // upside down, while still swivelling smoothly as the
-                                    // label moves around the screen (or the view rotates).
-                                    const wrapped = Math.atan2(Math.sin(tangentAngle), Math.cos(tangentAngle));
-                                    angleTarget = wrapped > Math.PI / 2
-                                        ? wrapped - Math.PI
-                                        : wrapped < -Math.PI / 2
-                                            ? wrapped + Math.PI
-                                            : wrapped;
-                                }
                             }
 
                             if (targetAlpha > 0) {
@@ -488,6 +499,12 @@ export class LabelManager {
             };
 
             let rejected = false;
+            // Only a *new* collision should restart the reappearDelayMs cooldown clock below.
+            // If we instead re-stamp lastRejectedAtMs while merely waiting out a previous
+            // cooldown, the clock perpetually restarts every frame and the label never gets
+            // re-evaluated against real overlap again — i.e. it vanishes permanently the first
+            // time it loses a collision, even after the rival label moves away.
+            let rejectedByNewCollision = false;
 
             const isGuaranteedCenterChapter = c.record.id === guaranteedCenterChapterId;
             if (!c.isPinned && !isGuaranteedCenterChapter) {
@@ -504,6 +521,7 @@ export class LabelManager {
                         const overlapDepth = boundsOverlapDepth(rect, other);
                         if (overlapDepth > c.behavior.maxOverlapPx) {
                             rejected = true;
+                            rejectedByNewCollision = true;
                             break;
                         }
                     }
@@ -512,7 +530,9 @@ export class LabelManager {
 
             if (rejected) {
                 c.record.lastAccepted = false;
-                c.record.lastRejectedAtMs = ctx.nowMs;
+                if (rejectedByNewCollision) {
+                    c.record.lastRejectedAtMs = ctx.nowMs;
+                }
                 continue;
             }
 

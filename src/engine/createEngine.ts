@@ -492,6 +492,11 @@ export function createEngine({
         }
     }
 
+    function setUniformValue(uniforms: Record<string, THREE.IUniform>, key: string, value: unknown) {
+        const uniform = uniforms[key];
+        if (uniform) uniform.value = value;
+    }
+
     function applyGroundTheme(cfg?: StarMapConfig) {
         if (!groundMaterial) return;
         const theme: HorizonThemeConfig | undefined = getSceneDebug()?.disableHorizonTheme ? undefined : cfg?.horizonTheme;
@@ -500,6 +505,12 @@ export function createEngine({
 
         const mode = theme?.source === "polygonal" && (theme.profile?.points?.length ?? 0) >= 2 ? 1 : 0;
         const groundColor = toColor(theme?.groundColor, 0x010102);
+        const gradient = theme?.groundGradient;
+        const gradientEnabled = gradient?.type === "radial" ? 1.0 : 0.0;
+        const gradientInnerColor = toColor(gradient?.innerColor, 0x010102);
+        const gradientOuterColor = toColor(gradient?.outerColor, theme?.groundColor ? groundColor.getHex() : 0x010102);
+        const gradientRadius = THREE.MathUtils.clamp(gradient?.radius ?? 0.95, 0.05, 3.0);
+        const gradientIntensity = THREE.MathUtils.clamp(gradient?.intensity ?? 1.0, 0.0, 1.0);
         const fogColor = toColor(theme?.horizonLineColor, 0x0a1e3a);
         const fogIntensity = THREE.MathUtils.clamp(atmo?.fogIntensity ?? 0.6, 0.0, 1.5);
         const fogVisible = atmo?.fogVisible === false ? 0.0 : 1.0;
@@ -537,28 +548,33 @@ export function createEngine({
             baseAltDeg
         };
 
-        uniforms.color.value = groundColor;
-        uniforms.fogColor.value = fogColor;
-        uniforms.uFogIntensity.value = fogIntensity;
-        uniforms.uFogVisible.value = fogVisible;
-        uniforms.uMinBrightness.value = minBrightness;
-        uniforms.uHorizonMode.value = mode;
-        uniforms.uHorizonPointCount.value = pointCount;
-        uniforms.uHorizonAzDeg.value = azSamples;
-        uniforms.uHorizonAltDeg.value = altSamples;
-        uniforms.uHorizonRotateRad.value = rotateRad;
-        uniforms.uBaseAltDeg.value = baseAltDeg;
+        setUniformValue(uniforms, "color", groundColor);
+        setUniformValue(uniforms, "uGroundGradientEnabled", gradientEnabled);
+        setUniformValue(uniforms, "uGroundGradientInner", gradientInnerColor);
+        setUniformValue(uniforms, "uGroundGradientOuter", gradientOuterColor);
+        setUniformValue(uniforms, "uGroundGradientRadius", gradientRadius);
+        setUniformValue(uniforms, "uGroundGradientIntensity", gradientIntensity);
+        setUniformValue(uniforms, "fogColor", fogColor);
+        setUniformValue(uniforms, "uFogIntensity", fogIntensity);
+        setUniformValue(uniforms, "uFogVisible", fogVisible);
+        setUniformValue(uniforms, "uMinBrightness", minBrightness);
+        setUniformValue(uniforms, "uHorizonMode", mode);
+        setUniformValue(uniforms, "uHorizonPointCount", pointCount);
+        setUniformValue(uniforms, "uHorizonAzDeg", azSamples);
+        setUniformValue(uniforms, "uHorizonAltDeg", altSamples);
+        setUniformValue(uniforms, "uHorizonRotateRad", rotateRad);
+        setUniformValue(uniforms, "uBaseAltDeg", baseAltDeg);
         groundMaterial.uniformsNeedUpdate = true;
 
         if (atmosphereMesh && atmosphereMesh.material instanceof THREE.ShaderMaterial) {
             const atmUniforms = atmosphereMesh.material.uniforms as Record<string, THREE.IUniform>;
             const topAltDeg = atmo?.fogBandTopAltDeg ?? 90;
             const bottomAltDeg = atmo?.fogBandBottomAltDeg ?? -90;
-            atmUniforms.uThemeFogVisible.value = fogVisible;
-            atmUniforms.uThemeFogIntensity.value = fogIntensity;
-            atmUniforms.uThemeFogTopSin.value = Math.sin(THREE.MathUtils.degToRad(topAltDeg));
-            atmUniforms.uThemeFogBottomSin.value = Math.sin(THREE.MathUtils.degToRad(bottomAltDeg));
-            atmUniforms.uThemeMinBrightness.value = minBrightness;
+            setUniformValue(atmUniforms, "uThemeFogVisible", fogVisible);
+            setUniformValue(atmUniforms, "uThemeFogIntensity", fogIntensity);
+            setUniformValue(atmUniforms, "uThemeFogTopSin", Math.sin(THREE.MathUtils.degToRad(topAltDeg)));
+            setUniformValue(atmUniforms, "uThemeFogBottomSin", Math.sin(THREE.MathUtils.degToRad(bottomAltDeg)));
+            setUniformValue(atmUniforms, "uThemeMinBrightness", minBrightness);
             atmosphereMesh.material.uniformsNeedUpdate = true;
         }
 
@@ -728,6 +744,11 @@ export function createEngine({
         const material = createSmartMaterial({
             uniforms: {
                 color: { value: new THREE.Color(0x010102) },
+                uGroundGradientEnabled: { value: 0.0 },
+                uGroundGradientInner: { value: new THREE.Color(0x010102) },
+                uGroundGradientOuter: { value: new THREE.Color(0x010102) },
+                uGroundGradientRadius: { value: 0.95 },
+                uGroundGradientIntensity: { value: 1.0 },
                 fogColor: { value: new THREE.Color(0x0a1e3a) },
                 uFogIntensity: { value: 0.6 },
                 uFogVisible: { value: 1.0 },
@@ -756,6 +777,11 @@ export function createEngine({
             `,
             fragmentShader: `
                 uniform vec3 color; 
+                uniform float uGroundGradientEnabled;
+                uniform vec3 uGroundGradientInner;
+                uniform vec3 uGroundGradientOuter;
+                uniform float uGroundGradientRadius;
+                uniform float uGroundGradientIntensity;
                 uniform vec3 fogColor;
                 uniform float uFogIntensity;
                 uniform float uFogVisible;
@@ -841,11 +867,14 @@ export function createEngine({
 
                     // Atmospheric haze — stronger near horizon
                     float fogFactor = smoothstep(-120.0, terrainHeight, vPos.y);
-                    vec3 finalCol = mix(color, fogColor, fogFactor * uFogIntensity * uFogVisible);
+                    float radialT = smoothstep(0.0, max(0.001, uGroundGradientRadius), length(vScreenPos));
+                    vec3 gradientColor = mix(uGroundGradientInner, uGroundGradientOuter, radialT);
+                    vec3 baseColor = mix(color, gradientColor, uGroundGradientEnabled * uGroundGradientIntensity);
+                    vec3 finalCol = mix(baseColor, fogColor, fogFactor * uFogIntensity * uFogVisible);
 
                     // Add rim glow near terrain peaks
                     finalCol += rimColor * rim;
-                    finalCol = max(finalCol, color * uMinBrightness);
+                    finalCol = max(finalCol, baseColor * uMinBrightness);
 
                     gl_FragColor = vec4(finalCol, 1.0); 
                 }
@@ -1737,6 +1766,84 @@ export function createEngine({
         return { tex, aspect: w / h };
     }
 
+    // Returns the point on the great circle through `anchor` and `point` that sits exactly
+    // `targetAngleRad` away from `anchor` (on the `point` side). targetAngleRad larger than the
+    // current angle(anchor, point) extrapolates past `point`; smaller pulls back toward `anchor`.
+    function pointAtAngleFrom(anchor: THREE.Vector3, point: THREE.Vector3, targetAngleRad: number): THREE.Vector3 {
+        const a = anchor.clone().normalize();
+        const p = point.clone().normalize();
+        const theta = a.angleTo(p);
+        if (theta < 1e-4) return p; // no defined direction between coincident points
+        const t = targetAngleRad / theta;
+        const sinTheta = Math.sin(theta);
+        const wa = Math.sin((1 - t) * theta) / sinTheta;
+        const wp = Math.sin(t * theta) / sinTheta;
+        return a.clone().multiplyScalar(wa).add(p.clone().multiplyScalar(wp)).normalize();
+    }
+
+    // Pulls `point` back toward `anchor` if it's currently further than `maxAngleRad` away.
+    function clampToAnchor(anchor: THREE.Vector3, point: THREE.Vector3, maxAngleRad: number): THREE.Vector3 {
+        const theta = anchor.angleTo(point);
+        if (theta <= maxAngleRad || theta < 1e-4) return point.clone().normalize();
+        return pointAtAngleFrom(anchor, point, maxAngleRad);
+    }
+
+    // Settles division label anchors apart from one another via simple pairwise repulsion,
+    // each one tethered to its own true star centroid and never allowed to roam further than
+    // `maxRoamFraction` of its tint disc's angular radius. Divisions with breathing room settle
+    // near their centroid; divisions crowded by neighbours get pushed toward the edge of their
+    // disc (in whichever direction relieves the crowding, not necessarily straight outward).
+    function relaxDivisionLabelDirections(
+        entries: { id: string; centroid: THREE.Vector3; angularRadius: number }[],
+        maxRoamFraction: number,
+        horizonPaddingRad: number,
+    ): Map<string, THREE.Vector3> {
+        const result = new Map<string, THREE.Vector3>();
+        const zenith = new THREE.Vector3(0, 1, 0);
+        const maxThetaFromZenith = Math.PI / 2 - Math.max(0.001, horizonPaddingRad);
+
+        if (entries.length === 0) return result;
+        if (maxRoamFraction <= 1e-6 || entries.length < 2) {
+            for (const e of entries) result.set(e.id, e.centroid.clone().normalize());
+            return result;
+        }
+
+        const positions = entries.map((e) => e.centroid.clone().normalize());
+        const maxRoam = entries.map((e) => e.angularRadius * maxRoamFraction);
+        const ITERATIONS = 40;
+        const DAMPING = 0.5;
+
+        for (let iter = 0; iter < ITERATIONS; iter++) {
+            const deltas = positions.map(() => new THREE.Vector3());
+            for (let i = 0; i < entries.length; i++) {
+                for (let j = i + 1; j < entries.length; j++) {
+                    const a = positions[i]!;
+                    const b = positions[j]!;
+                    const theta = a.angleTo(b);
+                    const desiredSep = (entries[i]!.angularRadius + entries[j]!.angularRadius) * 0.5;
+                    if (theta < 1e-4 || theta >= desiredSep) continue;
+                    const pushEach = (desiredSep - theta) * DAMPING * 0.5;
+                    const newA = pointAtAngleFrom(b, a, theta + pushEach);
+                    const newB = pointAtAngleFrom(a, b, theta + pushEach);
+                    deltas[i]!.add(newA.sub(a));
+                    deltas[j]!.add(newB.sub(b));
+                }
+            }
+            for (let i = 0; i < entries.length; i++) {
+                let p = positions[i]!.clone().add(deltas[i]!).normalize();
+                p = clampToAnchor(entries[i]!.centroid, p, maxRoam[i]!);
+                const thetaFromZenith = zenith.angleTo(p);
+                if (thetaFromZenith > maxThetaFromZenith) {
+                    p = pointAtAngleFrom(zenith, p, maxThetaFromZenith);
+                }
+                positions[i] = p;
+            }
+        }
+
+        entries.forEach((e, i) => result.set(e.id, positions[i]!));
+        return result;
+    }
+
     // A soft, low-contrast colour wash painted directly on the celestial sphere
     // behind a division's stars — a "geographical whisper" rather than a UI overlay.
     function createDivisionTintDisc(direction: THREE.Vector3, angularRadiusRad: number, color: string): THREE.Mesh {
@@ -2097,6 +2204,31 @@ export function createEngine({
             }
         }
 
+        // Relax division label anchors so they spread apart from one another instead of
+        // bunching up near the zenith — each label is free to roam within its own tint disc
+        // (scaled by divisionLabelPushFraction) and is repelled by labels that land too close,
+        // so crowded divisions push apart while isolated ones stay near their true centroid.
+        const divisionLabelDirections = new Map<string, THREE.Vector3>();
+        {
+            const relaxEntries: { id: string; centroid: THREE.Vector3; angularRadius: number }[] = [];
+            for (const n of laidOut.nodes) {
+                if (n.level !== 1 || cfg.arrangement?.[n.id]) continue;
+                const divName = (n.meta?.division as string) ?? n.label;
+                const region = cfg.divisionRegions?.[divName];
+                const centroid = region
+                    ? new THREE.Vector3(region.direction[0], region.direction[1], region.direction[2])
+                    : (divisionPositions.get(n.id) ?? getPosition(n));
+                const angularRadius = region?.angularRadiusRad ?? divisionAngularRadii.get(n.id) ?? 0.2;
+                relaxEntries.push({ id: n.id, centroid: centroid.clone().normalize(), angularRadius });
+            }
+            const maxRoamFraction = cfg.divisionLabelPushFraction ?? 0.45;
+            const horizonPaddingRad = THREE.MathUtils.degToRad(
+                THREE.MathUtils.clamp(cfg.divisionLabelHorizonPaddingDeg ?? 25, 0, 89)
+            );
+            const relaxed = relaxDivisionLabelDirections(relaxEntries, maxRoamFraction, horizonPaddingRad);
+            for (const [id, dir] of relaxed) divisionLabelDirections.set(id, dir);
+        }
+
         const starPositions: number[] = [];
         const starSizes: number[] = [];
         const starColors: number[] = [];
@@ -2284,18 +2416,18 @@ export function createEngine({
                 // rather than the crisp UI-style text used for books/chapters.
                 const texRes = n.level === 1
                     ? createTextTexture(labelText, color, {
-                        fontSize: 68,
-                        fontWeight: 300,
+                        fontSize: 20,
+                        fontWeight: 200,
                         uppercase: true,
-                        letterSpacing: 10,
-                        blurPx: 2.5,
-                        alpha: 0.5,
+                        letterSpacing: 4,
+                        blurPx: 0,
+                        alpha: 1.0,
                     })
                     : createTextTexture(labelText, color);
 
                 if (texRes) {
                     let baseScale = 0.05;
-                    if (n.level === 1) baseScale = 0.105;
+                    if (n.level === 1) baseScale = 0.0309;
                     else if (n.level === 2) baseScale = 0.04; // Books: Decreased from 0.06
                     else if (n.level === 3) {
                         // Use linear weight norm (not the star-size-exponent-skewed value)
@@ -2368,9 +2500,10 @@ export function createEngine({
                             const arr = cfg.arrangement[n.id];
                             p.set(arr.position![0], arr.position![1], arr.position![2]);
                         } else if (region) {
-                            // Sit directly on top of the division's true star centroid, slightly
-                            // outside the layout radius so the label floats just above its stars.
-                            p.copy(tintDir).normalize().multiplyScalar(layoutCfg.radius * 1.04);
+                            // Use the relaxed anchor computed up front — pulled toward the true
+                            // centroid where there's room, pushed apart from neighbours where there isn't.
+                            const pushed = divisionLabelDirections.get(n.id) ?? tintDir;
+                            p.copy(pushed).multiplyScalar(layoutCfg.radius * 1.04);
                         } else {
                             // Fallback (no precomputed region available): centroid of children
                             // projected onto the horizon ring.

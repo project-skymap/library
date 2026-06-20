@@ -69,6 +69,7 @@ export type LabelClassBehavior = {
     radialFadeStart?: number;
     radialFadeEnd?: number;
     fadeDuration?: number;
+    fovFadeFeatherDeg?: number;
 };
 
 export type LabelBehaviorConfig = {
@@ -182,6 +183,16 @@ export type StarMapConfig = {
     showChapterLabels?: boolean;
     showDivisionLabels?: boolean;
     showDivisionTint?: boolean; // Soft per-division colour wash painted behind the stars (default true)
+    // How far a division label is allowed to roam from its true star centroid, as a fraction
+    // (0..1+) of its tint disc's angular radius, while settling apart from other division
+    // labels via pairwise repulsion. 0 = every label pinned to its centroid (no repulsion).
+    // ~0.45 (default) lets crowded divisions push apart while isolated ones stay centred.
+    divisionLabelPushFraction?: number;
+    // Minimum clearance, in degrees, a division label must keep from the horizon (i.e. from
+    // 90° polar angle off the zenith) when the repulsion relaxation pushes it outward. Stops
+    // crowded divisions from being shoved right up against the periphery of the zenith view.
+    // Default 25.
+    divisionLabelHorizonPaddingDeg?: number;
     showGroupLabels?: boolean;
     labelBehavior?: LabelBehaviorConfig;
     groups?: Record<string, { name: string, start: number, end: number }[]>;
