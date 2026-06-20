@@ -12,6 +12,7 @@ export type {
   HorizonProfile,
   HorizonSamplePoint,
   HorizonAtmosphereConfig,
+  HorizonGroundGradientConfig,
   SceneMechanicsDebugConfig
 } from "./types";
 
