@@ -2137,10 +2137,12 @@ export function createEngine({
             item.chapterStarWorldPos = starPos.clone();
         }
 
-        // Zoom-driven size scaling for book and group labels (mirrors chapter behaviour).
+        // Zoom-driven size scaling for group labels (mirrors chapter behaviour). Book labels
+        // are intentionally excluded — they should stay a static size since the user will
+        // zoom past them into chapter-level labels, which are the focus at that depth.
         for (const item of dynamicLabels) {
             const level = item.node.level;
-            if (level !== 2 && level !== 2.5) continue;
+            if (level !== 2.5) continue;
             const mat = item.obj.material;
             if (!(mat instanceof THREE.ShaderMaterial) || !(mat.uniforms?.uSize?.value instanceof THREE.Vector2)) continue;
 
@@ -2397,12 +2399,10 @@ export function createEngine({
             if (n.level === 1 || n.level === 2 || n.level === 3) {
                 let color = "#ffffff";
                 const divName = (n.meta?.division as string) ?? n.label;
-                if (n.level === 1) {
-                    color = cfg.divisionColors?.[divName] || "#9fb3c8"; // Divisions: per-division tint, muted slate fallback
-                }
-                else if (n.level === 2) {
-                    const bookKey = n.meta?.bookKey as string | undefined;
-                    color = (bookKey && cfg.labelColors?.[bookKey]) || "#cbd5e1";
+                if (n.level === 1 || n.level === 2) {
+                    // Books inherit their division's tint, same colour scheme as the
+                    // division label itself — keeps the map visually coherent across zoom.
+                    color = cfg.divisionColors?.[divName] || "#9fb3c8";
                 }
                 else if (n.level === 3) color = "#94a3b8"; // Chapters: Slate 400 (Grey)
 
@@ -2412,9 +2412,9 @@ export function createEngine({
                     labelText = bookKey ? `${bookKey} ${n.meta.chapter}` : String(n.meta.chapter);
                 }
 
-                // Division labels render soft and low-contrast, like a region name on a map,
-                // rather than the crisp UI-style text used for books/chapters.
-                const texRes = n.level === 1
+                // Division and book labels render soft and low-contrast, like a region name
+                // on a map, rather than the crisp UI-style text used for chapters.
+                const texRes = (n.level === 1 || n.level === 2)
                     ? createTextTexture(labelText, color, {
                         fontSize: 20,
                         fontWeight: 200,
@@ -2427,8 +2427,7 @@ export function createEngine({
 
                 if (texRes) {
                     let baseScale = 0.05;
-                    if (n.level === 1) baseScale = 0.0309;
-                    else if (n.level === 2) baseScale = 0.04; // Books: Decreased from 0.06
+                    if (n.level === 1 || n.level === 2) baseScale = 0.0309; // Same text size as division labels
                     else if (n.level === 3) {
                         // Use linear weight norm (not the star-size-exponent-skewed value)
                         // so label sizes spread visibly across the full range.
@@ -2513,6 +2512,19 @@ export function createEngine({
                             const r = layoutCfg.radius * 0.95;
                             const angle = Math.atan2(p.z, p.x);
                             p.set(r * Math.cos(angle), 150, r * Math.sin(angle));
+                        }
+                    } else if (n.level === 2) {
+                        // Prefer the precomputed book region (builder/app/skymap/shared.ts
+                        // computeBookRegions), the true star centroid of this book's chapters,
+                        // over the raw layout position.
+                        const bookKey = n.meta?.bookKey as string | undefined;
+                        const region = bookKey ? cfg.bookRegions?.[bookKey] : undefined;
+                        if (cfg.arrangement?.[n.id]) {
+                            const arr = cfg.arrangement[n.id];
+                            p.set(arr.position![0], arr.position![1], arr.position![2]);
+                        } else if (region) {
+                            p.set(region.direction[0], region.direction[1], region.direction[2])
+                                .multiplyScalar(layoutCfg.radius * 1.04);
                         }
                     } else if (n.level === 3) {
                         // Offset chapters radially based on star size.
