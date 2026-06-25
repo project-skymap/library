@@ -1,19 +1,27 @@
 # Change Log
 
 ## Version History
-- `0.1.x`  : End-to-End Demo
-- `0.2.x`  : Arrangements
-- `0.3.x`  : Planetarium
-- `0.4.x`  : Layout
-- `0.5.x`  : Constellation Art
-- `0.6.x`  : Selection Filtering
-- `0.7.x`  : Mobile
-- `0.8.x`  : Engine Rebuild
-- `0.9.x`  : Procedural Layout
+- `0.1.x`   : End-to-End Demo
+- `0.2.x`   : Arrangements
+- `0.3.x`   : Planetarium
+- `0.4.x`   : Layout
+- `0.5.x`   : Constellation Art
+- `0.6.x`   : Selection Filtering
+- `0.7.x`   : Mobile
+- `0.8.x`   : Engine Rebuild
+- `0.9.x`   : Procedural Layout
+- `0.10.x`  : Hierarchy
 
 ## Releases
 <!-- @LatestFirst -->
 `🟪 epic` `🟩 story` `🟦 task` `🟥 bug`
+
+## [0.10.0]
+🟪 [Hierarchy](https://jrsmth.atlassian.net/browse/SKY-31) (25/06/2026)
+- 🟩 `#32` Paul wants book-level constellations to be pretty and informative
+- 🟩 `#33` Paul wants to visualise divisions when zoomed out
+- 🟩 `#34` Paul wants to recognise books when zooming in
+- 🟩 `#35` Paul wants to locate chapters when zoomed in
 
 ## [0.9.0]
 🟪 [Procedural Layout](https://jrsmth.atlassian.net/browse/SKY-29) (19/05/2026)
@@ -73,3 +81,4 @@
 [0.7.5]: https://github.com/project-skymap/library/compare/v0.7.2...v0.7.5
 [0.8.0]: https://github.com/project-skymap/library/compare/v0.7.5...v0.8.0
 [0.9.0]: https://github.com/project-skymap/library/compare/v0.8.0...v0.9.0
+[0.10.0]: https://github.com/project-skymap/library/compare/v0.9.0...v0.10.0
