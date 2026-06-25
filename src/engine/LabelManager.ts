@@ -395,6 +395,16 @@ export class LabelManager {
                                 }
                             }
 
+                            if (targetAlpha > 0 && record.classKey === "book" && !isSpecial) {
+                                if (ctx.restrictChapterLabelsToFocusedBook && ctx.focusedBookId) {
+                                    if (record.label.node.id !== ctx.focusedBookId) {
+                                        // Fade non-focused book names out as chapter labels come in (FOV 22→10°).
+                                        const chapterZoomT = 1.0 - THREE.MathUtils.smoothstep(ctx.fov, 10, 22);
+                                        targetAlpha *= 1.0 - chapterZoomT;
+                                    }
+                                }
+                            }
+
                             if (targetAlpha > 0 && ctx.shouldFilter) {
                                 const node = record.label.node;
                                 if (node.level === 3) {

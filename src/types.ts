@@ -213,7 +213,7 @@ export type StarMapConfig = {
     // Interaction & Camera
     editable?: boolean;
     projection?: "perspective" | "stereographic" | "blended";
-    camera?: { lon?: number, lat?: number };
+    camera?: { lon?: number, lat?: number, fov?: number };
     fitProjection?: boolean;
     debug?: {
         sceneMechanics?: SceneMechanicsDebugConfig;

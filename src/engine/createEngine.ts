@@ -2905,7 +2905,9 @@ export function createEngine({
                     lineBookCenters.set(bookId, centroid);
                 }
             }
-            if (bookKey && customBooks.has(bookKey)) continue;
+            // Skip auto-generation when a constellation config is provided — only
+            // explicit linePaths/lineSegments are used in that case.
+            if (bookKey && (customBooks.has(bookKey) || rawConstellations.length > 0)) continue;
             for (let i = 0; i < chapters.length - 1; i++) {
                 const c1 = chapters[i]; const c2 = chapters[i+1];
                 if (!c1 || !c2) continue;
@@ -3257,6 +3259,7 @@ export function createEngine({
     let lastModel: SceneModel | undefined = undefined;
     let lastAppliedLon: number | undefined = undefined;
     let lastAppliedLat: number | undefined = undefined;
+    let lastAppliedFov: number | undefined = undefined;
     let lastBackdropCount: number | undefined = undefined;
 
     function setProjection(id: ProjectionId | string) {
@@ -3290,6 +3293,10 @@ export function createEngine({
              state.lat = cfg.camera.lat;
              state.targetLat = cfg.camera.lat;
              lastAppliedLat = cfg.camera.lat;
+        }
+        if (typeof cfg.camera?.fov === 'number' && cfg.camera.fov !== lastAppliedFov) {
+             state.fov = Math.max(ENGINE_CONFIG.minFov, Math.min(ENGINE_CONFIG.maxFov, cfg.camera.fov));
+             lastAppliedFov = cfg.camera.fov;
         }
 
         // Rebuild Backdrop Stars if count changed
@@ -4464,6 +4471,8 @@ export function createEngine({
 
         const focusedTriangulationMode = shouldUseFocusedTriangulation(state.fov, state.lat);
         const centeredTriangulationBookId = focusedTriangulationMode ? getCenteredBookId(target) : null;
+        const showingChapterLabels = currentConfig?.showChapterLabels === true;
+        const centeredBookId = showingChapterLabels ? (centeredTriangulationBookId ?? getCenteredBookId(target)) : centeredTriangulationBookId;
 
         updateTriangulationFocus(dt, target, focusedTriangulationMode, centeredTriangulationBookId);
 
@@ -4527,10 +4536,13 @@ export function createEngine({
 
         // --- Constellation Lines Visibility (faded) ---
         if (constellationLines) {
-            constellationLines.visible = linesFader.eased > 0.01;
+            // Fade in/out with book-level labels: fully visible below FOV 48°, gone above 68°.
+            const bookFovReveal = 1.0 - THREE.MathUtils.smoothstep(state.fov, 48, 68);
+            const lineReveal = linesFader.eased * bookFovReveal;
+            constellationLines.visible = lineReveal > 0.01;
             if (constellationLines.visible && (constellationLines as THREE.Mesh).material) {
                 const mat = (constellationLines as THREE.Mesh).material as THREE.ShaderMaterial;
-                if (mat.uniforms?.uReveal) mat.uniforms.uReveal.value = linesFader.eased;
+                if (mat.uniforms?.uReveal) mat.uniforms.uReveal.value = lineReveal;
                 mat.opacity = 1.0;
             }
         }
@@ -4559,8 +4571,8 @@ export function createEngine({
             hoverId,
             selectedId,
             focusedId: focusedNodeId,
-            focusedBookId: centeredTriangulationBookId,
-            restrictChapterLabelsToFocusedBook: focusedTriangulationMode,
+            focusedBookId: centeredBookId,
+            restrictChapterLabelsToFocusedBook: showingChapterLabels || focusedTriangulationMode,
             shouldFilter: !!currentFilter && filterStrength > 0.01,
             isNodeFiltered: (node) => {
                 const nodeToCheck = node.level === 2.5 && node.parent ? nodeById.get(node.parent) : node;
