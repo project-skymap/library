@@ -20,6 +20,9 @@ export const globalUniforms = {
     uBlend: { value: 0.0 },
     uProjectionType: { value: 2 }, // 0=perspective, 1=stereographic, 2=blended
     uTime: { value: 0.0 },
+    uSceneExposure: { value: 1.0 },
+    uSceneShoulder: { value: 0.22 },
+    uSceneSaturation: { value: 1.0 },
     
     // Atmosphere Settings
     uAtmGlow: { value: 1.0 },

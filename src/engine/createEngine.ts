@@ -92,6 +92,18 @@ const STELLARIUM_NIGHT_PALETTE = {
     backdropEnergy: 2.65,
 };
 
+const EXPOSURE_CONFIG = {
+    wideFov: 130,
+    narrowFov: 24,
+    zenithWideExposure: 1.18,
+    immersiveWideExposure: 1.08,
+    hybridWideExposure: 1.14,
+    narrowExposure: 1.28,
+    wideShoulder: 0.28,
+    narrowShoulder: 0.18,
+    saturation: 1.04,
+};
+
 const TRIANGULATION_FOCUS_CONFIG = {
     focusedMaxFov: 60,
     wholeSkyEnterFov: 72,
@@ -314,6 +326,23 @@ export function createEngine({
 
     function clampFov(fov: number) {
         return Math.max(ENGINE_CONFIG.minFov, Math.min(getActiveMaxFov(), fov));
+    }
+
+    function updateExposureState() {
+        const zoomT = THREE.MathUtils.clamp(
+            (EXPOSURE_CONFIG.wideFov - state.fov) / (EXPOSURE_CONFIG.wideFov - EXPOSURE_CONFIG.narrowFov),
+            0,
+            1
+        );
+        const wideExposure =
+            currentViewMode === "immersive"
+                ? EXPOSURE_CONFIG.immersiveWideExposure
+                : currentViewMode === "zenith"
+                  ? EXPOSURE_CONFIG.zenithWideExposure
+                  : EXPOSURE_CONFIG.hybridWideExposure;
+        globalUniforms.uSceneExposure.value = THREE.MathUtils.lerp(wideExposure, EXPOSURE_CONFIG.narrowExposure, zoomT);
+        globalUniforms.uSceneShoulder.value = THREE.MathUtils.lerp(EXPOSURE_CONFIG.wideShoulder, EXPOSURE_CONFIG.narrowShoulder, zoomT);
+        globalUniforms.uSceneSaturation.value = EXPOSURE_CONFIG.saturation;
     }
 
     function syncProjectionState() {
@@ -790,7 +819,7 @@ export function createEngine({
                     finalCol += rimColor * rim;
                     finalCol = max(finalCol, baseColor * uMinBrightness);
 
-                    gl_FragColor = vec4(finalCol, uGroundAlpha); 
+                    gl_FragColor = vec4(toneMapSceneColor(finalCol), uGroundAlpha); 
                 }
             `,
             side: THREE.BackSide, 
@@ -859,7 +888,7 @@ export function createEngine({
                     float below = smoothstep(-0.04, -0.18, h);
                     col = mix(col, vec3(0.010, 0.014, 0.024), below);
 
-                    gl_FragColor = vec4(col, 1.0);
+                    gl_FragColor = vec4(toneMapSceneColor(col), 1.0);
                 }
             `,
             transparent: false,
@@ -936,7 +965,7 @@ export function createEngine({
                     skyColor += vec3(0.4, 0.25, 0.15) * warmGlow * 0.3 * uAtmGlow * fogTheme * max(0.15, hazeBand);
                     skyColor = max(skyColor, uColorZenith * (0.2 * uThemeMinBrightness));
 
-                    gl_FragColor = vec4(skyColor, 1.0);
+                    gl_FragColor = vec4(toneMapSceneColor(skyColor), 1.0);
                 }
             `,
             side: THREE.BackSide, depthWrite: false, depthTest: true
@@ -1461,7 +1490,7 @@ export function createEngine({
                     float k = core + glow;
 
                     vec3 finalColor = mix(vColor, vec3(1.0), core * 0.62);
-                    gl_FragColor = vec4(finalColor * k * alphaMask, 1.0);
+                    gl_FragColor = vec4(toneMapSceneColor(finalColor * k) * alphaMask, 1.0);
                 }
             `,
             transparent: true, 
@@ -2288,9 +2317,10 @@ export function createEngine({
                 starChapterIndices.push(cIdx);
 
                 // Testament & Division indices for hierarchy filtering
+                const hierarchy = getNodeHierarchyMeta(n);
                 let tIdx = -1.0;
-                if (n.meta?.testament) {
-                    const tName = n.meta.testament as string;
+                if (hierarchy.testament) {
+                    const tName = hierarchy.testament;
                     if (!testamentToIndex.has(tName)) {
                         testamentToIndex.set(tName, testamentToIndex.size + 1.0);
                     }
@@ -2299,8 +2329,8 @@ export function createEngine({
                 starTestamentIndices.push(tIdx);
 
                 let dIdx = -1.0;
-                if (n.meta?.division) {
-                    const dName = n.meta.division as string;
+                if (hierarchy.division) {
+                    const dName = hierarchy.division;
                     if (!divisionToIndex.has(dName)) {
                         divisionToIndex.set(dName, divisionToIndex.size + 1.0);
                     }
@@ -2637,7 +2667,7 @@ export function createEngine({
                     float spikes = (spikeH + spikeV) * 0.18 * spikeFactor;
 
                     // vReveal drives the additive contribution (AdditiveBlending uses SRC_ALPHA).
-                    gl_FragColor = vec4(finalColor * (k + spikes) * alphaMask, vReveal);
+                    gl_FragColor = vec4(toneMapSceneColor(finalColor * (k + spikes)) * alphaMask, vReveal);
                 }
             `,
             transparent: true,
@@ -3343,10 +3373,26 @@ export function createEngine({
         return arr;
     }
 
+    function getNodeHierarchyMeta(node: SceneNode): { testament?: string; division?: string; bookKey?: string } {
+        const result: { testament?: string; division?: string; bookKey?: string } = {};
+        let current: SceneNode | undefined = node;
+        const visited = new Set<string>();
+
+        while (current && !visited.has(current.id)) {
+            visited.add(current.id);
+            const meta = current.meta as Record<string, unknown> | undefined;
+            if (!result.testament && typeof meta?.testament === "string") result.testament = meta.testament;
+            if (!result.division && typeof meta?.division === "string") result.division = meta.division;
+            if (!result.bookKey && typeof meta?.bookKey === "string") result.bookKey = meta.bookKey;
+            current = current.parent ? nodeById.get(current.parent) : undefined;
+        }
+
+        return result;
+    }
+
     function isNodeFiltered(node: SceneNode): boolean {
         if (!currentFilter) return false;
-        const meta = node.meta as Record<string, unknown> | undefined;
-        if (!meta) return false;
+        const meta = getNodeHierarchyMeta(node);
         if (currentFilter.testament && meta.testament !== currentFilter.testament) return true;
         if (currentFilter.division && meta.division !== currentFilter.division) return true;
         if (currentFilter.bookKey && meta.bookKey !== currentFilter.bookKey) return true;
@@ -3391,7 +3437,7 @@ export function createEngine({
         }
 
         // In edit mode, stars take priority — try stars first so labels don't block picks.
-        // In view mode, labels have highest priority (they are the primary interactive targets).
+        // In view mode, stars are the primary chapter target, with labels as fallback.
         if (isEditMode) {
             // 1. Stars first in edit mode — use a generous threshold (~60px screen radius)
             if (starPoints) {
@@ -3424,13 +3470,23 @@ export function createEngine({
 
         // --- View mode pick order ---
 
-        // 1. Pick Labels (Highest Priority - Foreground UI)
+        // 1. Pick Stars using the same custom projection path as rendering.
+        const starHit = screenSpacePickStar(mX, mY, isTouchDevice ? 34 : 18);
+        if (starHit) {
+            const id = starIndexToId[starHit.index];
+            const node = id ? nodeById.get(id) : undefined;
+            if (node && !isNodeFiltered(node)) {
+                return { type: 'star', node, index: starHit.index, point: starHit.worldPos, object: undefined };
+            }
+        }
+
+        // 2. Pick Labels as fallback navigation targets.
         const closestLabel = pickLabel(isTouchDevice ? 48 : 40);
         if (closestLabel) {
             return { type: 'label', node: closestLabel.node, object: closestLabel.obj, point: closestLabel.obj.position.clone(), index: undefined };
         }
 
-        // 2. Pick Constellation Art (Sphere Quads — raycast against mesh geometry)
+        // 3. Pick Constellation Art (Sphere Quads — raycast against mesh geometry)
         let closestConst = null;
         let minConstDist = Infinity;
 
@@ -3459,25 +3515,6 @@ export function createEngine({
             return { type: 'constellation', node: fakeNode, object: closestConst.mesh, point: closestConst.center.clone(), index: undefined };
         }
 
-        // 3. Pick Stars (Background)
-        // Ensure starPoints is valid
-        if (starPoints) {
-            const worldDir = getMouseWorldVector(mX, mY, rect.width, rect.height);
-            raycaster.ray.origin.set(0, 0, 0);
-            raycaster.ray.direction.copy(worldDir);
-            raycaster.params.Points.threshold = 5.0 * (state.fov / 60);
-
-            const hits = raycaster.intersectObject(starPoints, false);
-            const pointHit = hits[0];
-            if (pointHit && pointHit.index !== undefined) {
-                const id = starIndexToId[pointHit.index];
-                if (id) {
-                    const node = nodeById.get(id);
-                    if (node && !isNodeFiltered(node)) return { type: 'star', node, index: pointHit.index, point: pointHit.point, object: undefined };
-                }
-            }
-        }
-        
         return undefined;
     }
     
@@ -3500,6 +3537,10 @@ export function createEngine({
             worldPos.set(attr.getX(i), attr.getY(i), attr.getZ(i));
             const proj = smartProjectJS(worldPos);
             if (currentProjection.isClipped(proj.z)) continue;
+            const id = starIndexToId[i];
+            if (!id) continue;
+            const node = nodeById.get(id);
+            if (!node || isNodeFiltered(node)) continue;
             const sx = ((proj.x * uScale / uAspect) * 0.5 + 0.5) * w;
             const sy = (-(proj.y * uScale) * 0.5 + 0.5) * h;
             const dx = mx - sx;
@@ -4195,6 +4236,7 @@ export function createEngine({
         
         const now = performance.now();
         globalUniforms.uTime.value = now / 1000.0;
+        updateExposureState();
         
         // --- Order Reveal Animation ---
         // Hover takes precedence for preview, falling back to focus state

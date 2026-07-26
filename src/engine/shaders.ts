@@ -66,12 +66,24 @@ precision highp float;
 
 uniform float uAspect;
 uniform float uBlend;
+uniform float uSceneExposure;
+uniform float uSceneShoulder;
+uniform float uSceneSaturation;
 uniform int uProjectionType;
 varying vec2 vScreenPos;
+
 float getMaskAlpha() {
     vec2 p = vScreenPos;
     p.x *= uAspect;
     float dist = length(p);
     return 1.0 - smoothstep(1.8, 2.0, dist);
+}
+
+vec3 toneMapSceneColor(vec3 color) {
+    vec3 exposed = max(color, vec3(0.0)) * uSceneExposure;
+    float peak = max(max(exposed.r, exposed.g), exposed.b);
+    vec3 shouldered = exposed / (1.0 + peak * uSceneShoulder);
+    float luma = dot(shouldered, vec3(0.2126, 0.7152, 0.0722));
+    return mix(vec3(luma), shouldered, uSceneSaturation);
 }
 `;
