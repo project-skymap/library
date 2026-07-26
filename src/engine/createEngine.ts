@@ -365,10 +365,11 @@ export function createEngine({
             // pixel-circular. At maximum FOV, fit the stereographic horizon ring to the
             // viewport's shortest side so the full zenith dome remains visible.
             const shortestSideFitScale = (aspect < 1.0 ? aspect : 1.0) * 0.5;
+            const fitReferenceMaxFov = currentViewProfile.fitReferenceMaxFov ?? currentViewProfile.maxFov;
             const fitT = THREE.MathUtils.smoothstep(
                 state.fov,
                 ENGINE_CONFIG.zenithBiasStartFov,
-                currentViewProfile.maxFov
+                fitReferenceMaxFov
             );
             scale = THREE.MathUtils.lerp(scale, shortestSideFitScale, fitT);
         }

@@ -19,15 +19,19 @@ export type PlanetariumViewModeProfile = {
     maxFov: number;
     defaultFov: number;
     fitProjection: boolean;
+    fitReferenceMaxFov?: number;
 };
 
 export const VIEW_MODE_PROFILES: Record<PlanetariumViewMode, PlanetariumViewModeProfile> = {
     zenith: {
         id: "zenith",
         projection: "stereographic",
-        maxFov: 180,
-        defaultFov: 180,
+        // Previous maxFov was 180. Cap user zoom at 110, but keep 180 as the
+        // projection-fit reference so 110 retains the earlier zoomed-in framing.
+        maxFov: 110,
+        defaultFov: 110,
         fitProjection: true,
+        fitReferenceMaxFov: 180,
     },
     immersive: {
         id: "immersive",
