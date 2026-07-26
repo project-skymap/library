@@ -57,7 +57,7 @@ export interface Projection {
 export class PerspectiveProjection implements Projection {
     readonly id = "perspective";
     readonly label = "Perspective";
-    readonly maxFov = 160;
+    readonly maxFov = 120;
     readonly glslProjectionType = 0;
 
     forward(dir: Vec3) {
@@ -91,7 +91,7 @@ export class PerspectiveProjection implements Projection {
 export class StereographicProjection implements Projection {
     readonly id = "stereographic";
     readonly label = "Stereographic";
-    readonly maxFov = 360;
+    readonly maxFov = 185;
     readonly glslProjectionType = 1;
 
     forward(dir: Vec3) {
@@ -132,7 +132,7 @@ export class StereographicProjection implements Projection {
 export class BlendedProjection implements Projection {
     readonly id = "blended";
     readonly label = "Blended (Auto)";
-    readonly maxFov = 165;
+    readonly maxFov = 180;
     readonly glslProjectionType = 2;
 
     /** FOV thresholds for blend transition (degrees) */

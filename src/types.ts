@@ -1,4 +1,5 @@
 import type { Vec3 } from "./engine/projections";
+import type { PlanetariumViewMode } from "./engine/navigation";
 
 export type StarId = string;
 export type ConstellationId = string;
@@ -122,17 +123,12 @@ export type HorizonThemeConfig = {
 
 export type SceneMechanicsDebugConfig = {
     projectionBlendOverride?: number | null; // null = normal, 0..1 forces blended projection factor
-    disableZenithBias?: boolean;
     disableZenithFlatten?: boolean;
     disableHorizonTheme?: boolean;
     horizonDiagnostics?: boolean;
     freezeBandStartFov?: number;
     freezeBandEndFov?: number;
     zenithBiasStartFov?: number;
-    verticalPanDampStartFov?: number;
-    verticalPanDampEndFov?: number;
-    verticalPanDampLatStartDeg?: number;
-    verticalPanDampLatEndDeg?: number;
 };
 
 export type StarMapConfig = {
@@ -212,6 +208,7 @@ export type StarMapConfig = {
 
     // Interaction & Camera
     editable?: boolean;
+    viewMode?: PlanetariumViewMode;
     projection?: "perspective" | "stereographic" | "blended";
     camera?: { lon?: number, lat?: number, fov?: number };
     fitProjection?: boolean;

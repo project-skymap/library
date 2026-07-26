@@ -2,6 +2,7 @@
 
 import React, { useEffect, useRef, useImperativeHandle, forwardRef } from "react";
 import type { StarMapConfig, SceneNode, StarArrangement, HierarchyFilter } from "../types";
+import type { PlanetariumViewMode } from "../engine/navigation";
 
 export type StarMapProps = {
     config: StarMapConfig;
@@ -24,6 +25,7 @@ export type StarMapHandle = {
     setOrderRevealEnabled: (enabled: boolean) => void;
     setHierarchyFilter: (filter: HierarchyFilter | null) => void;
     flyTo: (nodeId: string, targetFov?: number) => void;
+    setViewMode: (mode: PlanetariumViewMode) => void;
     setProjection: (id: "perspective" | "stereographic" | "blended") => void;
     setInteractionEnabled: (enabled: boolean) => void;
     resize: () => void;
@@ -41,6 +43,7 @@ export const StarMap = forwardRef<StarMapHandle, StarMapProps>(
             setOrderRevealEnabled: (enabled) => engineRef.current?.setOrderRevealEnabled?.(enabled),
             setHierarchyFilter: (filter) => engineRef.current?.setHierarchyFilter?.(filter),
             flyTo: (nodeId, targetFov) => engineRef.current?.flyTo?.(nodeId, targetFov),
+            setViewMode: (mode) => engineRef.current?.setViewMode?.(mode),
             setProjection: (id) => engineRef.current?.setProjection?.(id),
             setInteractionEnabled: (enabled) => engineRef.current?.setInteractionEnabled?.(enabled),
             resize: () => engineRef.current?.resize?.(),
