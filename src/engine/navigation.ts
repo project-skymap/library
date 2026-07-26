@@ -36,8 +36,8 @@ export const VIEW_MODE_PROFILES: Record<PlanetariumViewMode, PlanetariumViewMode
     immersive: {
         id: "immersive",
         projection: "perspective",
-        maxFov: 110,
-        defaultFov: 65,
+        maxFov: 90,
+        defaultFov: 90,
         fitProjection: false,
     },
     hybrid: {
