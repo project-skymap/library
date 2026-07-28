@@ -1,4 +1,5 @@
 import type { Vec3 } from "./engine/projections";
+import type { PlanetariumViewMode } from "./engine/navigation";
 
 export type StarId = string;
 export type ConstellationId = string;
@@ -122,17 +123,12 @@ export type HorizonThemeConfig = {
 
 export type SceneMechanicsDebugConfig = {
     projectionBlendOverride?: number | null; // null = normal, 0..1 forces blended projection factor
-    disableZenithBias?: boolean;
     disableZenithFlatten?: boolean;
     disableHorizonTheme?: boolean;
     horizonDiagnostics?: boolean;
     freezeBandStartFov?: number;
     freezeBandEndFov?: number;
     zenithBiasStartFov?: number;
-    verticalPanDampStartFov?: number;
-    verticalPanDampEndFov?: number;
-    verticalPanDampLatStartDeg?: number;
-    verticalPanDampLatEndDeg?: number;
 };
 
 export type StarMapConfig = {
@@ -202,6 +198,16 @@ export type StarMapConfig = {
     groups?: Record<string, { name: string, start: number, end: number }[]>;
     horizonTheme?: HorizonThemeConfig;
     horizonThemes?: HorizonThemeConfig[];
+    immersiveHorizonWarp?: number; // 0..1 screen-space flattening applied only to ground/horizon rendering.
+    zenithHorizonWarp?: number; // 0..1 subtle ground/horizon flattening for Zenith mode.
+    horizonGroundAlpha?: number; // 0..1 multiplier for ground visibility after projection-mode fading.
+    showLandscapeSilhouette?: boolean;
+    landscapeSilhouetteOpacity?: number;
+    landscapeSilhouetteHeightDeg?: number;
+    landscapeSilhouetteSoftness?: number;
+    landscapeSilhouetteColor?: string;
+    selectedStarId?: string | null;
+    answerStarId?: string | null;
 
     /**
      * World-space positions of unassigned / marker stars to render as plain
@@ -212,6 +218,7 @@ export type StarMapConfig = {
 
     // Interaction & Camera
     editable?: boolean;
+    viewMode?: PlanetariumViewMode;
     projection?: "perspective" | "stereographic" | "blended";
     camera?: { lon?: number, lat?: number, fov?: number };
     fitProjection?: boolean;

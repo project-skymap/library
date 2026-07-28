@@ -26,6 +26,8 @@ export type { GenerateOptions } from "./generateArrangement";
 
 export { PROJECTIONS } from "./engine/projections";
 export type { Projection, ProjectionId } from "./engine/projections";
+export { VIEW_MODE_PROFILES, getViewModeProfile } from "./engine/navigation";
+export type { PlanetariumViewMode, PlanetariumViewModeProfile } from "./engine/navigation";
 
 export { generateSky, DEFAULT_SKY_PARAMS } from "./sim";
 export type { SkyGenParams, StarOutput, SkyField, SkyMetrics } from "./sim";

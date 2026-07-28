@@ -20,14 +20,17 @@ export const globalUniforms = {
     uBlend: { value: 0.0 },
     uProjectionType: { value: 2 }, // 0=perspective, 1=stereographic, 2=blended
     uTime: { value: 0.0 },
+    uSceneExposure: { value: 1.0 },
+    uSceneShoulder: { value: 0.22 },
+    uSceneSaturation: { value: 1.0 },
     
     // Atmosphere Settings
     uAtmGlow: { value: 1.0 },
-    uAtmDark: { value: 0.6 },
-    uAtmExtinction: { value: 4.0 },
+    uAtmDark: { value: 0.28 },
+    uAtmExtinction: { value: 2.2 },
     uAtmTwinkle: { value: 0.0 },
-    uColorHorizon: { value: new THREE.Color(0x3a5e8c) },
-    uColorZenith: { value: new THREE.Color(0x020408) }
+    uColorHorizon: { value: new THREE.Color(0x6f8fb2) },
+    uColorZenith: { value: new THREE.Color(0x172a49) }
 };
 
 export function createSmartMaterial(params: SmartMaterialParams): THREE.ShaderMaterial {

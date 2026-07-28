@@ -8,6 +8,16 @@ import type { Projection, ProjectionId } from "./projections";
 import { Fader } from "./fader";
 import { LabelManager } from "./LabelManager";
 import type { DynamicLabel } from "./LabelManager";
+import {
+    compressInputDelta,
+    getGroundAlphaForView,
+    getHorizontalPanFactor,
+    getMovementMassFactor,
+    getVerticalPanFactor,
+    getViewModeProfile,
+    getWideDiscControlT
+} from "./navigation";
+import type { PlanetariumProjectionId, PlanetariumViewMode } from "./navigation";
 
 // Haptic feedback helper
 function triggerHaptic(style: 'light' | 'medium' | 'heavy' = 'light') {
@@ -29,7 +39,7 @@ type Handlers = {
 
 const ENGINE_CONFIG = {
     minFov: 1,
-    maxFov: 135,
+    maxFov: 180,
     defaultFov: 60,
     dragSpeed: 0.0025,
     inertiaDamping: 0.92,
@@ -45,22 +55,15 @@ const ENGINE_CONFIG = {
     freezeBandStartFov: 76,
     freezeBandEndFov: 84,
     zenithBiasStartFov: 85,
-    zenithLockBlendEnter: 0.90,
-    zenithLockBlendExit: 0.80,
-    zenithAutoCenterBlendStart: 0.62,
-    zenithAutoCenterBlendEnd: 0.90,
-    zenithAutoCenterMinLerp: 0.012,
-    zenithAutoCenterMaxLerp: 0.16,
-    verticalPanDampStartFov: 72,
-    verticalPanDampEndFov: 96,
-    verticalPanDampLatStartDeg: 45,
-    verticalPanDampLatEndDeg: 82,
-    zenithStartFov: 75,
-    zenithStrength: 0.15,
     horizonLockStrength: 0.05,
     edgePanThreshold: 0.15,
     edgePanMaxSpeed: 0.02,
     edgePanDelay: 250,
+    wheelZoomFactor: 0.0012,
+    wideDiscControlStartFov: 132,
+    wideDiscControlEndFov: 180,
+    wideDiscHorizontalPanFactor: 0.36,
+    wideDiscVerticalPanFactor: 0.08,
 
     // Touch-specific
     touchInertiaDamping: 0.85,   // Snappier than mouse (0.92)
@@ -76,6 +79,29 @@ const ORDER_REVEAL_CONFIG = {
     pulseAmplitude: 0.12,
     pulseDuration: 2,
     delayPerChapter: 0.1
+};
+
+const STELLARIUM_NIGHT_PALETTE = {
+    ground: 0x111923,
+    groundGradientInner: 0x182538,
+    groundGradientOuter: 0x070b13,
+    horizonFog: 0x5f82a8,
+    horizonLine: 0x6f8fb2,
+    groundFogIntensity: 0.48,
+    groundMinBrightness: 0.18,
+    backdropEnergy: 2.65,
+};
+
+const EXPOSURE_CONFIG = {
+    wideFov: 130,
+    narrowFov: 24,
+    zenithWideExposure: 1.18,
+    immersiveWideExposure: 1.08,
+    hybridWideExposure: 1.14,
+    narrowExposure: 1.28,
+    wideShoulder: 0.28,
+    narrowShoulder: 0.18,
+    saturation: 1.04,
 };
 
 const TRIANGULATION_FOCUS_CONFIG = {
@@ -96,23 +122,6 @@ const TRIANGULATION_FOCUS_CONFIG = {
 // chapterFeather: smoothstep transition width. Higher = softer fade-in.
 // backdropRevealStart/End: mappedZoom range where backdrop stars fade in.
 //   Raise both to push the backdrop appearance deeper into zoom.
-// --- Horizon-zoom coupling ---
-// When the user pans toward the horizon at a wide FOV the engine gently zooms
-// in rather than blocking the pan.
-//
-// latStartDeg:      elevation (degrees) below which the coupling begins.
-//                   Above this the user has complete freedom.
-// safeFovAtHorizon: maximum FOV allowed when looking directly at the horizon
-//                   (lat = 0°). Raise to be more permissive, lower to guard
-//                   more aggressively against projection distortion.
-// lerpRate:         per-frame lerp toward the constrained FOV.
-//                   0.02 = barely perceptible, 0.10 = snappy.
-const HORIZON_ZOOM_CONFIG = {
-    latStartDeg:      20,   // coupling is fully off above this elevation
-    safeFovAtHorizon: 60,   // max FOV at the horizon (below freeze-band threshold)
-    lerpRate:         0.03, // gentle — should feel like a natural breathing-in
-};
-
 const ZOOM_REVEAL_CONFIG = {
     wideFov:             120,    // above this FOV, revealZoom = 0 (nothing new revealed)
     narrowFov:           8,      // below this FOV, revealZoom = 1 (everything visible)
@@ -292,50 +301,6 @@ export function createEngine({
         return fov >= band.start && fov <= band.end;
     }
 
-    function getZenithBiasStartFov() {
-        return getSceneDebug()?.zenithBiasStartFov ?? ENGINE_CONFIG.zenithBiasStartFov;
-    }
-
-    function getVerticalPanDampConfig() {
-        const dbg = getSceneDebug();
-        const fovStartRaw = dbg?.verticalPanDampStartFov ?? ENGINE_CONFIG.verticalPanDampStartFov;
-        const fovEndRaw = dbg?.verticalPanDampEndFov ?? ENGINE_CONFIG.verticalPanDampEndFov;
-        const latStartRaw = dbg?.verticalPanDampLatStartDeg ?? ENGINE_CONFIG.verticalPanDampLatStartDeg;
-        const latEndRaw = dbg?.verticalPanDampLatEndDeg ?? ENGINE_CONFIG.verticalPanDampLatEndDeg;
-        return {
-            fovStart: Math.min(fovStartRaw, fovEndRaw),
-            fovEnd: Math.max(fovStartRaw, fovEndRaw),
-            latStartDeg: Math.min(latStartRaw, latEndRaw),
-            latEndDeg: Math.max(latStartRaw, latEndRaw)
-        };
-    }
-
-    function getVerticalPanFactor(fov: number, lat: number) {
-        if (zenithProjectionLockActive) return 0.0;
-        const cfg = getVerticalPanDampConfig();
-        const fovT = THREE.MathUtils.smoothstep(fov, cfg.fovStart, cfg.fovEnd);
-        // Use max(lat, 0) so the zenith-lat lock only fires when looking upward.
-        // Downward panning toward the horizon is handled by horizon-zoom coupling instead.
-        const zenithT = THREE.MathUtils.smoothstep(
-            Math.max(lat, 0),
-            THREE.MathUtils.degToRad(cfg.latStartDeg),
-            THREE.MathUtils.degToRad(cfg.latEndDeg)
-        );
-        const lock = Math.max(fovT * 0.65, fovT * zenithT);
-        return THREE.MathUtils.clamp(1.0 - lock, 0.0, 1.0);
-    }
-
-    function getMovementMassFactor(fov: number, wideFovFactor: number = ENGINE_CONFIG.movementMassWideFov) {
-        const t = THREE.MathUtils.smoothstep(fov, 24, 96);
-        return THREE.MathUtils.lerp(1.0, wideFovFactor, t);
-    }
-
-    function compressInputDelta(delta: number) {
-        const absDelta = Math.abs(delta);
-        if (absDelta < 0.0001) return 0;
-        return Math.sign(delta) * (absDelta / (1.0 + absDelta * ENGINE_CONFIG.inputCompression));
-    }
-    
     // ---------------------------
     // Constellation Artwork Layer
     // ---------------------------
@@ -348,52 +313,36 @@ export function createEngine({
 
     // --- Projection system ---
     let currentProjection: Projection = new BlendedProjection(ENGINE_CONFIG.blendStart, ENGINE_CONFIG.blendEnd);
-    let zenithProjectionLockActive = false;
+    let currentViewMode: PlanetariumViewMode = "hybrid";
+    let currentViewProfile = getViewModeProfile(currentViewMode);
 
-    function getZenithLockBlendThresholds() {
-        const enterRaw = ENGINE_CONFIG.zenithLockBlendEnter;
-        const exitRaw = ENGINE_CONFIG.zenithLockBlendExit;
-        return {
-            enter: Math.max(0, Math.min(1, enterRaw)),
-            exit: Math.max(0, Math.min(1, Math.min(exitRaw, enterRaw)))
-        };
+    function getActiveProjectionId(): PlanetariumProjectionId {
+        return currentProjection.id === "blended" ? "blended" : currentProjection.id as ProjectionId;
     }
 
-    function getZenithLockLat() {
-        return Math.PI / 2 - 0.001;
+    function getActiveMaxFov() {
+        return Math.min(ENGINE_CONFIG.maxFov, currentProjection.maxFov, currentViewProfile.maxFov);
     }
 
-    function getBlendForZenithControl() {
-        if (currentProjection instanceof BlendedProjection) return currentProjection.getBlend();
-        return 0;
+    function clampFov(fov: number) {
+        return Math.max(ENGINE_CONFIG.minFov, Math.min(getActiveMaxFov(), fov));
     }
 
-    function applyZenithAutoCenter() {
-        const zenithLat = getZenithLockLat();
-        const blend = getBlendForZenithControl();
-        let pullT = THREE.MathUtils.smoothstep(
-            blend,
-            ENGINE_CONFIG.zenithAutoCenterBlendStart,
-            ENGINE_CONFIG.zenithAutoCenterBlendEnd
+    function updateExposureState() {
+        const zoomT = THREE.MathUtils.clamp(
+            (EXPOSURE_CONFIG.wideFov - state.fov) / (EXPOSURE_CONFIG.wideFov - EXPOSURE_CONFIG.narrowFov),
+            0,
+            1
         );
-        if (zenithProjectionLockActive) pullT = 1.0;
-        if (pullT <= 0.0001) return;
-
-        const pullLerp = THREE.MathUtils.lerp(
-            ENGINE_CONFIG.zenithAutoCenterMinLerp,
-            ENGINE_CONFIG.zenithAutoCenterMaxLerp,
-            pullT
-        );
-
-        state.lat = THREE.MathUtils.lerp(state.lat, zenithLat, pullLerp);
-        state.targetLat = THREE.MathUtils.lerp(state.targetLat, zenithLat, Math.min(1.0, pullLerp * 1.15));
-        state.velocityY *= (1.0 - 0.85 * pullT);
-
-        if (zenithProjectionLockActive && Math.abs(state.lat - zenithLat) < 0.00025) {
-            state.lat = zenithLat;
-            state.targetLat = zenithLat;
-            state.velocityY = 0;
-        }
+        const wideExposure =
+            currentViewMode === "immersive"
+                ? EXPOSURE_CONFIG.immersiveWideExposure
+                : currentViewMode === "zenith"
+                  ? EXPOSURE_CONFIG.zenithWideExposure
+                  : EXPOSURE_CONFIG.hybridWideExposure;
+        globalUniforms.uSceneExposure.value = THREE.MathUtils.lerp(wideExposure, EXPOSURE_CONFIG.narrowExposure, zoomT);
+        globalUniforms.uSceneShoulder.value = THREE.MathUtils.lerp(EXPOSURE_CONFIG.wideShoulder, EXPOSURE_CONFIG.narrowShoulder, zoomT);
+        globalUniforms.uSceneSaturation.value = EXPOSURE_CONFIG.saturation;
     }
 
     function syncProjectionState() {
@@ -401,12 +350,6 @@ export function createEngine({
             currentProjection.setFov(state.fov);
             currentProjection.setBlendOverride(getSceneDebug()?.projectionBlendOverride ?? null);
             globalUniforms.uBlend.value = currentProjection.getBlend();
-            const blend = currentProjection.getBlend();
-            const th = getZenithLockBlendThresholds();
-            if (!zenithProjectionLockActive && blend >= th.enter) zenithProjectionLockActive = true;
-            else if (zenithProjectionLockActive && blend <= th.exit) zenithProjectionLockActive = false;
-        } else {
-            zenithProjectionLockActive = false;
         }
         globalUniforms.uProjectionType.value = currentProjection.glslProjectionType;
     }
@@ -417,17 +360,18 @@ export function createEngine({
         let scale = currentProjection.getScale(fovRad);
         const aspect = camera.aspect;
 
-        if (currentConfig?.fitProjection) {
-            // The shader does: projected.x /= uAspect
-            // - Landscape (aspect > 1): x is shrunk by shader, y is limiting → divide by aspect
-            // - Portrait (aspect < 1): x is EXPANDED by shader (divide by <1), x is limiting
-            //   Need extra shrink to compensate: multiply by aspect²
-            //   (aspect cancels the shader's 1/aspect, then aspect again to fit width)
-            if (aspect >= 1.0) {
-                scale /= aspect;
-            } else {
-                scale *= aspect * aspect;
-            }
+        if (currentConfig?.fitProjection && currentViewProfile.fitProjection) {
+            // The shader divides projected.x by uAspect, so a fixed projection radius is
+            // pixel-circular. At maximum FOV, fit the stereographic horizon ring to the
+            // viewport's shortest side so the full zenith dome remains visible.
+            const shortestSideFitScale = (aspect < 1.0 ? aspect : 1.0) * 0.5;
+            const fitReferenceMaxFov = currentViewProfile.fitReferenceMaxFov ?? currentViewProfile.maxFov;
+            const fitT = THREE.MathUtils.smoothstep(
+                state.fov,
+                ENGINE_CONFIG.zenithBiasStartFov,
+                fitReferenceMaxFov
+            );
+            scale = THREE.MathUtils.lerp(scale, shortestSideFitScale, fitT);
         }
 
         globalUniforms.uScale.value = scale;
@@ -497,6 +441,40 @@ export function createEngine({
         if (uniform) uniform.value = value;
     }
 
+    function syncHorizonTuning(cfg?: StarMapConfig) {
+        const warp = THREE.MathUtils.clamp(cfg?.immersiveHorizonWarp ?? cfg?.zenithHorizonWarp ?? 0.0, 0.0, 1.0);
+        if (groundMaterial?.uniforms?.uImmersiveHorizonWarp) {
+            groundMaterial.uniforms.uImmersiveHorizonWarp.value = warp;
+        }
+        const lineMaterial = horizonLine?.material;
+        if (lineMaterial instanceof THREE.ShaderMaterial && lineMaterial.uniforms?.uImmersiveHorizonWarp) {
+            lineMaterial.uniforms.uImmersiveHorizonWarp.value = warp;
+        }
+        const silhouetteMaterial = landscapeSilhouetteMesh?.material;
+        if (silhouetteMaterial instanceof THREE.ShaderMaterial) {
+            const uniforms = silhouetteMaterial.uniforms;
+            if (uniforms.uImmersiveHorizonWarp) uniforms.uImmersiveHorizonWarp.value = warp;
+            if (uniforms.uSilhouetteOpacity) {
+                uniforms.uSilhouetteOpacity.value = cfg?.showLandscapeSilhouette === false
+                    ? 0.0
+                    : THREE.MathUtils.clamp(cfg?.landscapeSilhouetteOpacity ?? 0.0, 0.0, 1.0);
+            }
+            if (uniforms.uSilhouetteHeightDeg) {
+                uniforms.uSilhouetteHeightDeg.value = THREE.MathUtils.clamp(cfg?.landscapeSilhouetteHeightDeg ?? 6.0, 0.0, 18.0);
+            }
+            if (uniforms.uSilhouetteSoftness) {
+                uniforms.uSilhouetteSoftness.value = THREE.MathUtils.clamp(cfg?.landscapeSilhouetteSoftness ?? 0.18, 0.0, 0.8);
+            }
+            if (uniforms.uSilhouetteColor && typeof cfg?.landscapeSilhouetteColor === "string") {
+                try {
+                    uniforms.uSilhouetteColor.value.set(cfg.landscapeSilhouetteColor);
+                } catch {
+                    uniforms.uSilhouetteColor.value.set(0x06090d);
+                }
+            }
+        }
+    }
+
     function applyGroundTheme(cfg?: StarMapConfig) {
         if (!groundMaterial) return;
         const theme: HorizonThemeConfig | undefined = getSceneDebug()?.disableHorizonTheme ? undefined : cfg?.horizonTheme;
@@ -504,17 +482,18 @@ export function createEngine({
         const atmo = theme?.atmosphere;
 
         const mode = theme?.source === "polygonal" && (theme.profile?.points?.length ?? 0) >= 2 ? 1 : 0;
-        const groundColor = toColor(theme?.groundColor, 0x010102);
+        const groundColor = toColor(theme?.groundColor, STELLARIUM_NIGHT_PALETTE.ground);
         const gradient = theme?.groundGradient;
         const gradientEnabled = gradient?.type === "radial" ? 1.0 : 0.0;
-        const gradientInnerColor = toColor(gradient?.innerColor, 0x010102);
-        const gradientOuterColor = toColor(gradient?.outerColor, theme?.groundColor ? groundColor.getHex() : 0x010102);
+        const gradientInnerColor = toColor(gradient?.innerColor, STELLARIUM_NIGHT_PALETTE.groundGradientInner);
+        const gradientOuterColor = toColor(gradient?.outerColor, theme?.groundColor ? groundColor.getHex() : STELLARIUM_NIGHT_PALETTE.groundGradientOuter);
         const gradientRadius = THREE.MathUtils.clamp(gradient?.radius ?? 0.95, 0.05, 3.0);
         const gradientIntensity = THREE.MathUtils.clamp(gradient?.intensity ?? 1.0, 0.0, 1.0);
-        const fogColor = toColor(theme?.horizonLineColor, 0x0a1e3a);
-        const fogIntensity = THREE.MathUtils.clamp(atmo?.fogIntensity ?? 0.6, 0.0, 1.5);
+        const fogColor = toColor(theme?.horizonLineColor, STELLARIUM_NIGHT_PALETTE.horizonFog);
+        const fogIntensity = THREE.MathUtils.clamp(atmo?.fogIntensity ?? STELLARIUM_NIGHT_PALETTE.groundFogIntensity, 0.0, 1.5);
         const fogVisible = atmo?.fogVisible === false ? 0.0 : 1.0;
-        const minBrightness = THREE.MathUtils.clamp(atmo?.minimalBrightness ?? 0.0, 0.0, 1.0);
+        const minBrightness = THREE.MathUtils.clamp(atmo?.minimalBrightness ?? STELLARIUM_NIGHT_PALETTE.groundMinBrightness, 0.0, 1.0);
+        const horizonWarp = THREE.MathUtils.clamp(cfg?.immersiveHorizonWarp ?? cfg?.zenithHorizonWarp ?? 0.0, 0.0, 1.0);
         const rotateRad = ((theme?.profile?.angleRotateZDeg ?? 0) * Math.PI) / 180;
 
         const azSamples = new Array<number>(MAX_HORIZON_POINTS).fill(0);
@@ -564,6 +543,8 @@ export function createEngine({
         setUniformValue(uniforms, "uHorizonAltDeg", altSamples);
         setUniformValue(uniforms, "uHorizonRotateRad", rotateRad);
         setUniformValue(uniforms, "uBaseAltDeg", baseAltDeg);
+        setUniformValue(uniforms, "uImmersiveHorizonWarp", horizonWarp);
+        syncHorizonTuning(cfg);
         groundMaterial.uniformsNeedUpdate = true;
 
         if (atmosphereMesh && atmosphereMesh.material instanceof THREE.ShaderMaterial) {
@@ -589,7 +570,7 @@ export function createEngine({
         const shouldDrawLine = mode === 1 && pointCount >= 2 && lineThickness > 0;
         if (!shouldDrawLine) return;
 
-        const lineColor = toColor(theme?.horizonLineColor, 0x557799);
+        const lineColor = toColor(theme?.horizonLineColor, STELLARIUM_NIGHT_PALETTE.horizonLine);
         const lineRadius = 997.0;
         const pts: THREE.Vector3[] = [];
         for (let i = 0; i < pointCount; i++) {
@@ -610,15 +591,20 @@ export function createEngine({
         const mat = createSmartMaterial({
             uniforms: {
                 color: { value: lineColor },
-                alpha: { value: 0.95 }
+                alpha: { value: 0.95 },
+                uImmersiveHorizonWarp: { value: horizonWarp }
             },
             vertexShaderBody: `
                 uniform vec3 color;
+                uniform float uImmersiveHorizonWarp;
                 varying vec3 vColor;
                 void main() {
                     vColor = color;
                     vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
                     gl_Position = smartProject(mvPosition);
+                    float altitude = abs(normalize(position).y);
+                    float horizonT = 1.0 - smoothstep(0.0, 0.45, altitude);
+                    gl_Position.y *= mix(1.0, 0.12, clamp(uImmersiveHorizonWarp, 0.0, 1.0) * horizonT);
                     vScreenPos = gl_Position.xy / gl_Position.w;
                 }
             `,
@@ -719,17 +705,15 @@ export function createEngine({
         const flatten = groundMaterial?.uniforms?.uZenithFlatten?.value;
         const blend = currentProjection instanceof BlendedProjection ? currentProjection.getBlend() : -1;
         const freeze = isInTransitionFreezeBand(state.fov) ? 1 : 0;
-        const zenithBiasStart = getZenithBiasStartFov();
-        const vPanCfg = getVerticalPanDampConfig();
-        const vPan = getVerticalPanFactor(state.fov, state.lat);
-        const moveMass = getMovementMassFactor(state.fov);
+        const projectionId = getActiveProjectionId();
+        const wideDisc = getWideDiscControlT(state.fov, projectionId, ENGINE_CONFIG);
+        const hPan = getHorizontalPanFactor(state.fov, projectionId, ENGINE_CONFIG);
+        const vPan = getVerticalPanFactor(state.fov, state.lat, projectionId, ENGINE_CONFIG);
+        const moveMass = getMovementMassFactor(state.fov, projectionId, ENGINE_CONFIG);
         console.debug(
             `[HorizonDiag] fov=${state.fov.toFixed(1)} latDeg=${THREE.MathUtils.radToDeg(state.lat).toFixed(1)} ` +
             `mode=${activeHorizonProfile.mode} blend=${blend.toFixed(3)} freeze=${freeze} ` +
-            `zLock=${zenithProjectionLockActive ? 1 : 0} ` +
-            `biasStart=${zenithBiasStart.toFixed(1)} vPan=${vPan.toFixed(3)} moveMass=${moveMass.toFixed(3)} ` +
-            `vPanFov=${vPanCfg.fovStart.toFixed(1)}-${vPanCfg.fovEnd.toFixed(1)} ` +
-            `vPanLat=${vPanCfg.latStartDeg.toFixed(1)}-${vPanCfg.latEndDeg.toFixed(1)} ` +
+            `wideDisc=${wideDisc.toFixed(3)} hPan=${hPan.toFixed(3)} vPan=${vPan.toFixed(3)} moveMass=${moveMass.toFixed(3)} ` +
             `flatten=${Number(flatten ?? 0).toFixed(3)} ` +
             `drops=${dropCount} bins=${JSON.stringify(compact)}`
         );
@@ -743,16 +727,17 @@ export function createEngine({
         
         const material = createSmartMaterial({
             uniforms: {
-                color: { value: new THREE.Color(0x010102) },
+                color: { value: new THREE.Color(STELLARIUM_NIGHT_PALETTE.ground) },
                 uGroundGradientEnabled: { value: 0.0 },
-                uGroundGradientInner: { value: new THREE.Color(0x010102) },
-                uGroundGradientOuter: { value: new THREE.Color(0x010102) },
+                uGroundGradientInner: { value: new THREE.Color(STELLARIUM_NIGHT_PALETTE.groundGradientInner) },
+                uGroundGradientOuter: { value: new THREE.Color(STELLARIUM_NIGHT_PALETTE.groundGradientOuter) },
                 uGroundGradientRadius: { value: 0.95 },
                 uGroundGradientIntensity: { value: 1.0 },
-                fogColor: { value: new THREE.Color(0x0a1e3a) },
-                uFogIntensity: { value: 0.6 },
+                fogColor: { value: new THREE.Color(STELLARIUM_NIGHT_PALETTE.horizonFog) },
+                uFogIntensity: { value: STELLARIUM_NIGHT_PALETTE.groundFogIntensity },
                 uFogVisible: { value: 1.0 },
-                uMinBrightness: { value: 0.0 },
+                uMinBrightness: { value: STELLARIUM_NIGHT_PALETTE.groundMinBrightness },
+                uGroundAlpha: { value: 1.0 },
                 uHorizonMode: { value: 0 },
                 uHorizonPointCount: { value: 0 },
                 uHorizonAzDeg: { value: new Array<number>(MAX_HORIZON_POINTS).fill(0) },
@@ -760,9 +745,11 @@ export function createEngine({
                 uHorizonRotateRad: { value: 0.0 },
                 uHorizonRadius: { value: radius },
                 uBaseAltDeg: { value: 3.0 },
-                uZenithFlatten: { value: 0.0 }
+                uZenithFlatten: { value: 0.0 },
+                uImmersiveHorizonWarp: { value: 0.0 }
             },
             vertexShaderBody: `
+                uniform float uImmersiveHorizonWarp;
                 varying vec3 vPos; 
                 varying vec3 vWorldPos;
                 varying float vViewDirZ;
@@ -770,6 +757,9 @@ export function createEngine({
                     vPos = position; 
                     vec4 mvPosition = modelViewMatrix * vec4(position, 1.0); 
                     gl_Position = smartProject(mvPosition); 
+                    float altitude = abs(normalize(position).y);
+                    float horizonT = 1.0 - smoothstep(0.0, 0.45, altitude);
+                    gl_Position.y *= mix(1.0, 0.12, clamp(uImmersiveHorizonWarp, 0.0, 1.0) * horizonT);
                     vScreenPos = gl_Position.xy / gl_Position.w; 
                     vWorldPos = (modelMatrix * vec4(position, 1.0)).xyz;
                     vViewDirZ = normalize(mvPosition.xyz).z;
@@ -786,6 +776,7 @@ export function createEngine({
                 uniform float uFogIntensity;
                 uniform float uFogVisible;
                 uniform float uMinBrightness;
+                uniform float uGroundAlpha;
                 uniform int uHorizonMode;
                 uniform int uHorizonPointCount;
                 uniform float uHorizonAzDeg[64];
@@ -876,12 +867,12 @@ export function createEngine({
                     finalCol += rimColor * rim;
                     finalCol = max(finalCol, baseColor * uMinBrightness);
 
-                    gl_FragColor = vec4(finalCol, 1.0); 
+                    gl_FragColor = vec4(toneMapSceneColor(finalCol), uGroundAlpha); 
                 }
             `,
             side: THREE.BackSide, 
-            transparent: false, 
-            depthWrite: true, 
+            transparent: true, 
+            depthWrite: false, 
             depthTest: true
         });
         groundMaterial = material;
@@ -897,6 +888,7 @@ export function createEngine({
     let sunDiscMesh: THREE.Mesh | null = null;
     let sunHaloMesh: THREE.Mesh | null = null;
     let milkyWayMesh: THREE.Mesh | null = null;
+    let landscapeSilhouetteMesh: THREE.Mesh | null = null;
     let divisionTintRecords: { mat: THREE.ShaderMaterial }[] = [];
 
 
@@ -920,11 +912,11 @@ export function createEngine({
 
                     // Scotopic-inspired 5-stop gradient.
                     // Night sky: blue channel ~2.6x red, derived from CIE (x=0.25, y=0.25).
-                    vec3 cZenith  = vec3(0.010, 0.022, 0.055);
-                    vec3 cUpper   = vec3(0.015, 0.033, 0.080);
-                    vec3 cMid     = vec3(0.022, 0.048, 0.108);
-                    vec3 cLower   = vec3(0.035, 0.072, 0.148);
-                    vec3 cHorizon = vec3(0.052, 0.100, 0.190);
+                    vec3 cZenith  = vec3(0.035, 0.055, 0.110);
+                    vec3 cUpper   = vec3(0.045, 0.075, 0.145);
+                    vec3 cMid     = vec3(0.060, 0.100, 0.185);
+                    vec3 cLower   = vec3(0.085, 0.135, 0.235);
+                    vec3 cHorizon = vec3(0.120, 0.175, 0.285);
 
                     float t1 = smoothstep(0.0, 0.30, h);
                     float t2 = smoothstep(0.3, 0.60, h);
@@ -939,13 +931,13 @@ export function createEngine({
 
                     // Rayleigh limb brightening at horizon
                     float limb = exp(-18.0 * abs(h)) * smoothstep(-0.05, 0.06, h);
-                    col += vec3(0.012, 0.024, 0.050) * limb;
+                    col += vec3(0.045, 0.075, 0.125) * limb;
 
-                    // Below ground: fade to near-black
+                    // Below ground: keep a readable blue-black rather than crushing to pure black.
                     float below = smoothstep(-0.04, -0.18, h);
-                    col = mix(col, vec3(0.002, 0.003, 0.006), below);
+                    col = mix(col, vec3(0.010, 0.014, 0.024), below);
 
-                    gl_FragColor = vec4(col, 1.0);
+                    gl_FragColor = vec4(toneMapSceneColor(col), 1.0);
                 }
             `,
             transparent: false,
@@ -1022,7 +1014,7 @@ export function createEngine({
                     skyColor += vec3(0.4, 0.25, 0.15) * warmGlow * 0.3 * uAtmGlow * fogTheme * max(0.15, hazeBand);
                     skyColor = max(skyColor, uColorZenith * (0.2 * uThemeMinBrightness));
 
-                    gl_FragColor = vec4(skyColor, 1.0);
+                    gl_FragColor = vec4(toneMapSceneColor(skyColor), 1.0);
                 }
             `,
             side: THREE.BackSide, depthWrite: false, depthTest: true
@@ -1030,6 +1022,105 @@ export function createEngine({
         const atm = new THREE.Mesh(geometry, material);
         atmosphereMesh = atm;
         groundGroup.add(atm);
+    }
+
+    function createLandscapeSilhouette() {
+        const segments = 256;
+        const radius = 1003;
+        const positions: number[] = [];
+        const bands: number[] = [];
+        const azimuths: number[] = [];
+        const indices: number[] = [];
+
+        for (let i = 0; i <= segments; i++) {
+            const t = i / segments;
+            const az = t * Math.PI * 2;
+            const x = Math.cos(az);
+            const z = Math.sin(az);
+            positions.push(x, 0, z, x, 0, z);
+            bands.push(0, 1);
+            azimuths.push(t, t);
+        }
+
+        for (let i = 0; i < segments; i++) {
+            const a = i * 2;
+            indices.push(a, a + 1, a + 2, a + 1, a + 3, a + 2);
+        }
+
+        const geometry = new THREE.BufferGeometry();
+        geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+        geometry.setAttribute("aBand", new THREE.Float32BufferAttribute(bands, 1));
+        geometry.setAttribute("aAzimuth", new THREE.Float32BufferAttribute(azimuths, 1));
+        geometry.setIndex(indices);
+
+        const material = createSmartMaterial({
+            uniforms: {
+                uSilhouetteColor: { value: new THREE.Color(0x06090d) },
+                uSilhouetteOpacity: { value: 0.0 },
+                uSilhouetteHeightDeg: { value: 6.0 },
+                uSilhouetteSoftness: { value: 0.18 },
+                uSilhouetteRadius: { value: radius },
+                uSilhouetteBottomAltDeg: { value: -12.0 },
+                uImmersiveHorizonWarp: { value: 0.0 },
+            },
+            vertexShaderBody: `
+                attribute float aBand;
+                attribute float aAzimuth;
+                uniform float uSilhouetteHeightDeg;
+                uniform float uSilhouetteRadius;
+                uniform float uSilhouetteBottomAltDeg;
+                uniform float uImmersiveHorizonWarp;
+                varying float vBand;
+                varying float vPeak;
+
+                float ridgeNoise(float t) {
+                    float h = 0.0;
+                    h += sin(t * 6.2831853 * 3.0 + 0.4) * 0.32;
+                    h += sin(t * 6.2831853 * 7.0 + 1.8) * 0.22;
+                    h += sin(t * 6.2831853 * 17.0 + 0.9) * 0.12;
+                    h += sin(t * 6.2831853 * 31.0 + 2.6) * 0.06;
+                    return clamp(0.52 + h, 0.12, 1.0);
+                }
+
+                void main() {
+                    vBand = aBand;
+                    vPeak = ridgeNoise(aAzimuth);
+                    float topAltDeg = 0.8 + uSilhouetteHeightDeg * vPeak;
+                    float altDeg = mix(uSilhouetteBottomAltDeg, topAltDeg, aBand);
+                    float alt = radians(altDeg);
+                    vec3 dir = normalize(vec3(position.x * cos(alt), sin(alt), position.z * cos(alt)));
+                    vec4 mvPosition = modelViewMatrix * vec4(dir * uSilhouetteRadius, 1.0);
+                    gl_Position = smartProject(mvPosition);
+                    float horizonT = 1.0 - smoothstep(0.0, 0.45, abs(dir.y));
+                    gl_Position.y *= mix(1.0, 0.12, clamp(uImmersiveHorizonWarp, 0.0, 1.0) * horizonT);
+                    vScreenPos = gl_Position.xy / gl_Position.w;
+                }
+            `,
+            fragmentShader: `
+                uniform vec3 uSilhouetteColor;
+                uniform float uSilhouetteOpacity;
+                uniform float uSilhouetteSoftness;
+                varying float vBand;
+                varying float vPeak;
+                void main() {
+                    float alphaMask = getMaskAlpha();
+                    if (alphaMask < 0.01) discard;
+                    float topFade = 1.0 - smoothstep(max(0.0, 1.0 - uSilhouetteSoftness), 1.0, vBand) * 0.35;
+                    float bottomFade = smoothstep(0.0, 0.06, vBand);
+                    float peakShade = mix(0.9, 1.12, vPeak);
+                    gl_FragColor = vec4(toneMapSceneColor(uSilhouetteColor * peakShade), uSilhouetteOpacity * topFade * bottomFade * alphaMask);
+                }
+            `,
+            transparent: true,
+            depthWrite: false,
+            depthTest: true,
+            side: THREE.DoubleSide,
+        });
+
+        landscapeSilhouetteMesh = new THREE.Mesh(geometry, material);
+        landscapeSilhouetteMesh.frustumCulled = false;
+        landscapeSilhouetteMesh.renderOrder = 2;
+        groundGroup.add(landscapeSilhouetteMesh);
     }
 
     // ---------------------------
@@ -1483,7 +1574,7 @@ export function createEngine({
                 uScale: globalUniforms.uScale,
                 uTime: globalUniforms.uTime,
                 uBackdropGain: { value: 1.0 },
-                uBackdropEnergy: { value: 2.2 },
+                uBackdropEnergy: { value: STELLARIUM_NIGHT_PALETTE.backdropEnergy },
                 uBackdropSizeExp: { value: 0.9 },
                 uRevealZoom: { value: 0.0 }
             },
@@ -1546,8 +1637,8 @@ export function createEngine({
                     float glow = smoothstep(1.0, 0.0, d) * 0.08;
                     float k = core + glow;
 
-                    vec3 finalColor = mix(vColor, vec3(1.0), core * 0.5);
-                    gl_FragColor = vec4(finalColor * k * alphaMask, 1.0);
+                    vec3 finalColor = mix(vColor, vec3(1.0), core * 0.62);
+                    gl_FragColor = vec4(toneMapSceneColor(finalColor * k) * alphaMask, 1.0);
                 }
             `,
             transparent: true, 
@@ -1625,6 +1716,7 @@ export function createEngine({
     createSkyBackground();
     createGround();
     createAtmosphere();
+    createLandscapeSilhouette();
     createMoon();
     createSun();
     createMilkyWay();
@@ -1639,6 +1731,9 @@ export function createEngine({
 
     const root = new THREE.Group();
     scene.add(root);
+
+    const selectionHighlightGroup = new THREE.Group();
+    scene.add(selectionHighlightGroup);
 
     const nodeById = new Map<string, SceneNode>();
     const starIndexToId: string[] = [];
@@ -1699,6 +1794,64 @@ export function createEngine({
     let boundaryLines: THREE.LineSegments | null = null;
     let starPoints: THREE.Points | null = null;
 
+    function createStarHighlight(color: number, size: number, thickness: number, pulseOffset: number) {
+        const material = createSmartMaterial({
+            uniforms: {
+                uColor: { value: new THREE.Color(color) },
+                uMarkerSize: { value: size },
+                uThickness: { value: thickness },
+                uPulseOffset: { value: pulseOffset },
+            },
+            vertexShaderBody: `
+                uniform float uMarkerSize;
+                varying vec2 vUv;
+                void main() {
+                    vUv = uv;
+                    vec4 mvPos = modelViewMatrix * vec4(0.0, 0.0, 0.0, 1.0);
+                    vec4 projected = smartProject(mvPos);
+                    if (projected.z > 4.0) {
+                        gl_Position = vec4(-10.0, -10.0, -10.0, 1.0);
+                        return;
+                    }
+                    vec2 offset = position.xy * uMarkerSize * uScale;
+                    projected.xy += offset / vec2(uAspect, 1.0);
+                    vScreenPos = projected.xy / projected.w;
+                    gl_Position = projected;
+                }
+            `,
+            fragmentShader: `
+                uniform vec3 uColor;
+                uniform float uThickness;
+                uniform float uPulseOffset;
+                uniform float uTime;
+                varying vec2 vUv;
+                void main() {
+                    float alphaMask = getMaskAlpha();
+                    if (alphaMask < 0.01) discard;
+                    vec2 p = vUv * 2.0 - 1.0;
+                    float d = length(p);
+                    float ring = smoothstep(0.72 - uThickness, 0.72, d) * (1.0 - smoothstep(0.72, 0.72 + uThickness, d));
+                    float halo = (1.0 - smoothstep(0.48, 1.0, d)) * 0.28;
+                    float pulse = 0.72 + 0.28 * sin(uTime * 2.4 + uPulseOffset);
+                    gl_FragColor = vec4(toneMapSceneColor(uColor * (0.9 + pulse * 0.35)), (ring + halo * pulse) * alphaMask);
+                }
+            `,
+            transparent: true,
+            depthWrite: false,
+            depthTest: false,
+            blending: THREE.AdditiveBlending,
+        });
+        const mesh = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), material);
+        mesh.visible = false;
+        mesh.frustumCulled = false;
+        mesh.renderOrder = 1200 + pulseOffset;
+        selectionHighlightGroup.add(mesh);
+        return mesh;
+    }
+
+    const selectedStarHighlight = createStarHighlight(0x7dd3fc, 0.028, 0.055, 0.0);
+    const answerStarHighlight = createStarHighlight(0xfbbf24, 0.021, 0.065, 1.7);
+
     // Faders for smooth visibility transitions (Stellarium-style)
     const linesFader = new Fader(0.4);
     const artFader = new Fader(0.5);
@@ -1727,6 +1880,31 @@ export function createEngine({
         boundaryLines = null;
         starPoints = null;
         divisionTintRecords = [];
+    }
+
+    function updateStarHighlight(mesh: THREE.Mesh, nodeId: string | null | undefined) {
+        if (!nodeId) {
+            mesh.visible = false;
+            return;
+        }
+        const node = nodeById.get(nodeId);
+        if (!node || node.level !== 3 || isNodeFiltered(node)) {
+            mesh.visible = false;
+            return;
+        }
+        const pos = getPosition(node);
+        const projected = smartProjectJS(pos);
+        if (currentProjection.isClipped(projected.z)) {
+            mesh.visible = false;
+            return;
+        }
+        mesh.position.copy(pos);
+        mesh.visible = true;
+    }
+
+    function updateSelectionHighlights() {
+        updateStarHighlight(selectedStarHighlight, currentConfig?.selectedStarId);
+        updateStarHighlight(answerStarHighlight, currentConfig?.answerStarId);
     }
 
     function createTextTexture(text: string, color: string = "#ffffff", opts?: {
@@ -2374,9 +2552,10 @@ export function createEngine({
                 starChapterIndices.push(cIdx);
 
                 // Testament & Division indices for hierarchy filtering
+                const hierarchy = getNodeHierarchyMeta(n);
                 let tIdx = -1.0;
-                if (n.meta?.testament) {
-                    const tName = n.meta.testament as string;
+                if (hierarchy.testament) {
+                    const tName = hierarchy.testament;
                     if (!testamentToIndex.has(tName)) {
                         testamentToIndex.set(tName, testamentToIndex.size + 1.0);
                     }
@@ -2385,8 +2564,8 @@ export function createEngine({
                 starTestamentIndices.push(tIdx);
 
                 let dIdx = -1.0;
-                if (n.meta?.division) {
-                    const dName = n.meta.division as string;
+                if (hierarchy.division) {
+                    const dName = hierarchy.division;
                     if (!divisionToIndex.has(dName)) {
                         divisionToIndex.set(dName, divisionToIndex.size + 1.0);
                     }
@@ -2669,7 +2848,7 @@ export function createEngine({
                     float filterDim = mix(1.0, uFilterDimFactor, filterFactor);
                     float filterReveal = mix(1.0, 0.4, filterFactor);
 
-                    vec3 baseColor = color * extinction * horizonFade * scintillation;
+                    vec3 baseColor = color * extinction * horizonFade * scintillation * 1.28;
                     vColor = baseColor * dimFactor * filterDim;
                     vColor += vec3(1.0, 0.8, 0.4) * activePulse;
 
@@ -2713,7 +2892,7 @@ export function createEngine({
                     float k = core + innerGlow + outerBloom;
 
                     // White-hot centre → spectral colour at the halo
-                    vec3 finalColor = mix(vColor, vec3(1.0), core * 0.88);
+                    vec3 finalColor = mix(vColor, vec3(1.0), core * 0.92);
 
                     // --- Size-dependent diffraction spikes ---
                     // Only appear on larger (brighter) stars, matching real optics.
@@ -2723,7 +2902,7 @@ export function createEngine({
                     float spikes = (spikeH + spikeV) * 0.18 * spikeFactor;
 
                     // vReveal drives the additive contribution (AdditiveBlending uses SRC_ALPHA).
-                    gl_FragColor = vec4(finalColor * (k + spikes) * alphaMask, vReveal);
+                    gl_FragColor = vec4(toneMapSceneColor(finalColor * (k + spikes)) * alphaMask, vReveal);
                 }
             `,
             transparent: true,
@@ -3260,6 +3439,7 @@ export function createEngine({
     let lastAppliedLon: number | undefined = undefined;
     let lastAppliedLat: number | undefined = undefined;
     let lastAppliedFov: number | undefined = undefined;
+    let lastAppliedViewMode: PlanetariumViewMode | undefined = undefined;
     let lastBackdropCount: number | undefined = undefined;
 
     function setProjection(id: ProjectionId | string) {
@@ -3270,18 +3450,31 @@ export function createEngine({
             if (!factory) return;
             currentProjection = factory();
         }
+        state.fov = clampFov(state.fov);
+        lastAppliedFov = state.fov;
         updateUniforms();
+    }
+
+    function setViewMode(mode: PlanetariumViewMode) {
+        currentViewMode = mode;
+        currentViewProfile = getViewModeProfile(mode);
+        setProjection(currentViewProfile.projection);
     }
 
     function setConfig(cfg: StarMapConfig) {
         currentConfig = cfg;
-        applyGroundTheme(cfg);
         const externalFocusId = (cfg as any).focus?.nodeId;
         if (typeof externalFocusId === "string") focusedNodeId = externalFocusId;
         if (externalFocusId === null) focusedNodeId = null;
 
-        // Update projection if provided
-        if (cfg.projection) setProjection(cfg.projection);
+        if (cfg.viewMode && cfg.viewMode !== lastAppliedViewMode) {
+            setViewMode(cfg.viewMode);
+            lastAppliedViewMode = cfg.viewMode;
+        } else if (!cfg.viewMode && cfg.projection) {
+            setProjection(cfg.projection);
+        }
+        applyGroundTheme(cfg);
+        syncHorizonTuning(cfg);
 
         // Update Camera Orientation if provided and changed
         if (typeof cfg.camera?.lon === 'number' && cfg.camera.lon !== lastAppliedLon) {
@@ -3295,7 +3488,7 @@ export function createEngine({
              lastAppliedLat = cfg.camera.lat;
         }
         if (typeof cfg.camera?.fov === 'number' && cfg.camera.fov !== lastAppliedFov) {
-             state.fov = Math.max(ENGINE_CONFIG.minFov, Math.min(ENGINE_CONFIG.maxFov, cfg.camera.fov));
+             state.fov = clampFov(cfg.camera.fov);
              lastAppliedFov = cfg.camera.fov;
         }
 
@@ -3416,10 +3609,26 @@ export function createEngine({
         return arr;
     }
 
+    function getNodeHierarchyMeta(node: SceneNode): { testament?: string; division?: string; bookKey?: string } {
+        const result: { testament?: string; division?: string; bookKey?: string } = {};
+        let current: SceneNode | undefined = node;
+        const visited = new Set<string>();
+
+        while (current && !visited.has(current.id)) {
+            visited.add(current.id);
+            const meta = current.meta as Record<string, unknown> | undefined;
+            if (!result.testament && typeof meta?.testament === "string") result.testament = meta.testament;
+            if (!result.division && typeof meta?.division === "string") result.division = meta.division;
+            if (!result.bookKey && typeof meta?.bookKey === "string") result.bookKey = meta.bookKey;
+            current = current.parent ? nodeById.get(current.parent) : undefined;
+        }
+
+        return result;
+    }
+
     function isNodeFiltered(node: SceneNode): boolean {
         if (!currentFilter) return false;
-        const meta = node.meta as Record<string, unknown> | undefined;
-        if (!meta) return false;
+        const meta = getNodeHierarchyMeta(node);
         if (currentFilter.testament && meta.testament !== currentFilter.testament) return true;
         if (currentFilter.division && meta.division !== currentFilter.division) return true;
         if (currentFilter.bookKey && meta.bookKey !== currentFilter.bookKey) return true;
@@ -3464,7 +3673,7 @@ export function createEngine({
         }
 
         // In edit mode, stars take priority — try stars first so labels don't block picks.
-        // In view mode, labels have highest priority (they are the primary interactive targets).
+        // In view mode, stars are the primary chapter target, with labels as fallback.
         if (isEditMode) {
             // 1. Stars first in edit mode — use a generous threshold (~60px screen radius)
             if (starPoints) {
@@ -3497,13 +3706,23 @@ export function createEngine({
 
         // --- View mode pick order ---
 
-        // 1. Pick Labels (Highest Priority - Foreground UI)
+        // 1. Pick Stars using the same custom projection path as rendering.
+        const starHit = screenSpacePickStar(mX, mY, isTouchDevice ? 34 : 18);
+        if (starHit) {
+            const id = starIndexToId[starHit.index];
+            const node = id ? nodeById.get(id) : undefined;
+            if (node && !isNodeFiltered(node)) {
+                return { type: 'star', node, index: starHit.index, point: starHit.worldPos, object: undefined };
+            }
+        }
+
+        // 2. Pick Labels as fallback navigation targets.
         const closestLabel = pickLabel(isTouchDevice ? 48 : 40);
         if (closestLabel) {
             return { type: 'label', node: closestLabel.node, object: closestLabel.obj, point: closestLabel.obj.position.clone(), index: undefined };
         }
 
-        // 2. Pick Constellation Art (Sphere Quads — raycast against mesh geometry)
+        // 3. Pick Constellation Art (Sphere Quads — raycast against mesh geometry)
         let closestConst = null;
         let minConstDist = Infinity;
 
@@ -3532,25 +3751,6 @@ export function createEngine({
             return { type: 'constellation', node: fakeNode, object: closestConst.mesh, point: closestConst.center.clone(), index: undefined };
         }
 
-        // 3. Pick Stars (Background)
-        // Ensure starPoints is valid
-        if (starPoints) {
-            const worldDir = getMouseWorldVector(mX, mY, rect.width, rect.height);
-            raycaster.ray.origin.set(0, 0, 0);
-            raycaster.ray.direction.copy(worldDir);
-            raycaster.params.Points.threshold = 5.0 * (state.fov / 60);
-
-            const hits = raycaster.intersectObject(starPoints, false);
-            const pointHit = hits[0];
-            if (pointHit && pointHit.index !== undefined) {
-                const id = starIndexToId[pointHit.index];
-                if (id) {
-                    const node = nodeById.get(id);
-                    if (node && !isNodeFiltered(node)) return { type: 'star', node, index: pointHit.index, point: pointHit.point, object: undefined };
-                }
-            }
-        }
-        
         return undefined;
     }
     
@@ -3573,6 +3773,10 @@ export function createEngine({
             worldPos.set(attr.getX(i), attr.getY(i), attr.getZ(i));
             const proj = smartProjectJS(worldPos);
             if (currentProjection.isClipped(proj.z)) continue;
+            const id = starIndexToId[i];
+            if (!id) continue;
+            const node = nodeById.get(id);
+            if (!node || isNodeFiltered(node)) continue;
             const sx = ((proj.x * uScale / uAspect) * 0.5 + 0.5) * w;
             const sy = (-(proj.y * uScale) * 0.5 + 0.5) * h;
             const dx = mx - sx;
@@ -3778,15 +3982,17 @@ export function createEngine({
             const deltaY = e.clientY - state.lastMouseY;
             state.lastMouseX = e.clientX; state.lastMouseY = e.clientY;
             const speedScale = state.fov / ENGINE_CONFIG.defaultFov;
-            const latFactor = getVerticalPanFactor(state.fov, state.lat);
-            const massFactor = getMovementMassFactor(state.fov);
-            const moveX = compressInputDelta(deltaX) * massFactor;
-            const moveY = compressInputDelta(deltaY) * massFactor;
+            const projectionId = getActiveProjectionId();
+            const lonFactor = getHorizontalPanFactor(state.fov, projectionId, ENGINE_CONFIG);
+            const latFactor = getVerticalPanFactor(state.fov, state.lat, projectionId, ENGINE_CONFIG);
+            const massFactor = getMovementMassFactor(state.fov, projectionId, ENGINE_CONFIG);
+            const moveX = compressInputDelta(deltaX, ENGINE_CONFIG) * massFactor;
+            const moveY = compressInputDelta(deltaY, ENGINE_CONFIG) * massFactor;
 
-            state.targetLon += moveX * ENGINE_CONFIG.dragSpeed * speedScale;
+            state.targetLon += moveX * ENGINE_CONFIG.dragSpeed * speedScale * lonFactor;
             state.targetLat += moveY * ENGINE_CONFIG.dragSpeed * speedScale * latFactor;
             state.targetLat = Math.max(-Math.PI / 2 + 0.01, Math.min(Math.PI / 2 - 0.01, state.targetLat));
-            state.velocityX = moveX * ENGINE_CONFIG.dragSpeed * speedScale;
+            state.velocityX = moveX * ENGINE_CONFIG.dragSpeed * speedScale * lonFactor;
             state.velocityY = moveY * ENGINE_CONFIG.dragSpeed * speedScale * latFactor;
             state.lon = state.targetLon; state.lat = state.targetLat;
         } else {
@@ -3902,14 +4108,8 @@ export function createEngine({
         // Camera Rotate Logic still uses View Space matching to feel right
         const vBefore = getMouseViewVector(state.fov, aspect); 
         
-        const zoomResistance = THREE.MathUtils.lerp(
-            1.0,
-            ENGINE_CONFIG.zoomResistanceWideFov,
-            THREE.MathUtils.smoothstep(state.fov, 24, 100)
-        );
-        const zoomSpeed = 0.001 * state.fov * zoomResistance;
-        state.fov += e.deltaY * zoomSpeed;
-        state.fov = Math.max(ENGINE_CONFIG.minFov, Math.min(ENGINE_CONFIG.maxFov, state.fov));
+        state.fov *= Math.exp(e.deltaY * ENGINE_CONFIG.wheelZoomFactor);
+        state.fov = clampFov(state.fov);
         
         handlers.onFovChange?.(state.fov);
 
@@ -3929,10 +4129,6 @@ export function createEngine({
             spinAmount = 1.0 - Math.pow(t, 1.35) * 0.92;
         }
 
-        const blendForSpin = getBlendForZenithControl();
-        const blendSpinDamp = THREE.MathUtils.smoothstep(blendForSpin, 0.58, 0.90);
-        spinAmount *= (1.0 - 0.88 * blendSpinDamp);
-        if (zenithProjectionLockActive) spinAmount = Math.min(spinAmount, 0.02);
         spinAmount = Math.max(0.02, Math.min(1.0, spinAmount));
 
         // Slerp towards identity quaternion to reduce the rotation amount
@@ -3957,17 +4153,6 @@ export function createEngine({
         const newUp = new THREE.Vector3(0, 1, 0).applyQuaternion(qNew);
         camera.up.copy(newUp);
         
-        const zenithBiasStartFov = getZenithBiasStartFov();
-        if (!zenithProjectionLockActive &&
-            !getSceneDebug()?.disableZenithBias &&
-            !isInTransitionFreezeBand(state.fov) &&
-            e.deltaY > 0 &&
-            state.fov > zenithBiasStartFov) {
-            const range = ENGINE_CONFIG.maxFov - zenithBiasStartFov;
-            let t = (state.fov - zenithBiasStartFov) / range; t = Math.max(0, Math.min(1, t));
-            const bias = ENGINE_CONFIG.zenithStrength * t; const zenithLat = Math.PI / 2 - 0.001;
-            state.lat = mix(state.lat, zenithLat, bias);
-        }
         state.targetLat = state.lat; state.targetLon = state.lon;
     }
 
@@ -4081,15 +4266,17 @@ export function createEngine({
             }
 
             const speedScale = state.fov / ENGINE_CONFIG.defaultFov;
-            const latFactor = getVerticalPanFactor(state.fov, state.lat);
-            const massFactor = getMovementMassFactor(state.fov);
-            const moveX = compressInputDelta(deltaX) * massFactor;
-            const moveY = compressInputDelta(deltaY) * massFactor;
+            const projectionId = getActiveProjectionId();
+            const lonFactor = getHorizontalPanFactor(state.fov, projectionId, ENGINE_CONFIG);
+            const latFactor = getVerticalPanFactor(state.fov, state.lat, projectionId, ENGINE_CONFIG);
+            const massFactor = getMovementMassFactor(state.fov, projectionId, ENGINE_CONFIG);
+            const moveX = compressInputDelta(deltaX, ENGINE_CONFIG) * massFactor;
+            const moveY = compressInputDelta(deltaY, ENGINE_CONFIG) * massFactor;
 
-            state.targetLon += moveX * ENGINE_CONFIG.dragSpeed * speedScale;
+            state.targetLon += moveX * ENGINE_CONFIG.dragSpeed * speedScale * lonFactor;
             state.targetLat += moveY * ENGINE_CONFIG.dragSpeed * speedScale * latFactor;
             state.targetLat = Math.max(-Math.PI / 2 + 0.01, Math.min(Math.PI / 2 - 0.01, state.targetLat));
-            state.velocityX = moveX * ENGINE_CONFIG.dragSpeed * speedScale;
+            state.velocityX = moveX * ENGINE_CONFIG.dragSpeed * speedScale * lonFactor;
             state.velocityY = moveY * ENGINE_CONFIG.dragSpeed * speedScale * latFactor;
             state.lon = state.targetLon;
             state.lat = state.targetLat;
@@ -4099,26 +4286,9 @@ export function createEngine({
             const t1 = touches[1]!;
             const newDistance = getTouchDistance(t0, t1);
             const scale = newDistance / state.pinchStartDistance;
-            const prevFov = state.fov;
             state.fov = state.pinchStartFov / scale;
-            state.fov = Math.max(ENGINE_CONFIG.minFov, Math.min(ENGINE_CONFIG.maxFov, state.fov));
+            state.fov = clampFov(state.fov);
             handlers.onFovChange?.(state.fov);
-
-            // Zenith pull-up when zooming out (FOV increasing)
-            const zenithBiasStartFov = getZenithBiasStartFov();
-            if (!zenithProjectionLockActive &&
-                !getSceneDebug()?.disableZenithBias &&
-                !isInTransitionFreezeBand(state.fov) &&
-                state.fov > prevFov &&
-                state.fov > zenithBiasStartFov) {
-                const range = ENGINE_CONFIG.maxFov - zenithBiasStartFov;
-                let t = (state.fov - zenithBiasStartFov) / range;
-                t = Math.max(0, Math.min(1, t));
-                const bias = ENGINE_CONFIG.zenithStrength * t;
-                const zenithLat = Math.PI / 2 - 0.001;
-                state.lat = state.lat * (1 - bias) + zenithLat * bias;
-                state.targetLat = state.lat;
-            }
 
             // Also handle pan with pinch center
             const center = getTouchCenter(t0, t1);
@@ -4128,11 +4298,13 @@ export function createEngine({
             state.lastMouseY = center.y;
 
             const speedScale = state.fov / ENGINE_CONFIG.defaultFov;
-            const latFactor = getVerticalPanFactor(state.fov, state.lat);
-            const massFactor = getMovementMassFactor(state.fov);
-            const moveX = compressInputDelta(deltaX) * massFactor;
-            const moveY = compressInputDelta(deltaY) * massFactor;
-            state.targetLon += moveX * ENGINE_CONFIG.dragSpeed * speedScale * 0.5;
+            const projectionId = getActiveProjectionId();
+            const lonFactor = getHorizontalPanFactor(state.fov, projectionId, ENGINE_CONFIG);
+            const latFactor = getVerticalPanFactor(state.fov, state.lat, projectionId, ENGINE_CONFIG);
+            const massFactor = getMovementMassFactor(state.fov, projectionId, ENGINE_CONFIG);
+            const moveX = compressInputDelta(deltaX, ENGINE_CONFIG) * massFactor;
+            const moveY = compressInputDelta(deltaY, ENGINE_CONFIG) * massFactor;
+            state.targetLon += moveX * ENGINE_CONFIG.dragSpeed * speedScale * 0.5 * lonFactor;
             state.targetLat += moveY * ENGINE_CONFIG.dragSpeed * speedScale * 0.5 * latFactor;
             state.targetLat = Math.max(-Math.PI / 2 + 0.01, Math.min(Math.PI / 2 - 0.01, state.targetLat));
             state.lon = state.targetLon;
@@ -4300,6 +4472,7 @@ export function createEngine({
         
         const now = performance.now();
         globalUniforms.uTime.value = now / 1000.0;
+        updateExposureState();
         
         // --- Order Reveal Animation ---
         // Hover takes precedence for preview, falling back to focus state
@@ -4359,11 +4532,13 @@ export function createEngine({
                 
                 // Only pan if delay exceeded
                 if (performance.now() - edgeHoverStart > ENGINE_CONFIG.edgePanDelay) {
-                    const edgeMassFactor = getMovementMassFactor(state.fov, ENGINE_CONFIG.edgePanMassWideFov);
+                    const projectionId = getActiveProjectionId();
+                    const edgeMassFactor = getMovementMassFactor(state.fov, projectionId, ENGINE_CONFIG, ENGINE_CONFIG.edgePanMassWideFov);
                     const speedBase = ENGINE_CONFIG.edgePanMaxSpeed * (state.fov / ENGINE_CONFIG.defaultFov) * edgeMassFactor;
-                    const verticalPanFactor = getVerticalPanFactor(state.fov, state.lat);
-                    if (mouseNDC.x < -1 + t) { const s = (-1 + t - mouseNDC.x) / t; panX = -s * s * speedBase; }
-                    else if (mouseNDC.x > 1 - t) { const s = (mouseNDC.x - (1 - t)) / t; panX = s * s * speedBase; }
+                    const horizontalPanFactor = getHorizontalPanFactor(state.fov, projectionId, ENGINE_CONFIG);
+                    const verticalPanFactor = getVerticalPanFactor(state.fov, state.lat, projectionId, ENGINE_CONFIG);
+                    if (mouseNDC.x < -1 + t) { const s = (-1 + t - mouseNDC.x) / t; panX = -s * s * speedBase * horizontalPanFactor; }
+                    else if (mouseNDC.x > 1 - t) { const s = (mouseNDC.x - (1 - t)) / t; panX = s * s * speedBase * horizontalPanFactor; }
                     if (mouseNDC.y < -1 + t) { const s = (-1 + t - mouseNDC.y) / t; panY = -s * s * speedBase * verticalPanFactor; }
                     else if (mouseNDC.y > 1 - t) { const s = (mouseNDC.y - (1 - t)) / t; panY = s * s * speedBase * verticalPanFactor; }
                 }
@@ -4400,7 +4575,7 @@ export function createEngine({
             state.lon += panX; state.lat += panY; state.targetLon = state.lon; state.targetLat = state.lat;
         } else if (!state.isDragging && !flyToActive) {
              state.lon += state.velocityX;
-             state.velocityY *= getVerticalPanFactor(state.fov, state.lat);
+             state.velocityY *= getVerticalPanFactor(state.fov, state.lat, getActiveProjectionId(), ENGINE_CONFIG);
              state.lat += state.velocityY;
              const baseDamping = isTouchDevice ? ENGINE_CONFIG.touchInertiaDamping : ENGINE_CONFIG.inertiaDamping;
              const speed = Math.hypot(state.velocityX, state.velocityY);
@@ -4415,28 +4590,6 @@ export function createEngine({
 
         state.lat = Math.max(-Math.PI / 2 + 0.01, Math.min(Math.PI / 2 - 0.01, state.lat));
 
-        // Horizon-zoom coupling: as the camera pans toward the horizon, gently
-        // narrow the FOV so projection distortion stays imperceptible.
-        // Above latStartDeg the user has complete pan freedom with no auto-zoom.
-        // Below it, maxFov ramps linearly from maxFov (unconstrained) down to
-        // safeFovAtHorizon as lat approaches 0°.  The lerp is slow enough that
-        // it feels like a natural zoom rather than a hard limit.
-        if (!flyToActive) {
-            const latDeg = THREE.MathUtils.radToDeg(state.lat);
-            if (latDeg < HORIZON_ZOOM_CONFIG.latStartDeg) {
-                const t = THREE.MathUtils.clamp(latDeg / HORIZON_ZOOM_CONFIG.latStartDeg, 0, 1);
-                const maxFov = THREE.MathUtils.lerp(
-                    HORIZON_ZOOM_CONFIG.safeFovAtHorizon,
-                    ENGINE_CONFIG.maxFov,
-                    t
-                );
-                if (state.fov > maxFov) {
-                    state.fov = THREE.MathUtils.lerp(state.fov, maxFov, HORIZON_ZOOM_CONFIG.lerpRate);
-                }
-            }
-        }
-
-        applyZenithAutoCenter();
         const y = Math.sin(state.lat); const r = Math.cos(state.lat);
         const x = r * Math.sin(state.lon); const z = -r * Math.cos(state.lon);
         const target = new THREE.Vector3(x, y, z);
@@ -4446,6 +4599,7 @@ export function createEngine({
         camera.lookAt(target);
         camera.updateMatrixWorld();
         camera.matrixWorldInverse.copy(camera.matrixWorld).invert();
+        syncHorizonTuning(currentConfig);
         if (groundMaterial?.uniforms?.uZenithFlatten) {
             const targetFlatten = getSceneDebug()?.disableZenithFlatten
                 ? 0
@@ -4459,10 +4613,21 @@ export function createEngine({
                 ? THREE.MathUtils.clamp(targetFlatten, prevFlatten - 0.01, prevFlatten + 0.01)
                 : targetFlatten;
             groundMaterial.uniforms.uZenithFlatten.value = flatten;
+            if (groundMaterial.uniforms.uGroundAlpha) {
+                const projectionGroundAlpha = getGroundAlphaForView(
+                    state.fov,
+                    state.lat,
+                    getActiveProjectionId(),
+                    ENGINE_CONFIG
+                );
+                const configuredGroundAlpha = THREE.MathUtils.clamp(currentConfig?.horizonGroundAlpha ?? 1.0, 0.0, 1.0);
+                groundMaterial.uniforms.uGroundAlpha.value = projectionGroundAlpha * configuredGroundAlpha;
+            }
         }
         updateUniforms();
         if (getSceneDebug()?.horizonDiagnostics) runHorizonDiagnostics(now);
         updateChapterLabelAnchors();
+        updateSelectionHighlights();
         
         // --- Fader Updates ---
         const nowSec = now / 1000;
@@ -4502,7 +4667,7 @@ export function createEngine({
             const fovT = THREE.MathUtils.smoothstep(state.fov, 24, 100);
             const gain = THREE.MathUtils.lerp(1.0, minGain, fovT);
             backdropStarsMaterial.uniforms.uBackdropGain.value = gain;
-            backdropStarsMaterial.uniforms.uBackdropEnergy.value = THREE.MathUtils.clamp(currentConfig?.backdropEnergy ?? 2.2, 0.2, 5.0);
+            backdropStarsMaterial.uniforms.uBackdropEnergy.value = THREE.MathUtils.clamp(currentConfig?.backdropEnergy ?? STELLARIUM_NIGHT_PALETTE.backdropEnergy, 0.2, 5.0);
             backdropStarsMaterial.uniforms.uBackdropSizeExp.value = THREE.MathUtils.clamp(currentConfig?.backdropSizeExponent ?? 0.9, 0.4, 1.4);
             backdropStarsMaterial.uniforms.uRevealZoom.value = revealZoom;
         }
@@ -4563,7 +4728,7 @@ export function createEngine({
             dt,
             fov: state.fov,
             camera,
-            projectionId: currentProjection.id,
+            projectionId: getActiveProjectionId(),
             screenW,
             screenH,
             globalScale: globalUniforms.uScale.value,
@@ -4635,7 +4800,16 @@ export function createEngine({
         if (sunDiscMesh) { scene.remove(sunDiscMesh); sunDiscMesh.geometry.dispose(); (sunDiscMesh.material as THREE.ShaderMaterial).dispose(); sunDiscMesh = null; }
         if (sunHaloMesh) { scene.remove(sunHaloMesh); sunHaloMesh.geometry.dispose(); (sunHaloMesh.material as THREE.ShaderMaterial).dispose(); sunHaloMesh = null; }
         if (milkyWayMesh) { scene.remove(milkyWayMesh); milkyWayMesh.geometry.dispose(); (milkyWayMesh.material as THREE.ShaderMaterial).dispose(); milkyWayMesh = null; }
+        if (landscapeSilhouetteMesh) { groundGroup.remove(landscapeSilhouetteMesh); landscapeSilhouetteMesh.geometry.dispose(); (landscapeSilhouetteMesh.material as THREE.ShaderMaterial).dispose(); landscapeSilhouetteMesh = null; }
         if (skyBackgroundMesh) { scene.remove(skyBackgroundMesh); skyBackgroundMesh.geometry.dispose(); (skyBackgroundMesh.material as THREE.ShaderMaterial).dispose(); skyBackgroundMesh = null; }
+        scene.remove(selectionHighlightGroup);
+        for (const child of [...selectionHighlightGroup.children]) {
+            selectionHighlightGroup.remove(child);
+            (child as THREE.Mesh).geometry?.dispose();
+            const material = (child as THREE.Mesh).material;
+            if (Array.isArray(material)) material.forEach((m) => m.dispose());
+            else material?.dispose();
+        }
         renderer.dispose();
         renderer.domElement.remove();
     }
@@ -4660,7 +4834,7 @@ export function createEngine({
         const pos = getPosition(node).normalize();
         flyToTargetLat = Math.asin(Math.max(-0.999, Math.min(0.999, pos.y)));
         flyToTargetLon = Math.atan2(pos.x, -pos.z);
-        flyToTargetFov = targetFov ?? ENGINE_CONFIG.minFov;
+        flyToTargetFov = clampFov(targetFov ?? ENGINE_CONFIG.minFov);
         flyToActive = true;
         // Cancel any user drag inertia
         state.velocityX = 0;
@@ -4703,5 +4877,5 @@ export function createEngine({
         onWindowBlur();
     }
 
-    return { setConfig, start, stop, dispose, resize, setHandlers, getFullArrangement, setHoveredBook, setFocusedBook, setOrderRevealEnabled, setHierarchyFilter, flyTo, setProjection, setInteractionEnabled };
+    return { setConfig, start, stop, dispose, resize, setHandlers, getFullArrangement, setHoveredBook, setFocusedBook, setOrderRevealEnabled, setHierarchyFilter, flyTo, setProjection, setViewMode, setInteractionEnabled };
 }
