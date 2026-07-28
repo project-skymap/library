@@ -198,6 +198,14 @@ export type StarMapConfig = {
     groups?: Record<string, { name: string, start: number, end: number }[]>;
     horizonTheme?: HorizonThemeConfig;
     horizonThemes?: HorizonThemeConfig[];
+    immersiveHorizonWarp?: number; // 0..1 screen-space flattening applied only to ground/horizon rendering.
+    zenithHorizonWarp?: number; // 0..1 subtle ground/horizon flattening for Zenith mode.
+    horizonGroundAlpha?: number; // 0..1 multiplier for ground visibility after projection-mode fading.
+    showLandscapeSilhouette?: boolean;
+    landscapeSilhouetteOpacity?: number;
+    landscapeSilhouetteHeightDeg?: number;
+    landscapeSilhouetteSoftness?: number;
+    landscapeSilhouetteColor?: string;
 
     /**
      * World-space positions of unassigned / marker stars to render as plain

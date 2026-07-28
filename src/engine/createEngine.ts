@@ -441,6 +441,40 @@ export function createEngine({
         if (uniform) uniform.value = value;
     }
 
+    function syncHorizonTuning(cfg?: StarMapConfig) {
+        const warp = THREE.MathUtils.clamp(cfg?.immersiveHorizonWarp ?? cfg?.zenithHorizonWarp ?? 0.0, 0.0, 1.0);
+        if (groundMaterial?.uniforms?.uImmersiveHorizonWarp) {
+            groundMaterial.uniforms.uImmersiveHorizonWarp.value = warp;
+        }
+        const lineMaterial = horizonLine?.material;
+        if (lineMaterial instanceof THREE.ShaderMaterial && lineMaterial.uniforms?.uImmersiveHorizonWarp) {
+            lineMaterial.uniforms.uImmersiveHorizonWarp.value = warp;
+        }
+        const silhouetteMaterial = landscapeSilhouetteMesh?.material;
+        if (silhouetteMaterial instanceof THREE.ShaderMaterial) {
+            const uniforms = silhouetteMaterial.uniforms;
+            if (uniforms.uImmersiveHorizonWarp) uniforms.uImmersiveHorizonWarp.value = warp;
+            if (uniforms.uSilhouetteOpacity) {
+                uniforms.uSilhouetteOpacity.value = cfg?.showLandscapeSilhouette === false
+                    ? 0.0
+                    : THREE.MathUtils.clamp(cfg?.landscapeSilhouetteOpacity ?? 0.0, 0.0, 1.0);
+            }
+            if (uniforms.uSilhouetteHeightDeg) {
+                uniforms.uSilhouetteHeightDeg.value = THREE.MathUtils.clamp(cfg?.landscapeSilhouetteHeightDeg ?? 6.0, 0.0, 18.0);
+            }
+            if (uniforms.uSilhouetteSoftness) {
+                uniforms.uSilhouetteSoftness.value = THREE.MathUtils.clamp(cfg?.landscapeSilhouetteSoftness ?? 0.18, 0.0, 0.8);
+            }
+            if (uniforms.uSilhouetteColor && typeof cfg?.landscapeSilhouetteColor === "string") {
+                try {
+                    uniforms.uSilhouetteColor.value.set(cfg.landscapeSilhouetteColor);
+                } catch {
+                    uniforms.uSilhouetteColor.value.set(0x06090d);
+                }
+            }
+        }
+    }
+
     function applyGroundTheme(cfg?: StarMapConfig) {
         if (!groundMaterial) return;
         const theme: HorizonThemeConfig | undefined = getSceneDebug()?.disableHorizonTheme ? undefined : cfg?.horizonTheme;
@@ -459,6 +493,7 @@ export function createEngine({
         const fogIntensity = THREE.MathUtils.clamp(atmo?.fogIntensity ?? STELLARIUM_NIGHT_PALETTE.groundFogIntensity, 0.0, 1.5);
         const fogVisible = atmo?.fogVisible === false ? 0.0 : 1.0;
         const minBrightness = THREE.MathUtils.clamp(atmo?.minimalBrightness ?? STELLARIUM_NIGHT_PALETTE.groundMinBrightness, 0.0, 1.0);
+        const horizonWarp = THREE.MathUtils.clamp(cfg?.immersiveHorizonWarp ?? cfg?.zenithHorizonWarp ?? 0.0, 0.0, 1.0);
         const rotateRad = ((theme?.profile?.angleRotateZDeg ?? 0) * Math.PI) / 180;
 
         const azSamples = new Array<number>(MAX_HORIZON_POINTS).fill(0);
@@ -508,6 +543,8 @@ export function createEngine({
         setUniformValue(uniforms, "uHorizonAltDeg", altSamples);
         setUniformValue(uniforms, "uHorizonRotateRad", rotateRad);
         setUniformValue(uniforms, "uBaseAltDeg", baseAltDeg);
+        setUniformValue(uniforms, "uImmersiveHorizonWarp", horizonWarp);
+        syncHorizonTuning(cfg);
         groundMaterial.uniformsNeedUpdate = true;
 
         if (atmosphereMesh && atmosphereMesh.material instanceof THREE.ShaderMaterial) {
@@ -554,15 +591,20 @@ export function createEngine({
         const mat = createSmartMaterial({
             uniforms: {
                 color: { value: lineColor },
-                alpha: { value: 0.95 }
+                alpha: { value: 0.95 },
+                uImmersiveHorizonWarp: { value: horizonWarp }
             },
             vertexShaderBody: `
                 uniform vec3 color;
+                uniform float uImmersiveHorizonWarp;
                 varying vec3 vColor;
                 void main() {
                     vColor = color;
                     vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
                     gl_Position = smartProject(mvPosition);
+                    float altitude = abs(normalize(position).y);
+                    float horizonT = 1.0 - smoothstep(0.0, 0.45, altitude);
+                    gl_Position.y *= mix(1.0, 0.12, clamp(uImmersiveHorizonWarp, 0.0, 1.0) * horizonT);
                     vScreenPos = gl_Position.xy / gl_Position.w;
                 }
             `,
@@ -703,9 +745,11 @@ export function createEngine({
                 uHorizonRotateRad: { value: 0.0 },
                 uHorizonRadius: { value: radius },
                 uBaseAltDeg: { value: 3.0 },
-                uZenithFlatten: { value: 0.0 }
+                uZenithFlatten: { value: 0.0 },
+                uImmersiveHorizonWarp: { value: 0.0 }
             },
             vertexShaderBody: `
+                uniform float uImmersiveHorizonWarp;
                 varying vec3 vPos; 
                 varying vec3 vWorldPos;
                 varying float vViewDirZ;
@@ -713,6 +757,9 @@ export function createEngine({
                     vPos = position; 
                     vec4 mvPosition = modelViewMatrix * vec4(position, 1.0); 
                     gl_Position = smartProject(mvPosition); 
+                    float altitude = abs(normalize(position).y);
+                    float horizonT = 1.0 - smoothstep(0.0, 0.45, altitude);
+                    gl_Position.y *= mix(1.0, 0.12, clamp(uImmersiveHorizonWarp, 0.0, 1.0) * horizonT);
                     vScreenPos = gl_Position.xy / gl_Position.w; 
                     vWorldPos = (modelMatrix * vec4(position, 1.0)).xyz;
                     vViewDirZ = normalize(mvPosition.xyz).z;
@@ -841,6 +888,7 @@ export function createEngine({
     let sunDiscMesh: THREE.Mesh | null = null;
     let sunHaloMesh: THREE.Mesh | null = null;
     let milkyWayMesh: THREE.Mesh | null = null;
+    let landscapeSilhouetteMesh: THREE.Mesh | null = null;
     let divisionTintRecords: { mat: THREE.ShaderMaterial }[] = [];
 
 
@@ -974,6 +1022,105 @@ export function createEngine({
         const atm = new THREE.Mesh(geometry, material);
         atmosphereMesh = atm;
         groundGroup.add(atm);
+    }
+
+    function createLandscapeSilhouette() {
+        const segments = 256;
+        const radius = 1003;
+        const positions: number[] = [];
+        const bands: number[] = [];
+        const azimuths: number[] = [];
+        const indices: number[] = [];
+
+        for (let i = 0; i <= segments; i++) {
+            const t = i / segments;
+            const az = t * Math.PI * 2;
+            const x = Math.cos(az);
+            const z = Math.sin(az);
+            positions.push(x, 0, z, x, 0, z);
+            bands.push(0, 1);
+            azimuths.push(t, t);
+        }
+
+        for (let i = 0; i < segments; i++) {
+            const a = i * 2;
+            indices.push(a, a + 1, a + 2, a + 1, a + 3, a + 2);
+        }
+
+        const geometry = new THREE.BufferGeometry();
+        geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+        geometry.setAttribute("aBand", new THREE.Float32BufferAttribute(bands, 1));
+        geometry.setAttribute("aAzimuth", new THREE.Float32BufferAttribute(azimuths, 1));
+        geometry.setIndex(indices);
+
+        const material = createSmartMaterial({
+            uniforms: {
+                uSilhouetteColor: { value: new THREE.Color(0x06090d) },
+                uSilhouetteOpacity: { value: 0.0 },
+                uSilhouetteHeightDeg: { value: 6.0 },
+                uSilhouetteSoftness: { value: 0.18 },
+                uSilhouetteRadius: { value: radius },
+                uSilhouetteBottomAltDeg: { value: -12.0 },
+                uImmersiveHorizonWarp: { value: 0.0 },
+            },
+            vertexShaderBody: `
+                attribute float aBand;
+                attribute float aAzimuth;
+                uniform float uSilhouetteHeightDeg;
+                uniform float uSilhouetteRadius;
+                uniform float uSilhouetteBottomAltDeg;
+                uniform float uImmersiveHorizonWarp;
+                varying float vBand;
+                varying float vPeak;
+
+                float ridgeNoise(float t) {
+                    float h = 0.0;
+                    h += sin(t * 6.2831853 * 3.0 + 0.4) * 0.32;
+                    h += sin(t * 6.2831853 * 7.0 + 1.8) * 0.22;
+                    h += sin(t * 6.2831853 * 17.0 + 0.9) * 0.12;
+                    h += sin(t * 6.2831853 * 31.0 + 2.6) * 0.06;
+                    return clamp(0.52 + h, 0.12, 1.0);
+                }
+
+                void main() {
+                    vBand = aBand;
+                    vPeak = ridgeNoise(aAzimuth);
+                    float topAltDeg = 0.8 + uSilhouetteHeightDeg * vPeak;
+                    float altDeg = mix(uSilhouetteBottomAltDeg, topAltDeg, aBand);
+                    float alt = radians(altDeg);
+                    vec3 dir = normalize(vec3(position.x * cos(alt), sin(alt), position.z * cos(alt)));
+                    vec4 mvPosition = modelViewMatrix * vec4(dir * uSilhouetteRadius, 1.0);
+                    gl_Position = smartProject(mvPosition);
+                    float horizonT = 1.0 - smoothstep(0.0, 0.45, abs(dir.y));
+                    gl_Position.y *= mix(1.0, 0.12, clamp(uImmersiveHorizonWarp, 0.0, 1.0) * horizonT);
+                    vScreenPos = gl_Position.xy / gl_Position.w;
+                }
+            `,
+            fragmentShader: `
+                uniform vec3 uSilhouetteColor;
+                uniform float uSilhouetteOpacity;
+                uniform float uSilhouetteSoftness;
+                varying float vBand;
+                varying float vPeak;
+                void main() {
+                    float alphaMask = getMaskAlpha();
+                    if (alphaMask < 0.01) discard;
+                    float topFade = 1.0 - smoothstep(max(0.0, 1.0 - uSilhouetteSoftness), 1.0, vBand) * 0.35;
+                    float bottomFade = smoothstep(0.0, 0.06, vBand);
+                    float peakShade = mix(0.9, 1.12, vPeak);
+                    gl_FragColor = vec4(toneMapSceneColor(uSilhouetteColor * peakShade), uSilhouetteOpacity * topFade * bottomFade * alphaMask);
+                }
+            `,
+            transparent: true,
+            depthWrite: false,
+            depthTest: true,
+            side: THREE.DoubleSide,
+        });
+
+        landscapeSilhouetteMesh = new THREE.Mesh(geometry, material);
+        landscapeSilhouetteMesh.frustumCulled = false;
+        landscapeSilhouetteMesh.renderOrder = 2;
+        groundGroup.add(landscapeSilhouetteMesh);
     }
 
     // ---------------------------
@@ -1569,6 +1716,7 @@ export function createEngine({
     createSkyBackground();
     createGround();
     createAtmosphere();
+    createLandscapeSilhouette();
     createMoon();
     createSun();
     createMilkyWay();
@@ -3229,7 +3377,6 @@ export function createEngine({
 
     function setConfig(cfg: StarMapConfig) {
         currentConfig = cfg;
-        applyGroundTheme(cfg);
         const externalFocusId = (cfg as any).focus?.nodeId;
         if (typeof externalFocusId === "string") focusedNodeId = externalFocusId;
         if (externalFocusId === null) focusedNodeId = null;
@@ -3240,6 +3387,8 @@ export function createEngine({
         } else if (!cfg.viewMode && cfg.projection) {
             setProjection(cfg.projection);
         }
+        applyGroundTheme(cfg);
+        syncHorizonTuning(cfg);
 
         // Update Camera Orientation if provided and changed
         if (typeof cfg.camera?.lon === 'number' && cfg.camera.lon !== lastAppliedLon) {
@@ -4364,6 +4513,7 @@ export function createEngine({
         camera.lookAt(target);
         camera.updateMatrixWorld();
         camera.matrixWorldInverse.copy(camera.matrixWorld).invert();
+        syncHorizonTuning(currentConfig);
         if (groundMaterial?.uniforms?.uZenithFlatten) {
             const targetFlatten = getSceneDebug()?.disableZenithFlatten
                 ? 0
@@ -4378,12 +4528,14 @@ export function createEngine({
                 : targetFlatten;
             groundMaterial.uniforms.uZenithFlatten.value = flatten;
             if (groundMaterial.uniforms.uGroundAlpha) {
-                groundMaterial.uniforms.uGroundAlpha.value = getGroundAlphaForView(
+                const projectionGroundAlpha = getGroundAlphaForView(
                     state.fov,
                     state.lat,
                     getActiveProjectionId(),
                     ENGINE_CONFIG
                 );
+                const configuredGroundAlpha = THREE.MathUtils.clamp(currentConfig?.horizonGroundAlpha ?? 1.0, 0.0, 1.0);
+                groundMaterial.uniforms.uGroundAlpha.value = projectionGroundAlpha * configuredGroundAlpha;
             }
         }
         updateUniforms();
@@ -4561,6 +4713,7 @@ export function createEngine({
         if (sunDiscMesh) { scene.remove(sunDiscMesh); sunDiscMesh.geometry.dispose(); (sunDiscMesh.material as THREE.ShaderMaterial).dispose(); sunDiscMesh = null; }
         if (sunHaloMesh) { scene.remove(sunHaloMesh); sunHaloMesh.geometry.dispose(); (sunHaloMesh.material as THREE.ShaderMaterial).dispose(); sunHaloMesh = null; }
         if (milkyWayMesh) { scene.remove(milkyWayMesh); milkyWayMesh.geometry.dispose(); (milkyWayMesh.material as THREE.ShaderMaterial).dispose(); milkyWayMesh = null; }
+        if (landscapeSilhouetteMesh) { groundGroup.remove(landscapeSilhouetteMesh); landscapeSilhouetteMesh.geometry.dispose(); (landscapeSilhouetteMesh.material as THREE.ShaderMaterial).dispose(); landscapeSilhouetteMesh = null; }
         if (skyBackgroundMesh) { scene.remove(skyBackgroundMesh); skyBackgroundMesh.geometry.dispose(); (skyBackgroundMesh.material as THREE.ShaderMaterial).dispose(); skyBackgroundMesh = null; }
         renderer.dispose();
         renderer.domElement.remove();
