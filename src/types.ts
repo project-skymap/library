@@ -206,6 +206,8 @@ export type StarMapConfig = {
     landscapeSilhouetteHeightDeg?: number;
     landscapeSilhouetteSoftness?: number;
     landscapeSilhouetteColor?: string;
+    selectedStarId?: string | null;
+    answerStarId?: string | null;
 
     /**
      * World-space positions of unassigned / marker stars to render as plain

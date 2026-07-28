@@ -17,6 +17,12 @@
 <!-- @LatestFirst -->
 `🟪 epic` `🟩 story` `🟦 task` `🟥 bug`
 
+## [0.10.1]
+🟪 [Hierarchy](https://jrsmth.atlassian.net/browse/SKY-31) (28/07/2026)
+- 🟦 `[demo]` Zoom-In Default
+- 🟦 `[demo]` Revise Horizon Mechanics
+- 🟦 `[demo]` Revise Selection Mechanics
+
 ## [0.10.0]
 🟪 [Hierarchy](https://jrsmth.atlassian.net/browse/SKY-31) (25/06/2026)
 - 🟩 `#32` Paul wants book-level constellations to be pretty and informative
@@ -83,3 +89,4 @@
 [0.8.0]: https://github.com/project-skymap/library/compare/v0.7.5...v0.8.0
 [0.9.0]: https://github.com/project-skymap/library/compare/v0.8.0...v0.9.0
 [0.10.0]: https://github.com/project-skymap/library/compare/v0.9.0...v0.10.0
+[0.10.1]: https://github.com/project-skymap/library/compare/v0.10.0...v0.10.1

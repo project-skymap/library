@@ -1732,6 +1732,9 @@ export function createEngine({
     const root = new THREE.Group();
     scene.add(root);
 
+    const selectionHighlightGroup = new THREE.Group();
+    scene.add(selectionHighlightGroup);
+
     const nodeById = new Map<string, SceneNode>();
     const starIndexToId: string[] = [];
     const starIdToIndex = new Map<string, number>();
@@ -1791,6 +1794,64 @@ export function createEngine({
     let boundaryLines: THREE.LineSegments | null = null;
     let starPoints: THREE.Points | null = null;
 
+    function createStarHighlight(color: number, size: number, thickness: number, pulseOffset: number) {
+        const material = createSmartMaterial({
+            uniforms: {
+                uColor: { value: new THREE.Color(color) },
+                uMarkerSize: { value: size },
+                uThickness: { value: thickness },
+                uPulseOffset: { value: pulseOffset },
+            },
+            vertexShaderBody: `
+                uniform float uMarkerSize;
+                varying vec2 vUv;
+                void main() {
+                    vUv = uv;
+                    vec4 mvPos = modelViewMatrix * vec4(0.0, 0.0, 0.0, 1.0);
+                    vec4 projected = smartProject(mvPos);
+                    if (projected.z > 4.0) {
+                        gl_Position = vec4(-10.0, -10.0, -10.0, 1.0);
+                        return;
+                    }
+                    vec2 offset = position.xy * uMarkerSize * uScale;
+                    projected.xy += offset / vec2(uAspect, 1.0);
+                    vScreenPos = projected.xy / projected.w;
+                    gl_Position = projected;
+                }
+            `,
+            fragmentShader: `
+                uniform vec3 uColor;
+                uniform float uThickness;
+                uniform float uPulseOffset;
+                uniform float uTime;
+                varying vec2 vUv;
+                void main() {
+                    float alphaMask = getMaskAlpha();
+                    if (alphaMask < 0.01) discard;
+                    vec2 p = vUv * 2.0 - 1.0;
+                    float d = length(p);
+                    float ring = smoothstep(0.72 - uThickness, 0.72, d) * (1.0 - smoothstep(0.72, 0.72 + uThickness, d));
+                    float halo = (1.0 - smoothstep(0.48, 1.0, d)) * 0.28;
+                    float pulse = 0.72 + 0.28 * sin(uTime * 2.4 + uPulseOffset);
+                    gl_FragColor = vec4(toneMapSceneColor(uColor * (0.9 + pulse * 0.35)), (ring + halo * pulse) * alphaMask);
+                }
+            `,
+            transparent: true,
+            depthWrite: false,
+            depthTest: false,
+            blending: THREE.AdditiveBlending,
+        });
+        const mesh = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), material);
+        mesh.visible = false;
+        mesh.frustumCulled = false;
+        mesh.renderOrder = 1200 + pulseOffset;
+        selectionHighlightGroup.add(mesh);
+        return mesh;
+    }
+
+    const selectedStarHighlight = createStarHighlight(0x7dd3fc, 0.028, 0.055, 0.0);
+    const answerStarHighlight = createStarHighlight(0xfbbf24, 0.021, 0.065, 1.7);
+
     // Faders for smooth visibility transitions (Stellarium-style)
     const linesFader = new Fader(0.4);
     const artFader = new Fader(0.5);
@@ -1819,6 +1880,31 @@ export function createEngine({
         boundaryLines = null;
         starPoints = null;
         divisionTintRecords = [];
+    }
+
+    function updateStarHighlight(mesh: THREE.Mesh, nodeId: string | null | undefined) {
+        if (!nodeId) {
+            mesh.visible = false;
+            return;
+        }
+        const node = nodeById.get(nodeId);
+        if (!node || node.level !== 3 || isNodeFiltered(node)) {
+            mesh.visible = false;
+            return;
+        }
+        const pos = getPosition(node);
+        const projected = smartProjectJS(pos);
+        if (currentProjection.isClipped(projected.z)) {
+            mesh.visible = false;
+            return;
+        }
+        mesh.position.copy(pos);
+        mesh.visible = true;
+    }
+
+    function updateSelectionHighlights() {
+        updateStarHighlight(selectedStarHighlight, currentConfig?.selectedStarId);
+        updateStarHighlight(answerStarHighlight, currentConfig?.answerStarId);
     }
 
     function createTextTexture(text: string, color: string = "#ffffff", opts?: {
@@ -4541,6 +4627,7 @@ export function createEngine({
         updateUniforms();
         if (getSceneDebug()?.horizonDiagnostics) runHorizonDiagnostics(now);
         updateChapterLabelAnchors();
+        updateSelectionHighlights();
         
         // --- Fader Updates ---
         const nowSec = now / 1000;
@@ -4715,6 +4802,14 @@ export function createEngine({
         if (milkyWayMesh) { scene.remove(milkyWayMesh); milkyWayMesh.geometry.dispose(); (milkyWayMesh.material as THREE.ShaderMaterial).dispose(); milkyWayMesh = null; }
         if (landscapeSilhouetteMesh) { groundGroup.remove(landscapeSilhouetteMesh); landscapeSilhouetteMesh.geometry.dispose(); (landscapeSilhouetteMesh.material as THREE.ShaderMaterial).dispose(); landscapeSilhouetteMesh = null; }
         if (skyBackgroundMesh) { scene.remove(skyBackgroundMesh); skyBackgroundMesh.geometry.dispose(); (skyBackgroundMesh.material as THREE.ShaderMaterial).dispose(); skyBackgroundMesh = null; }
+        scene.remove(selectionHighlightGroup);
+        for (const child of [...selectionHighlightGroup.children]) {
+            selectionHighlightGroup.remove(child);
+            (child as THREE.Mesh).geometry?.dispose();
+            const material = (child as THREE.Mesh).material;
+            if (Array.isArray(material)) material.forEach((m) => m.dispose());
+            else material?.dispose();
+        }
         renderer.dispose();
         renderer.domElement.remove();
     }
