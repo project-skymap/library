@@ -206,6 +206,9 @@ export type StarMapConfig = {
     landscapeSilhouetteHeightDeg?: number;
     landscapeSilhouetteSoftness?: number;
     landscapeSilhouetteColor?: string;
+    // Free text (e.g. a chapter's passage summary) rendered on a plane tangent to the
+    // ground, fixed at a set azimuth/altitude so it reads as painted onto the landscape.
+    groundCaptionText?: string;
     selectedStarId?: string | null;
     answerStarId?: string | null;
 
