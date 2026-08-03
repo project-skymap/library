@@ -889,6 +889,7 @@ export function createEngine({
     let sunHaloMesh: THREE.Mesh | null = null;
     let milkyWayMesh: THREE.Mesh | null = null;
     let landscapeSilhouetteMesh: THREE.Mesh | null = null;
+    let groundCaptionMesh: THREE.Mesh | null = null;
     let divisionTintRecords: { mat: THREE.ShaderMaterial }[] = [];
 
 
@@ -1942,6 +1943,163 @@ export function createEngine({
         const tex = new THREE.CanvasTexture(canvas);
         tex.minFilter = THREE.LinearFilter;
         return { tex, aspect: w / h };
+    }
+
+    // Word-wrapped variant of createTextTexture, for longer passages (e.g. a chapter
+    // summary) rather than single-line labels. Wraps at maxWidthPx and bakes a soft
+    // drop shadow so light text stays legible over the procedural ground texture.
+    function createWrappedTextTexture(text: string, color: string = "#eef2f7", opts?: {
+        fontSize?: number;
+        fontWeight?: number;
+        maxWidthPx?: number;
+        lineHeightMult?: number;
+        shadowBlurPx?: number;
+        shadowColor?: string;
+    }) {
+        const canvas = document.createElement("canvas");
+        const ctx = canvas.getContext("2d");
+        if (!ctx) return null;
+        const fontSize = opts?.fontSize ?? 34;
+        const weight = opts?.fontWeight ?? 400;
+        const maxWidthPx = opts?.maxWidthPx ?? 900;
+        const lineHeight = fontSize * (opts?.lineHeightMult ?? 1.35);
+        const font = `${weight} ${fontSize}px "Inter", system-ui, sans-serif`;
+        ctx.font = font;
+
+        const words = text.split(/\s+/).filter(Boolean);
+        const lines: string[] = [];
+        let currentLine = "";
+        for (const word of words) {
+            const testLine = currentLine ? `${currentLine} ${word}` : word;
+            if (currentLine && ctx.measureText(testLine).width > maxWidthPx) {
+                lines.push(currentLine);
+                currentLine = word;
+            } else {
+                currentLine = testLine;
+            }
+        }
+        if (currentLine) lines.push(currentLine);
+        if (lines.length === 0) return null;
+
+        const shadowBlur = opts?.shadowBlurPx ?? 8;
+        const pad = shadowBlur * 2 + 12;
+        const textWidth = Math.min(maxWidthPx, Math.max(...lines.map((l) => ctx.measureText(l).width)));
+        const w = Math.ceil(textWidth) + pad * 2;
+        const h = Math.ceil(lineHeight * lines.length) + pad * 2;
+        canvas.width = w;
+        canvas.height = h;
+        ctx.font = font;
+        ctx.fillStyle = color;
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.shadowColor = opts?.shadowColor ?? "rgba(0,0,0,0.85)";
+        ctx.shadowBlur = shadowBlur;
+        lines.forEach((line, i) => {
+            const y = pad + lineHeight * (i + 0.5);
+            ctx.fillText(line, w / 2, y);
+        });
+
+        const tex = new THREE.CanvasTexture(canvas);
+        tex.minFilter = THREE.LinearFilter;
+        return { tex, aspect: w / h };
+    }
+
+    // Builds a flat quad tangent to the ground sphere at a fixed azimuth/altitude,
+    // using real vertex positions (not a screen-space billboard) so it foreshortens
+    // with perspective like the rest of the scene as the camera pans past it.
+    function buildGroundCaptionMesh(text: string): THREE.Mesh | null {
+        const texRes = createWrappedTextTexture(text);
+        if (!texRes) return null;
+
+        const azDeg = 20;
+        const altDeg = -11;
+        const az = THREE.MathUtils.degToRad(azDeg);
+        const alt = THREE.MathUtils.degToRad(altDeg);
+        const dir = new THREE.Vector3(
+            Math.cos(alt) * Math.sin(az),
+            Math.sin(alt),
+            -Math.cos(alt) * Math.cos(az)
+        ).normalize();
+
+        const radius = 999; // just inside the ground shell (995) / silhouette (1003)
+        const up = Math.abs(dir.y) > 0.99 ? new THREE.Vector3(0, 0, 1) : new THREE.Vector3(0, 1, 0);
+        // Matches the basis a camera looking along `dir` would use for its own local
+        // +X/+Y axes (right = dir × up, up' = right × dir) — NOT up × dir, which points
+        // the wrong way and mirrors the text left-right.
+        const right = dir.clone().cross(up).normalize();
+        const trueUp = right.clone().cross(dir).normalize();
+
+        const worldHeight = 135;
+        const worldWidth = worldHeight * texRes.aspect;
+        const center = dir.clone().multiplyScalar(radius);
+        const hw = right.clone().multiplyScalar(worldWidth / 2);
+        const hh = trueUp.clone().multiplyScalar(worldHeight / 2);
+
+        const p0 = center.clone().sub(hw).sub(hh);
+        const p1 = center.clone().add(hw).sub(hh);
+        const p2 = center.clone().add(hw).add(hh);
+        const p3 = center.clone().sub(hw).add(hh);
+
+        const positions = [
+            p0.x, p0.y, p0.z, p1.x, p1.y, p1.z, p2.x, p2.y, p2.z,
+            p0.x, p0.y, p0.z, p2.x, p2.y, p2.z, p3.x, p3.y, p3.z,
+        ];
+        const uvs = [0, 0, 1, 0, 1, 1, 0, 0, 1, 1, 0, 1];
+
+        const geo = new THREE.BufferGeometry();
+        geo.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+        geo.setAttribute("uv", new THREE.Float32BufferAttribute(uvs, 2));
+
+        const mat = createSmartMaterial({
+            uniforms: {
+                uMap: { value: texRes.tex },
+                uAlpha: { value: 1.0 },
+            },
+            vertexShaderBody: `
+                varying vec2 vUv;
+                void main() {
+                    vUv = uv;
+                    vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+                    gl_Position = smartProject(mvPosition);
+                    vScreenPos = gl_Position.xy / gl_Position.w;
+                }
+            `,
+            fragmentShader: `
+                uniform sampler2D uMap;
+                uniform float uAlpha;
+                varying vec2 vUv;
+                void main() {
+                    float alphaMask = getMaskAlpha();
+                    if (alphaMask < 0.01) discard;
+                    vec4 texColor = texture2D(uMap, vUv);
+                    if (texColor.a < 0.01) discard;
+                    gl_FragColor = vec4(toneMapSceneColor(texColor.rgb), texColor.a * uAlpha * alphaMask);
+                }
+            `,
+            transparent: true,
+            depthWrite: false,
+            depthTest: true,
+            side: THREE.DoubleSide,
+        });
+
+        const mesh = new THREE.Mesh(geo, mat);
+        mesh.frustumCulled = false;
+        mesh.renderOrder = 2;
+        return mesh;
+    }
+
+    function updateGroundCaption(text: string | undefined) {
+        if (groundCaptionMesh) {
+            groundGroup.remove(groundCaptionMesh);
+            groundCaptionMesh.geometry.dispose();
+            (groundCaptionMesh.material as THREE.ShaderMaterial).dispose();
+            (groundCaptionMesh.material as THREE.ShaderMaterial).uniforms.uMap?.value?.dispose?.();
+            groundCaptionMesh = null;
+        }
+        if (text && text.trim().length > 0) {
+            groundCaptionMesh = buildGroundCaptionMesh(text);
+            if (groundCaptionMesh) groundGroup.add(groundCaptionMesh);
+        }
     }
 
     // Returns the point on the great circle through `anchor` and `point` that sits exactly
@@ -3438,6 +3596,7 @@ export function createEngine({
     let lastModel: SceneModel | undefined = undefined;
     let lastAppliedLon: number | undefined = undefined;
     let lastAppliedLat: number | undefined = undefined;
+    let lastAppliedGroundCaptionText: string | undefined = undefined;
     let lastAppliedFov: number | undefined = undefined;
     let lastAppliedViewMode: PlanetariumViewMode | undefined = undefined;
     let lastBackdropCount: number | undefined = undefined;
@@ -3475,6 +3634,11 @@ export function createEngine({
         }
         applyGroundTheme(cfg);
         syncHorizonTuning(cfg);
+
+        if (cfg.groundCaptionText !== lastAppliedGroundCaptionText) {
+            updateGroundCaption(cfg.groundCaptionText);
+            lastAppliedGroundCaptionText = cfg.groundCaptionText;
+        }
 
         // Update Camera Orientation if provided and changed
         if (typeof cfg.camera?.lon === 'number' && cfg.camera.lon !== lastAppliedLon) {
@@ -4801,6 +4965,7 @@ export function createEngine({
         if (sunHaloMesh) { scene.remove(sunHaloMesh); sunHaloMesh.geometry.dispose(); (sunHaloMesh.material as THREE.ShaderMaterial).dispose(); sunHaloMesh = null; }
         if (milkyWayMesh) { scene.remove(milkyWayMesh); milkyWayMesh.geometry.dispose(); (milkyWayMesh.material as THREE.ShaderMaterial).dispose(); milkyWayMesh = null; }
         if (landscapeSilhouetteMesh) { groundGroup.remove(landscapeSilhouetteMesh); landscapeSilhouetteMesh.geometry.dispose(); (landscapeSilhouetteMesh.material as THREE.ShaderMaterial).dispose(); landscapeSilhouetteMesh = null; }
+        if (groundCaptionMesh) { groundGroup.remove(groundCaptionMesh); groundCaptionMesh.geometry.dispose(); (groundCaptionMesh.material as THREE.ShaderMaterial).dispose(); groundCaptionMesh = null; }
         if (skyBackgroundMesh) { scene.remove(skyBackgroundMesh); skyBackgroundMesh.geometry.dispose(); (skyBackgroundMesh.material as THREE.ShaderMaterial).dispose(); skyBackgroundMesh = null; }
         scene.remove(selectionHighlightGroup);
         for (const child of [...selectionHighlightGroup.children]) {

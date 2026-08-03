@@ -11,11 +11,14 @@
 - `0.8.x`   : Engine Rebuild
 - `0.9.x`   : Procedural Layout
 - `0.10.x`  : Hierarchy
-- `0.11.x`  : Hierarchy
 
 ## Releases
 <!-- @LatestFirst -->
 `🟪 epic` `🟩 story` `🟦 task` `🟥 bug`
+
+## [0.10.2]
+🟪 [Hierarchy](https://jrsmth.atlassian.net/browse/SKY-31) (03/08/2026)
+- 🟦 [demo] gameplay focus
 
 ## [0.10.1]
 🟪 [Hierarchy](https://jrsmth.atlassian.net/browse/SKY-31) (28/07/2026)
@@ -90,3 +93,4 @@
 [0.9.0]: https://github.com/project-skymap/library/compare/v0.8.0...v0.9.0
 [0.10.0]: https://github.com/project-skymap/library/compare/v0.9.0...v0.10.0
 [0.10.1]: https://github.com/project-skymap/library/compare/v0.10.0...v0.10.1
+[0.10.2]: https://github.com/project-skymap/library/compare/v0.10.1...v0.10.2
