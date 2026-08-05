@@ -244,7 +244,7 @@ export type ConstellationConfig = {
         type: string;
         image: string;
         anchors: string[];
-        center: null | [number, number];
+        center: null | [number, number] | [number, number, number];
         radius: number;
         rotationDeg: number;
         aspectRatio?: number;

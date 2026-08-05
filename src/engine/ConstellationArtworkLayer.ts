@@ -150,7 +150,7 @@ export class ConstellationArtworkLayer {
                 }
             }
             else if (c.center) {
-                center.set(c.center[0], c.center[1], 0);
+                center.set(c.center[0], c.center[1], c.center[2] ?? 0);
                 valid = true;
             } else if (c.anchors.length > 0) {
                 const points: THREE.Vector3[] = [];
