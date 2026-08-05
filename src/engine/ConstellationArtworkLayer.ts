@@ -20,6 +20,7 @@ function buildSphereQuad(
     const centerNorm = center.clone().normalize();
     const temp = new THREE.Vector3();
     const tangent = new THREE.Vector3();
+    const rotationAxis = new THREE.Vector3();
     const q = new THREE.Quaternion();
 
     // Compute angular half-extents (Stellarium-style: uniform angular spacing)
@@ -44,7 +45,8 @@ function buildSphereQuad(
 
             if (angle > 0.00001) {
                 tangent.normalize();
-                q.setFromAxisAngle(tangent, angle);
+                rotationAxis.crossVectors(centerNorm, tangent).normalize();
+                q.setFromAxisAngle(rotationAxis, angle);
                 temp.copy(centerNorm).applyQuaternion(q).multiplyScalar(domeRadius);
             } else {
                 temp.copy(center);
@@ -180,20 +182,7 @@ export class ConstellationArtworkLayer {
             let rightDir = new THREE.Vector3();
             let upDir = new THREE.Vector3();
 
-            if (c.anchors.length >= 2) {
-                const p0 = getAnchorPos(c.anchors[0]);
-                const p1 = getAnchorPos(c.anchors[1]);
-                if (p0 && p1 && p0.distanceTo(p1) > 0.001) {
-                    const diff = new THREE.Vector3().subVectors(p1, p0);
-                    rightDir.copy(diff).sub(centerNorm.clone().multiplyScalar(diff.dot(centerNorm))).normalize();
-                    upDir.crossVectors(centerNorm, rightDir).normalize();
-                    rightDir.crossVectors(upDir, centerNorm).normalize();
-                } else {
-                    this._defaultTangentFrame(centerNorm, rightDir, upDir);
-                }
-            } else {
-                this._defaultTangentFrame(centerNorm, rightDir, upDir);
-            }
+            this._defaultTangentFrame(centerNorm, rightDir, upDir);
 
             // Apply rotationDeg by rotating rightDir/upDir around centerNorm
             if (c.rotationDeg !== 0) {
