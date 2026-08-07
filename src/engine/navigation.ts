@@ -29,7 +29,7 @@ export const VIEW_MODE_PROFILES: Record<PlanetariumViewMode, PlanetariumViewMode
         // Previous maxFov was 180. Cap user zoom at 110, but keep 180 as the
         // projection-fit reference so 110 retains the earlier zoomed-in framing.
         maxFov: 110,
-        defaultFov: 110,
+        defaultFov: 90,
         fitProjection: true,
         fitReferenceMaxFov: 180,
     },

@@ -211,6 +211,7 @@ export type StarMapConfig = {
     groundCaptionText?: string;
     selectedStarId?: string | null;
     answerStarId?: string | null;
+    focus?: { nodeId: string | null };
 
     /**
      * World-space positions of unassigned / marker stars to render as plain
@@ -221,6 +222,7 @@ export type StarMapConfig = {
 
     // Interaction & Camera
     editable?: boolean;
+    edgePanEnabled?: boolean;
     viewMode?: PlanetariumViewMode;
     projection?: "perspective" | "stereographic" | "blended";
     camera?: { lon?: number, lat?: number, fov?: number };

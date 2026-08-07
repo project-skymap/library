@@ -1852,6 +1852,7 @@ export function createEngine({
 
     const selectedStarHighlight = createStarHighlight(0x7dd3fc, 0.028, 0.055, 0.0);
     const answerStarHighlight = createStarHighlight(0xfbbf24, 0.021, 0.065, 1.7);
+    const focusTargetHighlight = createStarHighlight(0xffffff, 0.052, 0.045, 3.1);
 
     // Faders for smooth visibility transitions (Stellarium-style)
     const linesFader = new Fader(0.4);
@@ -1906,6 +1907,46 @@ export function createEngine({
     function updateSelectionHighlights() {
         updateStarHighlight(selectedStarHighlight, currentConfig?.selectedStarId);
         updateStarHighlight(answerStarHighlight, currentConfig?.answerStarId);
+        updateFocusTargetHighlight();
+    }
+
+    function updateFocusTargetHighlight() {
+        const nodeId = currentConfig?.focus?.nodeId;
+        if (!nodeId) {
+            focusTargetHighlight.visible = false;
+            return;
+        }
+
+        let pos: THREE.Vector3 | null = null;
+        const label = dynamicLabels.find((item) => item.node.id === nodeId);
+        if (label) {
+            pos = label.obj.position.clone();
+        } else {
+            const node = nodeById.get(nodeId);
+            if (node && !isNodeFiltered(node)) pos = getPosition(node);
+        }
+
+        if (!pos) {
+            const constellation = constellationLayer.getItems().find((item) => item.config.id === nodeId);
+            if (constellation) pos = constellation.center.clone();
+        }
+
+        if (!pos) {
+            focusTargetHighlight.visible = false;
+            return;
+        }
+
+        const projected = smartProjectJS(pos);
+        if (currentProjection.isClipped(projected.z)) {
+            focusTargetHighlight.visible = false;
+            return;
+        }
+
+        const material = focusTargetHighlight.material as THREE.ShaderMaterial;
+        const isChapter = nodeById.get(nodeId)?.level === 3;
+        material.uniforms.uMarkerSize.value = isChapter ? 0.038 : 0.06;
+        focusTargetHighlight.position.copy(pos);
+        focusTargetHighlight.visible = true;
     }
 
     function createTextTexture(text: string, color: string = "#ffffff", opts?: {
@@ -3625,6 +3666,7 @@ export function createEngine({
         const externalFocusId = (cfg as any).focus?.nodeId;
         if (typeof externalFocusId === "string") focusedNodeId = externalFocusId;
         if (externalFocusId === null) focusedNodeId = null;
+        constellationLayer.setFocused(focusedNodeId);
 
         if (cfg.viewMode && cfg.viewMode !== lastAppliedViewMode) {
             setViewMode(cfg.viewMode);
@@ -4685,7 +4727,7 @@ export function createEngine({
         let panX = 0; let panY = 0;
 
         // Edge Pan Logic (Disable in Edit Mode and on Touch Devices)
-        if (!state.isDragging && isMouseInWindow && !currentConfig?.editable && !isTouchDevice) {
+        if (!state.isDragging && isMouseInWindow && !currentConfig?.editable && currentConfig?.edgePanEnabled !== false && !isTouchDevice) {
             const t = ENGINE_CONFIG.edgePanThreshold;
             const inZoneX = mouseNDC.x < -1 + t || mouseNDC.x > 1 - t;
             const inZoneY = mouseNDC.y < -1 + t || mouseNDC.y > 1 - t;
@@ -4994,9 +5036,11 @@ export function createEngine({
 
     function flyTo(nodeId: string, targetFov?: number) {
         const node = nodeById.get(nodeId);
-        if (!node) return;
+        const constellation = node ? null : constellationLayer.getItems().find((item) => item.config.id === nodeId);
+        if (!node && !constellation) return;
         focusedNodeId = nodeId;
-        const pos = getPosition(node).normalize();
+        constellationLayer.setFocused(nodeId);
+        const pos = (node ? getPosition(node) : constellation!.center).normalize();
         flyToTargetLat = Math.asin(Math.max(-0.999, Math.min(0.999, pos.y)));
         flyToTargetLon = Math.atan2(pos.x, -pos.z);
         flyToTargetFov = clampFov(targetFov ?? ENGINE_CONFIG.minFov);
