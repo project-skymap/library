@@ -2011,7 +2011,7 @@ export function createEngine({
         const texRes = createWrappedTextTexture(text);
         if (!texRes) return null;
 
-        const azDeg = 20;
+        const azDeg = 245;
         const altDeg = -11;
         const az = THREE.MathUtils.degToRad(azDeg);
         const alt = THREE.MathUtils.degToRad(altDeg);
