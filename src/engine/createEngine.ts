@@ -2570,7 +2570,7 @@ export function createEngine({
             const requiredPx = item.chapterGlowRadiusPx + edgeMarginPx + labelHalfDiagPx;
             const zoomPush = 0.44 + (1.0 - THREE.MathUtils.smoothstep(state.fov, 5, 24)) * 0.38;
             const starPush = THREE.MathUtils.lerp(0.48, 0.82, Math.pow(starNorm, 0.8));
-            const offset = THREE.MathUtils.clamp(requiredPx * worldPerPixel * zoomPush * starPush, 1.5, 36);
+            const offset = THREE.MathUtils.clamp(requiredPx * worldPerPixel * zoomPush * starPush, 1.5, 48);
 
             item.obj.position.copy(starPos);
             item.obj.position.addScaledVector(tangent, offset);
@@ -2841,13 +2841,14 @@ export function createEngine({
             // 2. Process Labels (Level 1, 2, 3)
             if (n.level === 1 || n.level === 2 || n.level === 3) {
                 let color = "#ffffff";
-                const divName = (n.meta?.division as string) ?? n.label;
+                const parentBookNode = n.level === 3 && n.parent ? nodeById.get(n.parent) : null;
+                const divName = ((n.meta?.division as string | undefined) ?? (parentBookNode?.meta?.division as string | undefined)) ?? n.label;
                 if (n.level === 1 || n.level === 2) {
                     // Books inherit their division's tint, same colour scheme as the
                     // division label itself — keeps the map visually coherent across zoom.
                     color = cfg.divisionColors?.[divName] || "#9fb3c8";
                 }
-                else if (n.level === 3) color = cfg.divisionColors?.[divName] || "#b8c7d6";
+                else if (n.level === 3) color = cfg.divisionColors?.[divName] || "#9fb3c8";
 
                 let labelText = n.label;
                 if (n.level === 3 && n.meta?.chapter) {
@@ -2868,10 +2869,10 @@ export function createEngine({
                     })
                     : createTextTexture(labelText, color, {
                         fontSize: 88,
-                        fontWeight: 360,
+                        fontWeight: 200,
                         letterSpacing: 1,
                         blurPx: 3,
-                        alpha: 0.78,
+                        alpha: 0.39,
                     });
 
                 if (texRes) {
