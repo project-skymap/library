@@ -132,6 +132,44 @@ const ZOOM_REVEAL_CONFIG = {
     backdropRevealEnd:   0.65,   // backdrop fully visible at this mappedZoom
 };
 
+const ZOOM_HIERARCHY_CONFIG = {
+    divisionToBookStartFov: 68,
+    divisionToBookEndFov: 48,
+    bookToChapterStartFov: 22,
+    bookToChapterEndFov: 10,
+    divisionTintBaseAlpha: 0.16,
+    bookLevelArtOpacity: 0.5,
+};
+
+function getZoomHierarchyFactors(fov: number) {
+    const divisionT = THREE.MathUtils.smoothstep(
+        fov,
+        ZOOM_HIERARCHY_CONFIG.divisionToBookEndFov,
+        ZOOM_HIERARCHY_CONFIG.divisionToBookStartFov,
+    );
+    const bookT = 1.0 - divisionT;
+    const chapterT = 1.0 - THREE.MathUtils.smoothstep(
+        fov,
+        ZOOM_HIERARCHY_CONFIG.bookToChapterEndFov,
+        ZOOM_HIERARCHY_CONFIG.bookToChapterStartFov,
+    );
+    const artOpacityFactor = (
+        ZOOM_HIERARCHY_CONFIG.bookLevelArtOpacity +
+        (1.0 - ZOOM_HIERARCHY_CONFIG.bookLevelArtOpacity) * divisionT
+    ) * (1.0 - chapterT);
+    const lineDrawReveal = bookT;
+    const lineOpacityFactor = lineDrawReveal * (1.0 - chapterT);
+
+    return {
+        divisionT,
+        bookT,
+        chapterT,
+        artOpacityFactor,
+        lineDrawReveal,
+        lineOpacityFactor,
+    };
+}
+
 type ActiveHorizonProfile = {
     mode: 0 | 1;
     pointCount: number;
@@ -1852,6 +1890,7 @@ export function createEngine({
 
     const selectedStarHighlight = createStarHighlight(0x7dd3fc, 0.028, 0.055, 0.0);
     const answerStarHighlight = createStarHighlight(0xfbbf24, 0.021, 0.065, 1.7);
+    const focusTargetHighlight = createStarHighlight(0xffffff, 0.052, 0.045, 3.1);
 
     // Faders for smooth visibility transitions (Stellarium-style)
     const linesFader = new Fader(0.4);
@@ -1906,6 +1945,46 @@ export function createEngine({
     function updateSelectionHighlights() {
         updateStarHighlight(selectedStarHighlight, currentConfig?.selectedStarId);
         updateStarHighlight(answerStarHighlight, currentConfig?.answerStarId);
+        updateFocusTargetHighlight();
+    }
+
+    function updateFocusTargetHighlight() {
+        const nodeId = currentConfig?.focus?.nodeId;
+        if (!nodeId) {
+            focusTargetHighlight.visible = false;
+            return;
+        }
+
+        let pos: THREE.Vector3 | null = null;
+        const label = dynamicLabels.find((item) => item.node.id === nodeId);
+        if (label) {
+            pos = label.obj.position.clone();
+        } else {
+            const node = nodeById.get(nodeId);
+            if (node && !isNodeFiltered(node)) pos = getPosition(node);
+        }
+
+        if (!pos) {
+            const constellation = constellationLayer.getItems().find((item) => item.config.id === nodeId);
+            if (constellation) pos = constellation.center.clone();
+        }
+
+        if (!pos) {
+            focusTargetHighlight.visible = false;
+            return;
+        }
+
+        const projected = smartProjectJS(pos);
+        if (currentProjection.isClipped(projected.z)) {
+            focusTargetHighlight.visible = false;
+            return;
+        }
+
+        const material = focusTargetHighlight.material as THREE.ShaderMaterial;
+        const isChapter = nodeById.get(nodeId)?.level === 3;
+        material.uniforms.uMarkerSize.value = isChapter ? 0.038 : 0.06;
+        focusTargetHighlight.position.copy(pos);
+        focusTargetHighlight.visible = true;
     }
 
     function createTextTexture(text: string, color: string = "#ffffff", opts?: {
@@ -1934,15 +2013,43 @@ export function createEngine({
         canvas.height = h;
         ctx.font = font;
         if (opts?.letterSpacing) (ctx as unknown as { letterSpacing: string }).letterSpacing = `${opts.letterSpacing}px`;
-        if (blur > 0) ctx.filter = `blur(${blur}px)`;
         ctx.fillStyle = color;
         ctx.globalAlpha = opts?.alpha ?? 1;
         ctx.textAlign = "center";
         ctx.textBaseline = "middle";
+        if (blur > 0) {
+            ctx.filter = `blur(${blur}px)`;
+            ctx.globalAlpha = (opts?.alpha ?? 1) * 0.55;
+            ctx.fillText(displayText, w / 2, h / 2);
+            ctx.filter = "none";
+            ctx.globalAlpha = opts?.alpha ?? 1;
+        }
         ctx.fillText(displayText, w / 2, h / 2);
         const tex = new THREE.CanvasTexture(canvas);
         tex.minFilter = THREE.LinearFilter;
         return { tex, aspect: w / h };
+    }
+
+    function getCompactChapterLabel(bookKey: string | undefined, chapter: unknown): string {
+        const chapterText = String(chapter ?? "");
+        if (!bookKey) return chapterText;
+        const shortBookLabels: Record<string, string> = {
+            GEN: "G", EXO: "Ex", LEV: "Lv", NUM: "Nu", DEU: "Dt",
+            JOS: "Jos", JDG: "Jdg", RUT: "Ru", "1SA": "1S", "2SA": "2S",
+            "1KI": "1K", "2KI": "2K", "1CH": "1Ch", "2CH": "2Ch",
+            EZR: "Ezr", NEH: "Ne", EST: "Est", JOB: "Job", PSA: "Ps",
+            PRO: "Pr", ECC: "Ec", SNG: "Sg", ISA: "Is", JER: "Je",
+            LAM: "La", EZK: "Ezk", DAN: "Da", HOS: "Ho", JOL: "Jl",
+            AMO: "Am", OBA: "Ob", JON: "Jon", MIC: "Mi", NAM: "Na",
+            HAB: "Hab", ZEP: "Zp", HAG: "Hg", ZEC: "Zc", MAL: "Mal",
+            MAT: "Mt", MRK: "Mk", LUK: "Lk", JHN: "Jn", ACT: "Ac",
+            ROM: "Ro", "1CO": "1Co", "2CO": "2Co", EPH: "Ep", GAL: "Ga",
+            PHP: "Php", COL: "Col", "1TH": "1Th", "2TH": "2Th",
+            "1TI": "1Ti", "2TI": "2Ti", TIT: "Tit", PHM: "Phm",
+            HEB: "Heb", JAS: "Jas", "1PE": "1P", "2PE": "2P",
+            "1JN": "1J", "2JN": "2J", "3JN": "3J", JUD: "Jd", REV: "R",
+        };
+        return `${shortBookLabels[bookKey] ?? bookKey}-${chapterText}`;
     }
 
     // Word-wrapped variant of createTextTexture, for longer passages (e.g. a chapter
@@ -2011,7 +2118,7 @@ export function createEngine({
         const texRes = createWrappedTextTexture(text);
         if (!texRes) return null;
 
-        const azDeg = 20;
+        const azDeg = 245;
         const altDeg = -11;
         const az = THREE.MathUtils.degToRad(azDeg);
         const alt = THREE.MathUtils.degToRad(altDeg);
@@ -2441,11 +2548,10 @@ export function createEngine({
                     ? (mat.uniforms.uAlpha.value as number)
                     : 0;
                 const revealT = THREE.MathUtils.smoothstep(uAlpha, 0, 1);
-                const revealScale = 0.82 + 0.28 * revealT;
-                const fadeOutScale = 1.0 + (1.0 - revealT) * 0.06;
-                // Labels grow as you zoom in: small at the chapter maxFov, large when close in.
-                const zoomTextBoost = THREE.MathUtils.lerp(1.4, 0.55, THREE.MathUtils.smoothstep(state.fov, 8, 46));
-                const starTextBoost = THREE.MathUtils.lerp(0.9, 1.35, starNorm);
+                const revealScale = THREE.MathUtils.lerp(0.62, 1.08, revealT);
+                const fadeOutScale = 1.0 + (1.0 - revealT) * 0.04;
+                const zoomTextBoost = THREE.MathUtils.lerp(1.72, 0.52, THREE.MathUtils.smoothstep(state.fov, 5, 24));
+                const starTextBoost = THREE.MathUtils.lerp(0.68, 1.62, Math.pow(starNorm, 0.72));
                 const scaleMul = zoomTextBoost * starTextBoost * revealScale * fadeOutScale;
                 const uSize = mat.uniforms.uSize.value as THREE.Vector2;
                 const targetX = item.initialScale.x * scaleMul;
@@ -2460,11 +2566,11 @@ export function createEngine({
                 labelHalfDiagPx = Math.max(6, Math.max(pixelH, pixelW * 0.45) * 0.5);
             }
 
-            const edgeMarginPx = THREE.MathUtils.lerp(1, 3, starNorm);
+            const edgeMarginPx = THREE.MathUtils.lerp(0.25, 2.0, Math.pow(starNorm, 0.8));
             const requiredPx = item.chapterGlowRadiusPx + edgeMarginPx + labelHalfDiagPx;
-            const zoomPush = 1.0 + (1.0 - THREE.MathUtils.smoothstep(state.fov, 8, 30)) * 0.8;
-            const starPush = THREE.MathUtils.lerp(0.95, 1.2, starNorm);
-            const offset = THREE.MathUtils.clamp(requiredPx * worldPerPixel * zoomPush * starPush, 3, 76);
+            const zoomPush = 0.44 + (1.0 - THREE.MathUtils.smoothstep(state.fov, 5, 24)) * 0.38;
+            const starPush = THREE.MathUtils.lerp(0.48, 0.82, Math.pow(starNorm, 0.8));
+            const offset = THREE.MathUtils.clamp(requiredPx * worldPerPixel * zoomPush * starPush, 1.5, 48);
 
             item.obj.position.copy(starPos);
             item.obj.position.addScaledVector(tangent, offset);
@@ -2735,23 +2841,24 @@ export function createEngine({
             // 2. Process Labels (Level 1, 2, 3)
             if (n.level === 1 || n.level === 2 || n.level === 3) {
                 let color = "#ffffff";
-                const divName = (n.meta?.division as string) ?? n.label;
+                const parentBookNode = n.level === 3 && n.parent ? nodeById.get(n.parent) : null;
+                const divName = ((n.meta?.division as string | undefined) ?? (parentBookNode?.meta?.division as string | undefined)) ?? n.label;
                 if (n.level === 1 || n.level === 2) {
                     // Books inherit their division's tint, same colour scheme as the
                     // division label itself — keeps the map visually coherent across zoom.
                     color = cfg.divisionColors?.[divName] || "#9fb3c8";
                 }
-                else if (n.level === 3) color = "#94a3b8"; // Chapters: Slate 400 (Grey)
+                else if (n.level === 3) color = cfg.divisionColors?.[divName] || "#9fb3c8";
 
                 let labelText = n.label;
                 if (n.level === 3 && n.meta?.chapter) {
                     const bookKey = n.meta?.bookKey as string | undefined;
-                    labelText = bookKey ? `${bookKey} ${n.meta.chapter}` : String(n.meta.chapter);
+                    labelText = getCompactChapterLabel(bookKey, n.meta.chapter);
                 }
 
                 // Division and book labels render soft and low-contrast, like a region name
                 // on a map, rather than the crisp UI-style text used for chapters.
-                const texRes = (n.level === 1 || n.level === 2)
+                const texRes = n.level === 1 || n.level === 2
                     ? createTextTexture(labelText, color, {
                         fontSize: 20,
                         fontWeight: 200,
@@ -2760,7 +2867,13 @@ export function createEngine({
                         blurPx: 0,
                         alpha: 1.0,
                     })
-                    : createTextTexture(labelText, color);
+                    : createTextTexture(labelText, color, {
+                        fontSize: 88,
+                        fontWeight: 200,
+                        letterSpacing: 1,
+                        blurPx: 3,
+                        alpha: 0.39,
+                    });
 
                 if (texRes) {
                     let baseScale = 0.05;
@@ -2769,7 +2882,7 @@ export function createEngine({
                         // Use linear weight norm (not the star-size-exponent-skewed value)
                         // so label sizes spread visibly across the full range.
                         const wn = chapterWeightNormById.get(n.id) ?? 0;
-                        baseScale = THREE.MathUtils.lerp(0.019, 0.039, wn);
+                        baseScale = THREE.MathUtils.lerp(0.016, 0.052, Math.pow(wn, 0.78));
                     }
                     
                     const size = new THREE.Vector2(baseScale * texRes.aspect, baseScale);
@@ -2812,7 +2925,8 @@ export function createEngine({
                         `,
                         transparent: true,
                         depthWrite: false,
-                        depthTest: n.level === 3 ? false : true
+                        depthTest: n.level === 3 ? false : true,
+                        blending: n.level === 3 ? THREE.AdditiveBlending : THREE.NormalBlending
                     });
 
                     const mesh = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), mat);
@@ -2882,7 +2996,7 @@ export function createEngine({
                     
                     root.add(mesh);
                     const wn = n.level === 3 ? (chapterWeightNormById.get(n.id) ?? 0) : 0;
-                    const chapterMaxFovBias = n.level === 3 ? THREE.MathUtils.lerp(-4, 8, wn) : 0;
+                    const chapterMaxFovBias = n.level === 3 ? THREE.MathUtils.lerp(-5, 9, Math.pow(wn, 0.78)) : 0;
                     dynamicLabels.push({
                         obj: mesh,
                         node: n,
@@ -3625,6 +3739,7 @@ export function createEngine({
         const externalFocusId = (cfg as any).focus?.nodeId;
         if (typeof externalFocusId === "string") focusedNodeId = externalFocusId;
         if (externalFocusId === null) focusedNodeId = null;
+        constellationLayer.setFocused(focusedNodeId);
 
         if (cfg.viewMode && cfg.viewMode !== lastAppliedViewMode) {
             setViewMode(cfg.viewMode);
@@ -4685,7 +4800,7 @@ export function createEngine({
         let panX = 0; let panY = 0;
 
         // Edge Pan Logic (Disable in Edit Mode and on Touch Devices)
-        if (!state.isDragging && isMouseInWindow && !currentConfig?.editable && !isTouchDevice) {
+        if (!state.isDragging && isMouseInWindow && !currentConfig?.editable && currentConfig?.edgePanEnabled !== false && !isTouchDevice) {
             const t = ENGINE_CONFIG.edgePanThreshold;
             const inZoneX = mouseNDC.x < -1 + t || mouseNDC.x > 1 - t;
             const inZoneY = mouseNDC.y < -1 + t || mouseNDC.y > 1 - t;
@@ -4802,6 +4917,7 @@ export function createEngine({
         const centeredTriangulationBookId = focusedTriangulationMode ? getCenteredBookId(target) : null;
         const showingChapterLabels = currentConfig?.showChapterLabels === true;
         const centeredBookId = showingChapterLabels ? (centeredTriangulationBookId ?? getCenteredBookId(target)) : centeredTriangulationBookId;
+        const zoomHierarchy = getZoomHierarchyFactors(state.fov);
 
         updateTriangulationFocus(dt, target, focusedTriangulationMode, centeredTriangulationBookId);
 
@@ -4812,7 +4928,7 @@ export function createEngine({
 
         constellationLayer.update(state.fov, artFader.eased > 0.01, camera, dt);
         const baseArtOpacity = THREE.MathUtils.clamp(currentConfig?.constellationBaseOpacity ?? 1.0, 0, 300);
-        constellationLayer.setGlobalOpacity?.(artFader.eased * baseArtOpacity);
+        constellationLayer.setGlobalOpacity?.(artFader.eased * baseArtOpacity * zoomHierarchy.artOpacityFactor);
         backdropGroup.visible = currentConfig?.showBackdropStars ?? true;
 
         // Zoom reveal: linear ramp from wideFov→narrowFov, then passed to GLSL for
@@ -4849,29 +4965,28 @@ export function createEngine({
         if (milkyWayMesh) milkyWayMesh.visible = currentConfig?.showMilkyWay ?? true;
 
 
-        const DIVISION_THRESHOLD = 60;
-        const showDivisions = state.fov > DIVISION_THRESHOLD;
-
-        // Deep-space division tint: same wide-FOV "whisper" window as division labels,
-        // fading out smoothly as the user zooms toward a specific book.
+        // Deep-space division tint: wide-FOV structure only, fading out as the
+        // user zooms toward the book-level view.
         const showDivisionTint = currentConfig?.showDivisionTint ?? true;
-        const divisionTintReveal = THREE.MathUtils.smoothstep(state.fov, 48, 68);
-        const divisionTintBaseAlpha = 0.16;
         for (const record of divisionTintRecords) {
             if (record.mat.uniforms.uAlpha) {
-                record.mat.uniforms.uAlpha.value = showDivisionTint ? divisionTintReveal * divisionTintBaseAlpha : 0;
+                record.mat.uniforms.uAlpha.value = showDivisionTint
+                    ? zoomHierarchy.divisionT * ZOOM_HIERARCHY_CONFIG.divisionTintBaseAlpha
+                    : 0;
             }
         }
 
         // --- Constellation Lines Visibility (faded) ---
         if (constellationLines) {
-            // Fade in/out with book-level labels: fully visible below FOV 48°, gone above 68°.
-            const bookFovReveal = 1.0 - THREE.MathUtils.smoothstep(state.fov, 48, 68);
-            const lineReveal = linesFader.eased * bookFovReveal;
-            constellationLines.visible = lineReveal > 0.01;
+            const lineDrawReveal = linesFader.eased * zoomHierarchy.lineDrawReveal;
+            const lineOpacity = zoomHierarchy.lineOpacityFactor;
+            constellationLines.visible = lineDrawReveal > 0.01 && lineOpacity > 0.01;
             if (constellationLines.visible && (constellationLines as THREE.Mesh).material) {
                 const mat = (constellationLines as THREE.Mesh).material as THREE.ShaderMaterial;
-                if (mat.uniforms?.uReveal) mat.uniforms.uReveal.value = lineReveal;
+                if (mat.uniforms?.uReveal) mat.uniforms.uReveal.value = lineDrawReveal;
+                if (mat.uniforms?.uLineOpacity) {
+                    mat.uniforms.uLineOpacity.value = THREE.MathUtils.clamp(currentConfig?.constellationLineOpacity ?? 0.42, 0.0, 1.0) * lineOpacity;
+                }
                 mat.opacity = 1.0;
             }
         }
@@ -4994,9 +5109,11 @@ export function createEngine({
 
     function flyTo(nodeId: string, targetFov?: number) {
         const node = nodeById.get(nodeId);
-        if (!node) return;
+        const constellation = node ? null : constellationLayer.getItems().find((item) => item.config.id === nodeId);
+        if (!node && !constellation) return;
         focusedNodeId = nodeId;
-        const pos = getPosition(node).normalize();
+        constellationLayer.setFocused(nodeId);
+        const pos = (node ? getPosition(node) : constellation!.center).normalize();
         flyToTargetLat = Math.asin(Math.max(-0.999, Math.min(0.999, pos.y)));
         flyToTargetLon = Math.atan2(pos.x, -pos.z);
         flyToTargetFov = clampFov(targetFov ?? ENGINE_CONFIG.minFov);
