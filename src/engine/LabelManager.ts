@@ -149,14 +149,14 @@ const DEFAULT_LABEL_BEHAVIOR: ResolvedLabelBehavior = {
         },
         chapter: {
             minFov: 0,
-            maxFov: 22,
+            maxFov: 10,
             priority: 30,
             mode: "pinned",
             maxOverlapPx: 999,
             radialFadeStart: 0.55,
             radialFadeEnd: 0.95,
             fadeDuration: 0.16,
-            fovFadeFeatherDeg: 0,
+            fovFadeFeatherDeg: 12,
         },
     },
 };
@@ -392,16 +392,6 @@ export class LabelManager {
                                 targetAlpha *= bookVisibility;
                                 if (dist > focusOuter && ctx.fov > 20) {
                                     targetAlpha = 0;
-                                }
-                            }
-
-                            if (targetAlpha > 0 && record.classKey === "book" && !isSpecial) {
-                                if (ctx.restrictChapterLabelsToFocusedBook && ctx.focusedBookId) {
-                                    if (record.label.node.id !== ctx.focusedBookId) {
-                                        // Fade non-focused book names out as chapter labels come in (FOV 22→10°).
-                                        const chapterZoomT = 1.0 - THREE.MathUtils.smoothstep(ctx.fov, 10, 22);
-                                        targetAlpha *= 1.0 - chapterZoomT;
-                                    }
                                 }
                             }
 

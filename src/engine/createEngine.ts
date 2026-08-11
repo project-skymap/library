@@ -132,6 +132,44 @@ const ZOOM_REVEAL_CONFIG = {
     backdropRevealEnd:   0.65,   // backdrop fully visible at this mappedZoom
 };
 
+const ZOOM_HIERARCHY_CONFIG = {
+    divisionToBookStartFov: 68,
+    divisionToBookEndFov: 48,
+    bookToChapterStartFov: 22,
+    bookToChapterEndFov: 10,
+    divisionTintBaseAlpha: 0.16,
+    bookLevelArtOpacity: 0.5,
+};
+
+function getZoomHierarchyFactors(fov: number) {
+    const divisionT = THREE.MathUtils.smoothstep(
+        fov,
+        ZOOM_HIERARCHY_CONFIG.divisionToBookEndFov,
+        ZOOM_HIERARCHY_CONFIG.divisionToBookStartFov,
+    );
+    const bookT = 1.0 - divisionT;
+    const chapterT = 1.0 - THREE.MathUtils.smoothstep(
+        fov,
+        ZOOM_HIERARCHY_CONFIG.bookToChapterEndFov,
+        ZOOM_HIERARCHY_CONFIG.bookToChapterStartFov,
+    );
+    const artOpacityFactor = (
+        ZOOM_HIERARCHY_CONFIG.bookLevelArtOpacity +
+        (1.0 - ZOOM_HIERARCHY_CONFIG.bookLevelArtOpacity) * divisionT
+    ) * (1.0 - chapterT);
+    const lineDrawReveal = bookT;
+    const lineOpacityFactor = lineDrawReveal * (1.0 - chapterT);
+
+    return {
+        divisionT,
+        bookT,
+        chapterT,
+        artOpacityFactor,
+        lineDrawReveal,
+        lineOpacityFactor,
+    };
+}
+
 type ActiveHorizonProfile = {
     mode: 0 | 1;
     pointCount: number;
@@ -4844,6 +4882,7 @@ export function createEngine({
         const centeredTriangulationBookId = focusedTriangulationMode ? getCenteredBookId(target) : null;
         const showingChapterLabels = currentConfig?.showChapterLabels === true;
         const centeredBookId = showingChapterLabels ? (centeredTriangulationBookId ?? getCenteredBookId(target)) : centeredTriangulationBookId;
+        const zoomHierarchy = getZoomHierarchyFactors(state.fov);
 
         updateTriangulationFocus(dt, target, focusedTriangulationMode, centeredTriangulationBookId);
 
@@ -4854,7 +4893,7 @@ export function createEngine({
 
         constellationLayer.update(state.fov, artFader.eased > 0.01, camera, dt);
         const baseArtOpacity = THREE.MathUtils.clamp(currentConfig?.constellationBaseOpacity ?? 1.0, 0, 300);
-        constellationLayer.setGlobalOpacity?.(artFader.eased * baseArtOpacity);
+        constellationLayer.setGlobalOpacity?.(artFader.eased * baseArtOpacity * zoomHierarchy.artOpacityFactor);
         backdropGroup.visible = currentConfig?.showBackdropStars ?? true;
 
         // Zoom reveal: linear ramp from wideFov→narrowFov, then passed to GLSL for
@@ -4891,29 +4930,28 @@ export function createEngine({
         if (milkyWayMesh) milkyWayMesh.visible = currentConfig?.showMilkyWay ?? true;
 
 
-        const DIVISION_THRESHOLD = 60;
-        const showDivisions = state.fov > DIVISION_THRESHOLD;
-
-        // Deep-space division tint: same wide-FOV "whisper" window as division labels,
-        // fading out smoothly as the user zooms toward a specific book.
+        // Deep-space division tint: wide-FOV structure only, fading out as the
+        // user zooms toward the book-level view.
         const showDivisionTint = currentConfig?.showDivisionTint ?? true;
-        const divisionTintReveal = THREE.MathUtils.smoothstep(state.fov, 48, 68);
-        const divisionTintBaseAlpha = 0.16;
         for (const record of divisionTintRecords) {
             if (record.mat.uniforms.uAlpha) {
-                record.mat.uniforms.uAlpha.value = showDivisionTint ? divisionTintReveal * divisionTintBaseAlpha : 0;
+                record.mat.uniforms.uAlpha.value = showDivisionTint
+                    ? zoomHierarchy.divisionT * ZOOM_HIERARCHY_CONFIG.divisionTintBaseAlpha
+                    : 0;
             }
         }
 
         // --- Constellation Lines Visibility (faded) ---
         if (constellationLines) {
-            // Fade in/out with book-level labels: fully visible below FOV 48°, gone above 68°.
-            const bookFovReveal = 1.0 - THREE.MathUtils.smoothstep(state.fov, 48, 68);
-            const lineReveal = linesFader.eased * bookFovReveal;
-            constellationLines.visible = lineReveal > 0.01;
+            const lineDrawReveal = linesFader.eased * zoomHierarchy.lineDrawReveal;
+            const lineOpacity = zoomHierarchy.lineOpacityFactor;
+            constellationLines.visible = lineDrawReveal > 0.01 && lineOpacity > 0.01;
             if (constellationLines.visible && (constellationLines as THREE.Mesh).material) {
                 const mat = (constellationLines as THREE.Mesh).material as THREE.ShaderMaterial;
-                if (mat.uniforms?.uReveal) mat.uniforms.uReveal.value = lineReveal;
+                if (mat.uniforms?.uReveal) mat.uniforms.uReveal.value = lineDrawReveal;
+                if (mat.uniforms?.uLineOpacity) {
+                    mat.uniforms.uLineOpacity.value = THREE.MathUtils.clamp(currentConfig?.constellationLineOpacity ?? 0.42, 0.0, 1.0) * lineOpacity;
+                }
                 mat.opacity = 1.0;
             }
         }
