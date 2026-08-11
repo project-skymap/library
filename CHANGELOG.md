@@ -11,6 +11,7 @@
 - `0.8.x`   : Engine Rebuild
 - `0.9.x`   : Procedural Layout
 - `0.10.x`  : Hierarchy
+- `0.11.x`  : Celestial Geometry
 
 ## Releases
 <!-- @LatestFirst -->
