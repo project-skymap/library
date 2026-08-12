@@ -1,12 +1,12 @@
 import * as THREE from "three";
-import type { StarMapConfig, SceneModel, SceneNode, StarArrangement, HorizonThemeConfig } from "../types";
+import type { StarMapConfig, SceneModel, SceneNode, SceneFocus, StarArrangement, HorizonThemeConfig } from "../types";
 import { computeLayoutPositions } from "./layout";
 import { createSmartMaterial, globalUniforms } from "./materials";
 import { ConstellationArtworkLayer } from "./ConstellationArtworkLayer";
 import { PROJECTIONS, BlendedProjection } from "./projections";
 import type { Projection, ProjectionId } from "./projections";
 import { Fader } from "./fader";
-import { LabelManager } from "./LabelManager";
+import { LabelManager, resolveLabelBehavior } from "./LabelManager";
 import type { DynamicLabel } from "./LabelManager";
 import {
     compressInputDelta,
@@ -33,6 +33,7 @@ type Handlers = {
     onArrangementChange?: (arrangement: StarArrangement) => void;
     onFovChange?: (fov: number) => void;
     onCameraChange?: (lon: number, lat: number, fov: number) => void;
+    onFocusChange?: (focus: SceneFocus | null) => void;
     onLongPress?: (node: SceneNode | null, x: number, y: number) => void;
     onMarkerSelect?: (index: number) => void;
 };
@@ -186,6 +187,7 @@ export function createEngine({
                                  onArrangementChange,
                                  onFovChange,
                                  onCameraChange,
+                                 onFocusChange,
                                  onLongPress,
                                  onMarkerSelect,
                              }: {
@@ -195,6 +197,7 @@ export function createEngine({
     onArrangementChange?: Handlers["onArrangementChange"];
     onFovChange?: Handlers["onFovChange"];
     onCameraChange?: Handlers["onCameraChange"];
+    onFocusChange?: Handlers["onFocusChange"];
     onLongPress?: Handlers["onLongPress"];
     onMarkerSelect?: Handlers["onMarkerSelect"];
 }) {
@@ -305,10 +308,14 @@ export function createEngine({
     let edgeHoverStart = 0;
     let interactionEnabled = true;
 
-    let handlers: Handlers = { onSelect, onHover, onArrangementChange, onFovChange, onCameraChange, onLongPress, onMarkerSelect };
+    let handlers: Handlers = { onSelect, onHover, onArrangementChange, onFovChange, onCameraChange, onFocusChange, onLongPress, onMarkerSelect };
     let lastEmittedLon = Infinity;
     let lastEmittedLat = Infinity;
     let lastEmittedFov = Infinity;
+    let lastEmittedFocusLevel: SceneFocus["level"] | null = null;
+    let lastEmittedFocusDivisionId: string | null = null;
+    let lastEmittedFocusBookId: string | null = null;
+    let lastEmittedFocusChapterId: string | null = null;
     let currentConfig: StarMapConfig | undefined;
     let wholeSkyTriangulationActive = false;
     let constellationLineFocusAttr: THREE.BufferAttribute | null = null;
@@ -929,6 +936,10 @@ export function createEngine({
     let landscapeSilhouetteMesh: THREE.Mesh | null = null;
     let groundCaptionMesh: THREE.Mesh | null = null;
     let divisionTintRecords: { mat: THREE.ShaderMaterial }[] = [];
+    // Unit direction of each division's centre, keyed by division node id. Resolved from the
+    // same source as the tint disc (divisionRegions, else the book centroid), so "which division
+    // am I looking at" always agrees with where the wash is actually painted.
+    const divisionCenterDirections = new Map<string, THREE.Vector3>();
 
 
     function createSkyBackground() {
@@ -1920,6 +1931,7 @@ export function createEngine({
         boundaryLines = null;
         starPoints = null;
         divisionTintRecords = [];
+        divisionCenterDirections.clear();
     }
 
     function updateStarHighlight(mesh: THREE.Mesh, nodeId: string | null | undefined) {
@@ -2418,6 +2430,69 @@ export function createEngine({
         return bestDot > 0 ? bestId : null;
     }
 
+    function getCenteredChapterId(target: THREE.Vector3): string | null {
+        // Read straight from the star buffer rather than walking nodes: it avoids a
+        // per-chapter Vector3 allocation every frame, and uses the positions actually
+        // being rendered.
+        const attr = starPoints?.geometry.attributes.position as THREE.BufferAttribute | undefined;
+        if (!attr) return null;
+        let bestIndex = -1;
+        let bestDot = -Infinity;
+        for (let i = 0; i < attr.count; i++) {
+            const x = attr.getX(i);
+            const y = attr.getY(i);
+            const z = attr.getZ(i);
+            const length = Math.sqrt(x * x + y * y + z * z);
+            if (length < 1e-9) continue;
+            const dot = (x * target.x + y * target.y + z * target.z) / length;
+            if (dot > bestDot) {
+                bestDot = dot;
+                bestIndex = i;
+            }
+        }
+        if (bestIndex < 0 || bestDot <= 0) return null;
+        return starIndexToId[bestIndex] ?? null;
+    }
+
+    function getCenteredDivisionId(target: THREE.Vector3): string | null {
+        let bestId: string | null = null;
+        let bestDot = -Infinity;
+        for (const [divisionId, direction] of divisionCenterDirections.entries()) {
+            const dot = direction.dot(target);
+            if (dot > bestDot) {
+                bestDot = dot;
+                bestId = divisionId;
+            }
+        }
+        return bestDot > 0 ? bestId : null;
+    }
+
+    /**
+     * Which hierarchy level dominates at this FOV. Reuses the same label FOV windows that
+     * govern which labels are actually on screen, so the reported level never disagrees with
+     * what the viewer can see. Windows may overlap for crossfading, so the most specific
+     * level whose window contains the FOV wins; if none match, the nearest window is used.
+     */
+    function getFocusLevelForFov(fov: number): SceneFocus["level"] {
+        const classes = resolveLabelBehavior(currentConfig?.labelBehavior).classes;
+        const ordered: SceneFocus["level"][] = ["chapter", "book", "division"];
+        for (const level of ordered) {
+            const behavior = classes[level];
+            if (fov >= behavior.minFov && fov <= behavior.maxFov) return level;
+        }
+        let bestLevel: SceneFocus["level"] = "book";
+        let bestDistance = Infinity;
+        for (const level of ordered) {
+            const behavior = classes[level];
+            const distance = fov < behavior.minFov ? behavior.minFov - fov : fov - behavior.maxFov;
+            if (distance < bestDistance) {
+                bestDistance = distance;
+                bestLevel = level;
+            }
+        }
+        return bestLevel;
+    }
+
     function updateTriangulationFocus(
         dt: number,
         target: THREE.Vector3,
@@ -2646,6 +2721,20 @@ export function createEngine({
                     divisionAngularRadii.set(divId, THREE.MathUtils.clamp(maxAngle * 1.35 + 0.06, 0.12, 0.9));
                 }
             }
+        }
+
+        // Record each division's centre direction for "what am I looking at" focus reporting.
+        // Resolution order matches the tint disc below exactly (region → book centroid → layout
+        // position), so the reported division is always the one whose wash is under the crosshair.
+        divisionCenterDirections.clear();
+        for (const n of laidOut.nodes) {
+            if (n.level !== 1) continue;
+            const divName = (n.meta?.division as string) ?? n.label;
+            const region = cfg.divisionRegions?.[divName];
+            const dir = region
+                ? new THREE.Vector3(region.direction[0], region.direction[1], region.direction[2])
+                : (divisionPositions.get(n.id) ?? getPosition(n));
+            if (dir.lengthSq() > 1e-9) divisionCenterDirections.set(n.id, dir.clone().normalize());
         }
 
         // Relax division label anchors so they spread apart from one another instead of
@@ -3037,7 +3126,7 @@ export function createEngine({
                 uFilterDivisionIndex: { value: -1.0 },
                 uFilterBookIndex: { value: -1.0 },
                 uFilterStrength: { value: 0.0 },
-                uFilterDimFactor: { value: 0.08 },
+                uFilterDimFactor: { value: 0.0 },
                 uRevealZoom: { value: 0.0 }
             },
             vertexShaderBody: `
@@ -3118,7 +3207,7 @@ export function createEngine({
                     }
                     float filterFactor = uFilterStrength * filtered;
                     float filterDim = mix(1.0, uFilterDimFactor, filterFactor);
-                    float filterReveal = mix(1.0, 0.4, filterFactor);
+                    float filterReveal = 1.0 - filterFactor;
 
                     vec3 baseColor = color * extinction * horizonFade * scintillation * 1.28;
                     vColor = baseColor * dimFactor * filterDim;
@@ -5031,6 +5120,30 @@ export function createEngine({
             config: currentConfig?.labelBehavior,
             project: smartProjectJS,
         });
+        // Report what the viewer is looking at — the division / book / chapter nearest the
+        // centre of the screen. Emitted only when the level or one of the centred nodes
+        // actually changes, so panning within a single chapter stays quiet.
+        if (handlers.onFocusChange) {
+            const level = getFocusLevelForFov(state.fov);
+            const divisionId = getCenteredDivisionId(target);
+            const bookId = centeredBookId ?? getCenteredBookId(target);
+            const chapterId = getCenteredChapterId(target);
+            if (level !== lastEmittedFocusLevel ||
+                divisionId !== lastEmittedFocusDivisionId ||
+                bookId !== lastEmittedFocusBookId ||
+                chapterId !== lastEmittedFocusChapterId) {
+                lastEmittedFocusLevel = level;
+                lastEmittedFocusDivisionId = divisionId;
+                lastEmittedFocusBookId = bookId;
+                lastEmittedFocusChapterId = chapterId;
+                handlers.onFocusChange({
+                    level,
+                    divisionNode: divisionId ? nodeById.get(divisionId) ?? null : null,
+                    bookNode: bookId ? nodeById.get(bookId) ?? null : null,
+                    chapterNode: chapterId ? nodeById.get(chapterId) ?? null : null,
+                });
+            }
+        }
         // Fire camera change only when lon/lat/fov shift by a perceptible amount.
         if (handlers.onCameraChange) {
             const THRESH = 0.0005;

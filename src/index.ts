@@ -5,6 +5,7 @@ export type {
   SceneModel,
   SceneNode,
   SceneLink,
+  SceneFocus,
   StarArrangement,
   ConstellationConfig,
   HierarchyFilter,

@@ -38,6 +38,22 @@ export type SceneModel = {
     meta?: Record<string, unknown>;
 };
 
+/**
+ * What the viewer is currently looking at — the division / book / chapter whose
+ * position is nearest the centre of the screen (the camera's forward direction).
+ *
+ * All three nodes are populated whenever a nearest match exists at that level,
+ * regardless of `level`. `level` reports which granularity is dominant at the
+ * current FOV (derived from the same `labelBehavior` FOV windows that drive
+ * label visibility), so a consumer knows which of the three to actually show.
+ */
+export type SceneFocus = {
+    level: "division" | "book" | "chapter";
+    divisionNode: SceneNode | null;
+    bookNode: SceneNode | null;
+    chapterNode: SceneNode | null;
+};
+
 export type LayoutAlgorithm = "phyllotaxis" | "voronoi";
 
 export type LayoutConfig = {

@@ -12,10 +12,18 @@
 - `0.9.x`   : Procedural Layout
 - `0.10.x`  : Hierarchy
 - `0.11.x`  : Celestial Geometry
+- `0.12.x`  : Enhanced Selection
 
 ## Releases
 <!-- @LatestFirst -->
 `🟪 epic` `🟩 story` `🟦 task` `🟥 bug`
+
+## [0.12.0]
+🟪 [Celestial Geometry](https://jrsmth.atlassian.net/browse/SKY-40) (12/08/2026)
+- 🟩 `#41` Paul wants to understand which hierarchical level corresponds to his FOV
+- 🟩 `#42` Paul wants to know which part of the Bible he is looking at
+- 🟩 `#43` Paul wants to see which chapter he has selected
+- 🟩 `#44` Paul wants guidance after incorrect guesses
 
 ## [0.11.0]
 🟪 [Celestial Geometry](https://jrsmth.atlassian.net/browse/SKY-36) (11/08/2026)
@@ -101,3 +109,4 @@
 [0.10.1]: https://github.com/project-skymap/library/compare/v0.10.0...v0.10.1
 [0.10.2]: https://github.com/project-skymap/library/compare/v0.10.1...v0.10.2
 [0.11.0]: https://github.com/project-skymap/library/compare/v0.10.2...v0.11.0
+[0.12.0]: https://github.com/project-skymap/library/compare/v0.11.0...v0.12.0

@@ -179,7 +179,7 @@ function lerp(a: number, b: number, t: number): number {
     return a + (b - a) * t;
 }
 
-function resolveLabelBehavior(config?: LabelBehaviorConfig): ResolvedLabelBehavior {
+export function resolveLabelBehavior(config?: LabelBehaviorConfig): ResolvedLabelBehavior {
     const classes = { ...DEFAULT_LABEL_BEHAVIOR.classes };
 
     const mergeClass = (
@@ -397,9 +397,7 @@ export class LabelManager {
 
                             if (targetAlpha > 0 && ctx.shouldFilter) {
                                 const node = record.label.node;
-                                if (node.level === 3) {
-                                    targetAlpha = 0;
-                                } else if (node.level === 2 || node.level === 2.5) {
+                                if (node.level === 3 || node.level === 2 || node.level === 2.5) {
                                     if (ctx.isNodeFiltered(node)) targetAlpha = 0;
                                 }
                             }

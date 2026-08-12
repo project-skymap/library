@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useEffect, useRef, useImperativeHandle, forwardRef } from "react";
-import type { StarMapConfig, SceneNode, StarArrangement, HierarchyFilter } from "../types";
+import type { StarMapConfig, SceneNode, SceneFocus, StarArrangement, HierarchyFilter } from "../types";
 import type { PlanetariumViewMode } from "../engine/navigation";
 
 export type StarMapProps = {
@@ -13,6 +13,11 @@ export type StarMapProps = {
     onFovChange?: (fov: number) => void;
     /** Fired on every frame where lon, lat, or fov shifts by ≥0.03°. Values are in radians. */
     onCameraChange?: (lon: number, lat: number, fov: number) => void;
+    /**
+     * Fired when the division / book / chapter nearest the centre of the screen changes,
+     * or when the dominant hierarchy level changes with zoom.
+     */
+    onFocusChange?: (focus: SceneFocus | null) => void;
     onLongPress?: (node: SceneNode | null, x: number, y: number) => void;
     /** Fired when the user clicks one of the `markerPositions` stars. Index into the markerPositions array. */
     onMarkerSelect?: (index: number) => void;
@@ -32,7 +37,7 @@ export type StarMapHandle = {
 };
 
 export const StarMap = forwardRef<StarMapHandle, StarMapProps>(
-    ({ config, className, onSelect, onHover, onArrangementChange, onFovChange, onCameraChange, onLongPress, onMarkerSelect }, ref) => {
+    ({ config, className, onSelect, onHover, onArrangementChange, onFovChange, onCameraChange, onFocusChange, onLongPress, onMarkerSelect }, ref) => {
         const containerRef = useRef<HTMLDivElement | null>(null);
         const engineRef = useRef<any>(null);
 
@@ -64,6 +69,7 @@ export const StarMap = forwardRef<StarMapHandle, StarMapProps>(
                 onArrangementChange,
                 onFovChange,
                 onCameraChange,
+                onFocusChange,
                 onLongPress,
                 onMarkerSelect,
             });
@@ -86,8 +92,8 @@ export const StarMap = forwardRef<StarMapHandle, StarMapProps>(
     }, [config]);
 
     useEffect(() => {
-        engineRef.current?.setHandlers?.({ onSelect, onHover, onArrangementChange, onFovChange, onCameraChange, onLongPress, onMarkerSelect });
-    }, [onSelect, onHover, onArrangementChange, onFovChange, onCameraChange, onLongPress]);
+        engineRef.current?.setHandlers?.({ onSelect, onHover, onArrangementChange, onFovChange, onCameraChange, onFocusChange, onLongPress, onMarkerSelect });
+    }, [onSelect, onHover, onArrangementChange, onFovChange, onCameraChange, onFocusChange, onLongPress]);
 
     return <div ref={containerRef} className={className} style={{ width: "100%", height: "100%" }} />;
     }
